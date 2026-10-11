@@ -66,15 +66,21 @@ def voice(out, stand, work, S, cfg, total):
     t.key("enter", 0.9)
     base._welcome(t)
     t.pump(0.8)
-    for attempt in range(3):  # the hold is timing-sensitive on a slow runner: retry the gesture if nothing lands
+    done = False
+    for attempt in range(2):  # the space gesture is timing-sensitive: two tries with the hold
         t.hold(2.6)  # hold space: recording starts after three quick spaces, stops after release
         try:
-            t.wait_for(S["voice_word"], timeout=15)
+            t.wait_for(S["voice_word"], timeout=12)
+            done = True
             break
         except AssertionError:
-            if attempt == 2:
-                raise
             t.pump(1.0)
+    if not done:  # fallback: the same plugin's /voice command (any key stops it), independent of timing
+        t.type("/voice", cps=8)
+        t.key("enter", 0.8)
+        t.pump(2.6)
+        t.key("tab", 0.8)  # any key stops the recording
+        t.wait_for(S["voice_word"], timeout=40)
     t.pump(1.6)
     t.finish(total)
     return t
