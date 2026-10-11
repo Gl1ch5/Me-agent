@@ -16,12 +16,18 @@ def html_text(s):
 
 def web_fetch(url):
     try:
-        r = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,text/plain,*/*"})
+        r = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,text/plain,*/*",
+                                                        "Accept-Encoding": "gzip, deflate"})
         with urllib.request.urlopen(r, timeout=30) as resp:
             ct = resp.headers.get("Content-Type", "")
             data = resp.read(5_000_000)
+            enc = (resp.headers.get("Content-Encoding") or "").lower()
     except Exception as e:
         return False, f"error: {e}", None
+    if enc == "gzip" or data[:2] == b"\x1f\x8b":
+        data = zlib.decompress(data, 16 + zlib.MAX_WBITS)
+    elif enc == "deflate":
+        data = zlib.decompress(data)
     if "pdf" in ct:
         tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
         tmp.write_bytes(data)
