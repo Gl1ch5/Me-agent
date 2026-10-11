@@ -30,7 +30,7 @@ const A = {
     const [ag, man] = await Promise.all([api("/api/agents").catch(() => ({agents: [], current: "code"})),
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
-    return {mode: "cloud", user: me.username, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,
+    return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,
             agent: session?.agent || ag.current, agents: ag.agents, context};
   },
   async load(id) {

@@ -81,7 +81,12 @@ class TUIRender:
             icon = ("✓", rgb(TH["ok"])) if b.ok else ("✗", rgb(TH["err"]))
         head = Line().add("  ").add(icon[0] + " ", icon[1]).add(name, rgb(TH["fg"]) + CSI + "1m").add(" ")
         room = W - head.width() - 10
-        lbl = label if swidth(label) <= room else label[: max(0, room - 1)] + "…"
+        if swidth(label) <= room:
+            lbl = label
+        elif name in ("read", "write", "edit"):  # keep the file name visible
+            lbl = "…" + label[-max(1, room - 1):]
+        else:
+            lbl = label[: max(0, room - 1)] + "…"
         head.add(lbl, dim)
         if b.done:
             head.add(f"  {dur(b.elapsed)}", rgb(TH["faint"]))

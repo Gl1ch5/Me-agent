@@ -7,7 +7,12 @@ class ToolBox:
     def preview(self, name, a):
         """Short human label for UI."""
         if name in ("read", "write", "edit"):
-            return a.get("path", "")
+            p = str(a.get("path", ""))
+            try:
+                rel = os.path.relpath(p)
+                return rel if not rel.startswith("..") else p
+            except ValueError:
+                return p
         if name == "bash":
             return a.get("cmd", "")
         if name == "web_search":

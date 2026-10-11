@@ -100,6 +100,7 @@ class Agent:
                 tin += usage["in"]
                 tout += usage["out"]
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
+                self.session["ctx"] = self.ctx_used
                 self.session["usage"]["in"] = self.session["usage"].get("in", 0) + usage["in"]
                 self.session["usage"]["out"] = self.session["usage"].get("out", 0) + usage["out"]
                 self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout})
@@ -215,7 +216,7 @@ class Agent:
         self.session["messages"] = [{"role": "user", "content": "[Summary of the earlier conversation]\n" + summary},
                                     {"role": "assistant", "content": "Understood — continuing from this summary."}] + msgs[cut:]
         self.session["compactions"] = self.session.get("compactions", 0) + 1
-        self.ctx_used = len(json.dumps(self.session["messages"], ensure_ascii=False)) // 4
+        self.ctx_used = self.session["ctx"] = len(json.dumps(self.session["messages"], ensure_ascii=False)) // 4
         self.emit({"type": "compacted", "before": before, "after": len(self.session["messages"]), "ctx": self.ctx_used,
                    "reason": reason, "summary": summary[:2000]})
         self.s.save_session(self.session)
@@ -236,6 +237,7 @@ class Agent:
             return False
         d.setdefault("usage", {"in": 0, "out": 0})
         self.session = d
+        self.ctx_used = d.get("ctx", self.ctx_used)
         if cwd and os.path.abspath(cwd) != d.get("cwd"):
             self.relocate(cwd)
         return True
@@ -269,5 +271,5 @@ class Agent:
         if d:
             self.session = d
             self.session.setdefault("usage", {"in": 0, "out": 0})
-            self.ctx_used = 0
+            self.ctx_used = self.session.get("ctx", 0)
         return d

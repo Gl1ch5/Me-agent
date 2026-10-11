@@ -10,7 +10,15 @@ function emptyState() {
   log.innerHTML = `<div class="empty" style="min-height:60vh"><div><h2>what are we <span>building?</span></h2><p>${MODE === "cloud" ? "Runs in your cloud sandbox · files sync to all your machines" : "Running locally on this machine"}</p></div></div>`;
 }
 function userMsg(t) { if (log.querySelector(".empty")) log.innerHTML = ""; el(`<div class="msg user"><div class="bub">${esc(t)}</div></div>`); }
+function shortPath(s) {
+  s = String(s ?? "");
+  const roots = [state.session?.cwd, ...(state.session?.roots || []), state.cwd, "/work"].filter(Boolean);
+  for (const r of roots) s = s.split(r.replace(/\/$/, "") + "/").join("");
+  const max = innerWidth < 500 ? 34 : 70;
+  return s.length > max ? "…" + s.slice(-(max - 1)) : s;
+}
 function toolCard(name, label, args, skill) {
+  label = shortPath(label);
   const isSkill = name === "skill" && args && args.action;
   const color = isSkill ? (COLORS[skill?.color] || "var(--a)") : "var(--a)";
   const title = isSkill ? `${esc(args.name)} · ${esc(args.action)}` : esc(name);

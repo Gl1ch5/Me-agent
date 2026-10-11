@@ -35,8 +35,14 @@ async function send() {
   try { await api(base + "/prompt", {text: t}); } catch (e) { el(`<div class="info err">${esc(e.message)}</div>`); busy = false; setBusy(); }
 }
 function sendOrStop() { busy ? api(base + "/cancel", {}) : send(); }
-async function newChat() { side.classList.remove("open"); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = "New chat"; }
-async function loadSession(id) { side.classList.remove("open"); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
+function openSide() { side.classList.add("open"); $("scrim").classList.add("on"); }
+function closeSide() { side.classList.remove("open"); $("scrim").classList.remove("on"); }
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSide(); $("popup").classList.add("hidden"); } });
+let touchX = null;  // swipe left on the drawer to close it
+side.addEventListener("touchstart", e => touchX = e.touches[0].clientX, {passive: true});
+side.addEventListener("touchend", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });
+async function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = "New chat"; }
+async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
   const ms = state.config?.models || [];
   $("pbody").innerHTML = ms.map(m => `<button onclick="setModel('${esc(m.name)}')"><span>${m.name === state.config.model ? "●" : "○"}</span>${esc(m.name)}<span class="d">${esc(m.id)}</span></button>`).join("") || '<p style="padding:12px;color:var(--dim)">No models — add one in your account or with /models.</p>';

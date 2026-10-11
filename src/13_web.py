@@ -50,7 +50,7 @@ class WebSession:
 
     def state(self):
         ses = self.agent.session
-        return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used,
+        return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())],

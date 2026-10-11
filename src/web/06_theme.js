@@ -1,11 +1,16 @@
 // ─── themes: same tokens as the terminal (see 14a_themes.py) ───
 const THEME_VARS = {bg: "--bg", bg2: "--bg2", bg3: "--bg3", line: "--line", fg: "--fg", dim: "--dim", faint: "--faint", accent: "--a", accent2: "--b", ok: "--ok", err: "--err", warn: "--warn", user: "--user"};
 let themeList = [];
+function onAccent(hex) {  // black or white text, whichever reads better on the accent color
+  const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+  return .2126 * r + .7152 * g + .0722 * b > .35 ? "#0a0a0a" : "#ffffff";
+}
 function applyTheme(t) {
   if (!t) return;
   const r = document.documentElement;
   for (const [k, v] of Object.entries(THEME_VARS)) if (t.colors[k]) r.style.setProperty(v, t.colors[k]);
   r.style.colorScheme = t.dark === false ? "light" : "dark";
+  r.style.setProperty("--on-a", onAccent(t.colors.accent));
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t.colors.bg);
   try { localStorage.setItem("me_theme_cache", JSON.stringify(t)); } catch (e) {}
 }

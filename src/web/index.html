@@ -11,15 +11,16 @@
 <body>
 <div class="app">
 <aside id="side">
-  <div class="brand"><i></i>me<small id="mode"></small></div>
+  <div class="brand"><i></i>me<small id="mode"></small><button class="ib side-close" onclick="closeSide()" aria-label="close menu"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
   <button class="newbtn" onclick="newChat()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
   <div class="slist" id="slist"></div>
   <div class="side-foot"><a id="acct" href="/account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span id="who">account</span></a>
     <span class="spacer"></span><button class="ib" onclick="pickTheme()" title="theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button></div>
 </aside>
+<div class="scrim" id="scrim" onclick="closeSide()"></div>
 <main>
   <header>
-    <button class="ib menu" onclick="side.classList.toggle('open')"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <button class="ib menu" onclick="openSide()"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <div class="title" id="title">New chat</div>
     <button class="pill" id="wsPill" title="workspace"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span id="ws">—</span></button>
   </header>
@@ -35,7 +36,7 @@
         <button class="ib send" id="send" onclick="sendOrStop()" disabled><svg viewBox="0 0 24 24" id="sendIcon"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
     </div>
-    <div class="status"><span id="ctxfiles"></span><span class="ctx" id="ctx"></span><span id="tok"></span><span id="sync"></span></div>
+    <div class="status"><span id="ctxfiles"></span><span class="ctx" id="ctx"></span><span id="tok" class="tok"></span><span id="sync"></span></div>
   </div>
 </main>
 </div>

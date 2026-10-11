@@ -26,7 +26,7 @@ input,textarea,select{width:100%;font:14px var(--sans);background:var(--bg2);bor
 textarea{font:13px/1.55 var(--mono);resize:vertical;min-height:120px;tab-size:4}
 input:focus,textarea:focus,select:focus{border-color:var(--a)}
 label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px}
-button{font:500 13px var(--mono);background:var(--a);color:#fff;border:none;border-radius:8px;padding:9px 15px;cursor:pointer}
+button{font:500 13px var(--mono);background:var(--a);color:var(--on-a,#fff);border:none;border-radius:8px;padding:9px 15px;cursor:pointer}
 button:hover{filter:brightness(1.1)}
 button.ghost{background:none;color:var(--dim);border:1px solid var(--line)}
 button.ghost:hover{color:var(--fg);border-color:var(--faint)}
@@ -73,7 +73,7 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 .msg.tool{font:12px/1.5 var(--mono);color:var(--dim);background:var(--bg2);max-height:160px;overflow:auto}
 .msg .who{font:11px var(--mono);color:var(--dim);margin-bottom:4px;text-transform:uppercase}
 .key{font-family:var(--mono);letter-spacing:1px}
-.btn-a{font:500 13px var(--mono);background:var(--a);color:#fff;border-radius:8px;padding:9px 15px;text-decoration:none;white-space:nowrap}
+.btn-a{font:500 13px var(--mono);background:var(--a);color:var(--on-a,#fff);border-radius:8px;padding:9px 15px;text-decoration:none;white-space:nowrap}
 .btn-a.sm{padding:5px 10px;font-size:12px}
 .hero{background:linear-gradient(135deg,rgba(139,124,255,.10),rgba(79,209,197,.06))}
 .ftree{display:grid;grid-template-columns:260px 1fr;gap:12px;margin-top:14px;min-height:300px}
@@ -678,7 +678,8 @@ async function loadAdmin() {
 
 // ── theme: the account page follows the user's me theme ──
 const TVARS = {bg: "--bg", bg2: "--bg2", bg3: "--bg3", line: "--line", fg: "--fg", dim: "--dim", faint: "--faint", accent: "--a", accent2: "--b", ok: "--ok", err: "--err"};
-function applyTheme(t) { if (!t) return; for (const [k, v] of Object.entries(TVARS)) if (t.colors[k]) document.documentElement.style.setProperty(v, t.colors[k]); try { localStorage.setItem("me_theme_cache", JSON.stringify(t)); } catch (e) {} }
+function onAccent(hex) { const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * r + .7152 * g + .0722 * b > .35 ? "#0a0a0a" : "#ffffff"; }
+function applyTheme(t) { if (!t) return; document.documentElement.style.setProperty("--on-a", onAccent(t.colors.accent)); for (const [k, v] of Object.entries(TVARS)) if (t.colors[k]) document.documentElement.style.setProperty(v, t.colors[k]); try { localStorage.setItem("me_theme_cache", JSON.stringify(t)); } catch (e) {} }
 try { applyTheme(JSON.parse(localStorage.getItem("me_theme_cache"))); } catch (e) {}
 let themeData = null;
 async function loadThemes() { themeData = await api("/api/themes"); applyTheme(themeData.themes.find(t => t.name === themeData.current)); renderThemes(); }
