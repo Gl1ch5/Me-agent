@@ -4,13 +4,17 @@ set -e
 SERVER="__SERVER__"
 ME_HOME="${ME_HOME:-$HOME/.me}"
 BIN="$HOME/.local/bin"
+[ -n "$TERMUX_VERSION" ] && [ -n "$PREFIX" ] && BIN="$PREFIX/bin"   # Android / Termux
 c() { printf '\033[38;2;139;124;255m%s\033[0m\n' "$1"; }
 
 PY=""
 for p in python3 python; do
   if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then PY="$p"; break; fi
 done
-[ -z "$PY" ] && { echo "me needs Python 3.8+ — install it first."; exit 1; }
+if [ -z "$PY" ]; then
+  if [ -n "$TERMUX_VERSION" ]; then pkg install -y python >/dev/null 2>&1 && PY=python; fi
+  [ -z "$PY" ] && { echo "me needs Python 3.8+ — install it first."; exit 1; }
+fi
 
 c "◆ installing me"
 mkdir -p "$ME_HOME" "$BIN"

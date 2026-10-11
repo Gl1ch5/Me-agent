@@ -16,11 +16,12 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
 
 # ───────────────────────────── util ─────────────────────────────
 
@@ -66,14 +67,16 @@ DEFAULT_CONFIG = {
     "model": None,  # current model name
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
-    "settings": {"yolo": False, "mouse": True, "disabled_skills": []},
+    "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
+    "search": {"deepseek_key": "", "model": "deepseek-v4-flash"},
+    "voice": {"groq_key": "", "model": "whisper-large-v3", "language": ""},
 }
 
 
 class Store:
     def __init__(self, home=HOME):
         self.home = Path(home)
-        for d in ("skills", "sessions"):
+        for d in ("skills", "sessions", "plugins"):
             (self.home / d).mkdir(parents=True, exist_ok=True)
         self.cfg_path = self.home / "config.json"
         self.config = jload(self.cfg_path) or json.loads(json.dumps(DEFAULT_CONFIG))
@@ -203,6 +206,8 @@ class Cloud:
                 docs["skill/" + p.name] = p
         for p in (self.s.home / "sessions").glob("*.json"):
             docs["session/" + p.stem] = p
+        for p in (self.s.home / "plugins").glob("*.py"):
+            docs["plugin/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -211,7 +216,7 @@ class Cloud:
         kind, _, name = key.partition("/")
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
-        return {"skill": self.s.home / "skills" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+        return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
 
     def sync(self):
         if not self.online:
@@ -269,12 +274,195 @@ class Cloud:
             self.status = "synced"
             return changed
 
+    def watch(self, on_change, on_version=None, on_ws=None):
+        """Background thread: long-polls the server and syncs the moment anything changes elsewhere.
+        Never blocks the caller; survives network errors."""
+        def loop():
+            wscur = -1
+            while True:
+                if not self.online:
+                    time.sleep(5)
+                    continue
+                cur = (jload(self.state_path, {}) or {}).get("cursor", 0)
+                try:
+                    r = self.req("GET", f"/api/changes?cursor={cur}&ws={wscur}&wait=25", timeout=40)
+                except CloudError:
+                    time.sleep(10)
+                    continue
+                if on_version and r.get("version") and r["version"] != VERSION:
+                    on_version(r["version"])
+                if r.get("ws_changed") and on_ws:
+                    on_ws()
+                wscur = r.get("ws", wscur)
+                if r.get("changed"):
+                    n = self.sync()
+                    if n:
+                        on_change(n)
+        threading.Thread(target=loop, daemon=True, name="me-watch").start()
+
     def sync_bg(self, done=None):
         def run():
             n = self.sync()
             if done:
                 done(n)
         threading.Thread(target=run, daemon=True).start()
+
+
+WS_MAX_FILE = 1_000_000
+WS_SKIP_EXT = {".pyc", ".o", ".so", ".dll", ".exe", ".class", ".jar", ".zip", ".tar", ".gz", ".7z", ".rar", ".mp4", ".mov", ".avi", ".mkv",
+               ".mp3", ".wav", ".iso", ".dmg", ".bin", ".pt", ".onnx", ".safetensors", ".ckpt", ".sqlite", ".db"}
+
+
+def _ignore_rules(root):
+    rules = []
+    gi = Path(root) / ".gitignore"
+    if gi.exists():
+        for l in gi.read_text("utf-8", "replace").splitlines():
+            l = l.strip()
+            if l and not l.startswith(("#", "!")):
+                rules.append(l.rstrip("/").lstrip("/"))
+    return rules
+
+
+def ws_scan(root):
+    """Code-sized files of a project → {relpath: (sha1, mtime)}. Heavy/binary/ignored files are skipped."""
+    root = Path(root)
+    rules = _ignore_rules(root)
+    out = {}
+    for d, dirs, files in os.walk(root):
+        rel_d = os.path.relpath(d, root)
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not (x.startswith(".") and x not in (".github", ".vscode"))
+                   and not any(fnmatch.fnmatch(x, r) or fnmatch.fnmatch(os.path.normpath(os.path.join(rel_d, x)), r) for r in rules)]
+        for f in files:
+            rel = os.path.normpath(os.path.join(rel_d, f)).replace("\\", "/")
+            if Path(f).suffix.lower() in WS_SKIP_EXT or f.endswith(".conflict") or any(fnmatch.fnmatch(f, r) or fnmatch.fnmatch(rel, r) for r in rules):
+                continue
+            p = Path(d) / f
+            try:
+                st = p.stat()
+                if st.st_size > WS_MAX_FILE or not p.is_file():
+                    continue
+                out[rel] = (hashlib.sha1(p.read_bytes()).hexdigest(), st.st_mtime)
+            except OSError:
+                continue
+            if len(out) > 5000:
+                return out
+    return out
+
+
+class Workspaces:
+    """Project folders mirrored to the cloud so a session can continue on another machine or in the cloud runner.
+    3-way sync against the last synced state; on conflict the newer file wins."""
+
+    def __init__(self, store, cloud):
+        self.s, self.cloud = store, cloud
+        self.path = store.home / "workspaces.json"
+        self.lock = threading.Lock()
+        self.disabled = bool(os.environ.get("ME_WS_LOCAL"))  # cloud runner: files are already on the server
+
+    def _load(self):
+        return jload(self.path, {}) or {}
+
+    def _save(self, d):
+        jsave(self.path, d)
+
+    def for_dir(self, path):
+        path = os.path.abspath(path)
+        for wid, w in self._load().items():
+            if os.path.abspath(w["path"]) == path:
+                return wid
+        return None
+
+    def link(self, path, name=None):
+        name = name or Path(path).name or "project"
+        r = self.cloud.req("POST", "/api/ws", {"name": name})
+        d = self._load()
+        d[r["id"]] = {"path": os.path.abspath(path), "name": r["name"], "base": {}}
+        self._save(d)
+        return r["id"]
+
+    def attach(self, wid, path, name=""):
+        d = self._load()
+        d[wid] = {"path": os.path.abspath(path), "name": name or wid, "base": {}}
+        self._save(d)
+
+    def unlink(self, wid):
+        d = self._load()
+        d.pop(wid, None)
+        self._save(d)
+
+    def local_path(self, wid):
+        w = self._load().get(wid)
+        return w["path"] if w else None
+
+    def sync(self, wid, emit=None):
+        """Returns (pushed, pulled) or raises CloudError."""
+        if self.disabled or not self.cloud.online:
+            return 0, 0
+        with self.lock:
+            d = self._load()
+            w = d.get(wid)
+            if not w:
+                return 0, 0
+            root = Path(w["path"])
+            root.mkdir(parents=True, exist_ok=True)
+            base = w.get("base", {})
+            local = ws_scan(root)
+            remote = self.cloud.req("GET", f"/api/ws/{wid}/manifest")["files"]  # path -> [sha1, size, mtime]
+            push, dele, pull, rm_local = [], [], [], []
+            for path in set(local) | set(remote) | set(base):
+                L = local.get(path, (None, 0))
+                R = remote.get(path, [None, 0, 0])
+                B = base.get(path)
+                if L[0] == R[0]:
+                    if L[0]:
+                        base[path] = L[0]
+                    else:
+                        base.pop(path, None)
+                    continue
+                l_changed, r_changed = L[0] != B, R[0] != B
+                if l_changed and (not r_changed or L[1] >= R[2]):
+                    (push if L[0] else dele).append(path)
+                else:
+                    (pull if R[0] else rm_local).append(path)
+            batch, size = [], 0
+            for i, path in enumerate(push):
+                data = (root / path).read_bytes()
+                batch.append({"path": path, "b64": base64.b64encode(data).decode(), "mtime": local[path][1]})
+                size += len(data)
+                if size > 3_000_000 or i == len(push) - 1:
+                    self.cloud.req("POST", f"/api/ws/{wid}/files", {"put": batch, "delete": []}, timeout=120)
+                    batch, size = [], 0
+                base[path] = local[path][0]
+                if emit:
+                    emit(f"↑ {path}")
+            if dele:
+                self.cloud.req("POST", f"/api/ws/{wid}/files", {"put": [], "delete": dele})
+                for path in dele:
+                    base.pop(path, None)
+            for i in range(0, len(pull), 200):
+                got = self.cloud.req("POST", f"/api/ws/{wid}/get", {"paths": pull[i:i + 200]}, timeout=120)
+                for f in got["files"]:
+                    p = (root / f["path"]).resolve()
+                    if not str(p).startswith(str(root.resolve())):
+                        continue
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(base64.b64decode(f["b64"]))
+                    if f.get("mtime"):
+                        os.utime(p, (f["mtime"], f["mtime"]))
+                    base[f["path"]] = remote[f["path"]][0]
+                    if emit:
+                        emit(f"↓ {f['path']}")
+            for path in rm_local:
+                try:
+                    (root / path).unlink()
+                except OSError:
+                    pass
+                base.pop(path, None)
+            w["base"] = base
+            d[wid] = w
+            self._save(d)
+            return len(push) + len(dele), len(pull) + len(rm_local)
 
 
 # ───────────────────────────── provider ─────────────────────────────
@@ -719,6 +907,10 @@ TOOLS = [
     {"name": "grep", "description": "Regex search in files.",
      "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}},
                     "required": ["pattern"]}},
+    {"name": "web_search", "description": "Search the web; returns answer with sources.",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "web_fetch", "description": "Fetch URL as text.",
+     "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     {"name": "skill", "description": "Use a skill: no action → its guide+actions; else run action with args.",
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "action": {"type": "string"}, "args": {"type": "object"}},
                     "required": ["name"]}},
@@ -764,6 +956,192 @@ def run_shell(cmd, timeout, cancel):
     return clip(text, 30000) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")
 
 
+# ───────────────────────────── plugins ─────────────────────────────
+
+
+class PluginCtx:
+    """What a plugin tool receives: live UI events + cancellation."""
+
+    def __init__(self, emit, cancel, ask=None):
+        self.emit, self.cancel, self._ask = emit, cancel, ask
+
+    def log(self, text):
+        self.emit({"t": "log", "text": str(text)})
+
+    def status(self, text):
+        self.emit({"t": "status", "text": str(text)})
+
+    def progress(self, v, label="", n=None, total=None):
+        self.emit({"t": "progress", "v": v, "label": label, "n": n, "total": total})
+
+    def ask(self, q):
+        return self._ask(q) if self._ask else ""
+
+
+class Plugins:
+    """Plugins are trusted .py files in ~/.me/plugins, executed in-process at startup.
+    They get `plugin` (this registry) and `me` (this module — anything can be patched).
+      @plugin.tool("name", "description", {"arg": "string"}, confirm=False)  def fn(args, ctx) -> str
+      @plugin.command("name", "description")                                   def fn(tui, arg)
+      @plugin.on("key"|"event"|"startup"|"tick"|"status"|"system_prompt"|"before_tool")
+    """
+
+    def __init__(self):
+        self.tools, self.commands, self.hooks, self.loaded, self.errors = {}, {}, {}, {}, {}
+        self.store = self.tui = None
+
+    def tool(self, name, description, params=None, confirm=False, required=None):
+        def deco(fn):
+            props = {k: (v if isinstance(v, dict) else {"type": v}) for k, v in (params or {}).items()}
+            schema = {"name": name, "description": description,
+                      "parameters": {"type": "object", "properties": props, "required": required if required is not None else list(props)}}
+            self.tools[name] = {"fn": fn, "schema": schema, "confirm": confirm}
+            return fn
+        return deco
+
+    def command(self, name, description=""):
+        def deco(fn):
+            self.commands[name] = (fn, description)
+            return fn
+        return deco
+
+    def on(self, event):
+        def deco(fn):
+            self.hooks.setdefault(event, []).append(fn)
+            return fn
+        return deco
+
+    def emit(self, event, *a):
+        """Call hooks in order; first non-None result wins."""
+        for fn in self.hooks.get(event, []):
+            try:
+                r = fn(*a)
+            except Exception as e:
+                self.errors[getattr(fn, "__module__", "?")] = f"{event}: {e}"
+                continue
+            if r is not None:
+                return r
+        return None
+
+    def collect(self, event, *a):
+        out = []
+        for fn in self.hooks.get(event, []):
+            try:
+                r = fn(*a)
+                if r:
+                    out.append(r)
+            except Exception as e:
+                self.errors[getattr(fn, "__module__", "?")] = f"{event}: {e}"
+        return out
+
+    def load(self, store):
+        self.store = store
+        d = store.home / "plugins"
+        disabled = set(store.config["settings"].get("disabled_plugins", []))
+        for p in sorted(d.glob("*.py")) if d.exists() else []:
+            if p.stem in disabled:
+                continue
+            g = {"__name__": "me_plugin_" + p.stem, "__file__": str(p), "plugin": self, "me": sys.modules[__name__]}
+            try:
+                exec(compile(p.read_text("utf-8"), str(p), "exec"), g)
+                self.loaded[p.stem] = g
+            except Exception as e:
+                self.errors[p.stem] = f"{type(e).__name__}: {e}"
+
+    def tool_schemas(self):
+        return [t["schema"] for t in self.tools.values()]
+
+
+PLUGINS = Plugins()
+
+
+# ───────────────────────────── web tools ─────────────────────────────
+
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+
+
+def html_text(s):
+    s = re.sub(r"(?is)<(script|style|noscript|svg|head|nav|footer)\b.*?</\1>", "", s)
+    s = re.sub(r"(?i)<h([1-6])[^>]*>", lambda m: "\n" + "#" * int(m.group(1)) + " ", s)
+    s = re.sub(r"(?i)<li[^>]*>", "\n- ", s)
+    s = re.sub(r"(?i)<(br|/p|/div|/h\d|/tr|/pre|/section|/article)[^>]*>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    import html as _h
+    s = _h.unescape(s)
+    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t]+", " ", s)).strip()
+
+
+def web_fetch(url):
+    try:
+        r = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/json,text/plain,*/*"})
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            ct = resp.headers.get("Content-Type", "")
+            data = resp.read(5_000_000)
+    except Exception as e:
+        return False, f"error: {e}", None
+    if "pdf" in ct:
+        tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
+        tmp.write_bytes(data)
+        return True, clip(_pdf_text(tmp), 40000), None
+    text = data.decode("utf-8", "replace")
+    if "html" in ct or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        text = html_text(text)
+    return True, clip(text, 40000), None
+
+
+def deepseek_key(cfg):
+    k = (cfg.get("search") or {}).get("deepseek_key")
+    if k:
+        return k
+    for p in cfg.get("providers", {}).values():
+        if "deepseek.com" in p.get("base_url", "") and p.get("api_key"):
+            return p["api_key"]
+    return None
+
+
+def web_search(cfg, query, cancel=None):
+    key = deepseek_key(cfg)
+    if key:
+        body = {"model": (cfg.get("search") or {}).get("model") or "deepseek-v4-flash", "input": query,
+                "tools": [{"type": "web_search"}], "tool_choice": {"type": "web_search"}, "max_output_tokens": 4000}
+        try:
+            r = urllib.request.Request("https://api.deepseek.com/responses", data=json.dumps(body).encode(), method="POST",
+                                       headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+            with urllib.request.urlopen(r, timeout=180) as resp:
+                j = json.loads(resp.read())
+            msgs = [o for o in j.get("output", []) if o.get("type") == "message"]
+            final = [m for m in msgs if m.get("phase") == "final_answer"] or msgs[-1:]
+            ans = "".join(c.get("text", "") for m in final for c in m.get("content", []) if c.get("type") == "output_text")
+            urls = []
+            for m in final:
+                for c in m.get("content", []):
+                    urls += [a.get("url") for a in c.get("annotations", []) if a.get("url")]
+            for o in j.get("output", []):
+                if o.get("type") == "web_search_call" and (o.get("action") or {}).get("url"):
+                    urls.append(o["action"]["url"])
+            src = "\n".join(f"- {u}" for u in dict.fromkeys(urls))
+            if ans.strip():
+                return True, ans + (f"\n\nSources:\n{src}" if src else ""), None
+        except Exception:
+            pass  # fall back to DuckDuckGo
+    try:
+        import urllib.parse as up
+        r = urllib.request.Request("https://html.duckduckgo.com/html/?q=" + up.quote(query), headers={"User-Agent": UA})
+        page = urllib.request.urlopen(r, timeout=30).read().decode("utf-8", "replace")
+    except Exception as e:
+        return False, f"search failed: {e}", None
+    out = []
+    for m in re.finditer(r'class="result__a" href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</a>', page, re.S):
+        href = m.group(1)
+        u = up.parse_qs(up.urlparse(href).query).get("uddg", [href])[0]
+        out.append(f"- {html_text(m.group(2))} — {u}\n  {html_text(m.group(3))}")
+        if len(out) >= 8:
+            break
+    return bool(out), "\n".join(out) or "no results", None
+
+
+# ───────────────────────────── toolbox ─────────────────────────────
+
 class ToolBox:
     def __init__(self, store, skills):
         self.s, self.skills = store, skills
@@ -774,6 +1152,10 @@ class ToolBox:
             return a.get("path", "")
         if name == "bash":
             return a.get("cmd", "")
+        if name == "web_search":
+            return a.get("query", "")
+        if name == "web_fetch":
+            return a.get("url", "")
         if name in ("ls", "grep"):
             return a.get("pattern", "") + (f"  in {a['path']}" if a.get("path") else "")
         if name == "skill":
@@ -785,6 +1167,8 @@ class ToolBox:
             return False
         if name in ("write", "edit", "bash"):
             return True
+        if name in PLUGINS.tools:
+            return PLUGINS.tools[name].get("confirm", False)
         if name == "skill" and a.get("action"):
             sk = self.skills.enabled().get(a.get("name"), {})
             return sk.get("actions", {}).get(a["action"], {}).get("confirm", False)
@@ -828,6 +1212,15 @@ class ToolBox:
             return True, self._grep(a["pattern"], a.get("path") or ".", a.get("glob")), None
         if name == "skill":
             return self._skill(a, emit, cancel, ask)
+        if name == "web_search":
+            emit({"t": "status", "text": "searching"})
+            return web_search(self.s.config, a["query"], cancel)
+        if name == "web_fetch":
+            return web_fetch(a["url"])
+        tool = PLUGINS.tools.get(name)
+        if tool:
+            r = tool["fn"](a, PluginCtx(emit, cancel, ask))
+            return (True, r, None) if isinstance(r, str) else (bool(r[0]), r[1], None)
         return False, f"unknown tool {name}", None
 
     @staticmethod
@@ -878,9 +1271,24 @@ class ToolBox:
 
 # ───────────────────────────── agent ─────────────────────────────
 
-SYSTEM = """You are me, a fast terse coding agent in the user's terminal.
+SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | date: {date}
-Use tools to act; read before edit; verify your work. Be brief; markdown ok.{skills}{project}{user}"""
+
+Work:
+- Understand first: read the relevant code before changing it. Ask only when truly ambiguous.
+- Split work into small steps. For 3+ steps state a short plan, then execute it step by step.
+- Build what is needed now, but keep it open for the future: clear modules, small functions, no hardcoded hacks.
+- Match the project's style, naming and libraries. No new dependencies without reason.
+- Verify: run tests, build, or the code itself. Fix what you broke. Never claim untested success.
+- Prefer edit over rewrite. Read several files at once when independent.
+- web_search for current facts/APIs, web_fetch for docs and URLs.
+- Confirm before destructive or irreversible actions (deleting data, force-push, production).
+Design (UI work):
+- No emoji unless asked. Icons: custom inline SVG with one consistent stroke style.
+- Restrained palette: neutral + one accent + one semantic color; consistent spacing scale; clear type hierarchy; light and dark.
+- Handle empty, loading and error states; make it responsive.
+Reply: concise, no filler. Say what changed and how you verified it.{skills}{project}{user}"""
+
 
 
 class Agent:
@@ -889,7 +1297,12 @@ class Agent:
     `confirm(name, args) -> bool` and `ask(question) -> str` are provided by the frontend."""
 
     def __init__(self, store, emit, confirm=None, ask=None):
-        self.s, self.emit = store, emit
+        self.s = store
+
+        def _emit(e):
+            PLUGINS.collect("event", e)
+            emit(e)
+        self.emit = _emit
         self.confirm = confirm or (lambda n, a: True)
         self.ask = ask
         self.skills = Skills(store)
@@ -909,6 +1322,7 @@ class Agent:
                 project = f"\n\n# {name}\n" + p.read_text("utf-8", "replace")[:8000]
                 break
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
+        user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              skills=skills, project=project, user=user)
 
@@ -929,7 +1343,7 @@ class Agent:
         prov = Provider(m, self.s.provider(m))
         try:
             while True:
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], TOOLS, self.emit, self.cancel)
+                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], TOOLS + PLUGINS.tool_schemas(), self.emit, self.cancel)
                 tin += usage["in"]
                 tout += usage["out"]
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
@@ -947,10 +1361,16 @@ class Agent:
                     except ValueError:
                         args = None
                     tid = tc["id"]
-                    self.emit({"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})})
+                    ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+                    if name == "skill" and args:
+                        sk = self.skills.all().get(args.get("name"), {})
+                        ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
+                    self.emit(ev)
                     t1 = time.time()
                     if args is None:
                         ok, out, img = False, "error: arguments were not valid JSON", None
+                    elif isinstance(PLUGINS.emit("before_tool", name, args), str):
+                        ok, out, img = False, PLUGINS.emit("before_tool", name, args), None
                     elif self.tools.needs_confirm(name, args) and not self.confirm(name, args):
                         ok, out, img = False, "user denied this action. ask what to do instead.", None
                     else:
@@ -1052,7 +1472,18 @@ def run_rpc(store):
         ev.wait()
         return waits.pop(rid)[1]
 
-    ag = Agent(store, emit, lambda n, a: bool(wait("confirm", name=n, args=a)), lambda q: wait("ask", text=q) or "")
+    yolo = bool(os.environ.get("ME_YOLO"))  # cloud runner: sandboxed, so tools run without asking
+    cloud = Cloud(store)
+
+    def emit_sync(e):
+        emit(e)
+        if e["type"] == "turn_end" and cloud.online:
+            threading.Thread(target=cloud.sync, daemon=True).start()
+
+    ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: bool(wait("confirm", name=n, args=a))),
+               lambda q: wait("ask", text=q) or "")
+    if os.environ.get("ME_WS_ID"):
+        ag.session["ws"] = os.environ["ME_WS_ID"]
     emit({"type": "ready", "version": VERSION, "session": ag.session["id"]})
     for line in sys.stdin:
         try:
@@ -1068,10 +1499,211 @@ def run_rpc(store):
             waits[cmd["id"]][1] = cmd.get("ok") if t == "confirm" else cmd.get("text")
             waits[cmd["id"]][0].set()
         elif t == "load":
-            emit({"type": "loaded", "ok": bool(ag.load(cmd["id"]))})
+            if not ag.load(cmd["id"]) and cloud.online:
+                cloud.sync()
+                ag.load(cmd["id"])
+            ag.session["cwd"] = os.getcwd()
+            if os.environ.get("ME_WS_ID"):
+                ag.session["ws"] = os.environ["ME_WS_ID"]
+            emit({"type": "loaded", "ok": True, "session": ag.session["id"], "title": ag.session.get("title", "")})
         elif t == "new":
             ag.session = new_session()
-            emit({"type": "loaded", "ok": True})
+            if os.environ.get("ME_WS_ID"):
+                ag.session["ws"] = os.environ["ME_WS_ID"]
+            emit({"type": "loaded", "ok": True, "session": ag.session["id"]})
+        elif t == "sync":
+            cloud.sync()
+            store.config = jload(store.cfg_path) or store.config
+            emit({"type": "synced"})
+
+
+# ───────────────────────────── web ui server ─────────────────────────────
+
+WEBUI = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"theme-color\" content=\"#0b0c10\">\n<title>me</title>\n<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E\">\n<style>\n:root{--bg:#0b0c10;--bg2:#111319;--bg3:#171a23;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--warn:#ffb454;--user:#e7c66b;\n  --mono:ui-monospace,\"JetBrains Mono\",SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif}\n:root[data-theme=\"light\"]{--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}\n@media (prefers-color-scheme: light){:root:not([data-theme=\"dark\"]){--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}}\n*{box-sizing:border-box;margin:0;padding:0}\nhtml,body{height:100%;background:var(--bg);color:var(--fg);font:14.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}\nbutton{font:inherit;color:inherit;background:none;border:none;cursor:pointer}\nsvg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}\n.app{display:grid;grid-template-columns:260px 1fr;height:100%}\naside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n.brand{display:flex;align-items:center;gap:10px;padding:16px;font:700 17px var(--mono)}\n.brand i{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}\n.brand small{font:500 11px var(--mono);color:var(--dim);margin-left:auto;padding:2px 7px;border:1px solid var(--line);border-radius:6px}\n.newbtn{margin:0 12px 10px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--fg)}\n.newbtn:hover{background:var(--bg2)}\n.slist{flex:1;overflow:auto;padding:0 8px 12px}\n.slist .lbl{font:11px var(--mono);color:var(--dim);padding:10px 8px 6px;text-transform:uppercase;letter-spacing:.5px}\n.si{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}\n.si:hover{background:var(--bg2);color:var(--fg)}.si.on{background:var(--bg3);color:var(--fg)}\n.side-foot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}\n.side-foot a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px}\nmain{display:flex;flex-direction:column;min-width:0;min-height:0}\nheader{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);min-height:52px}\nheader .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}\n.ib.menu{display:none}\n.pill{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:5px 9px;white-space:nowrap}\n.pill:hover{color:var(--fg)}\n#chat{flex:1;overflow:auto;scroll-behavior:smooth}\n.inner{max-width:820px;margin:0 auto;padding:22px 18px 30px}\n.empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--dim)}\n.empty h2{font:700 34px var(--mono);letter-spacing:-1.5px;color:var(--fg);margin-bottom:6px}\n.empty h2 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}\n.msg{margin:18px 0}\n.msg.user{display:flex;justify-content:flex-end}\n.msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}\n.md{word-break:break-word}\n.md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}\n.md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}\n.md code{font:12.5px var(--mono);background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--b)}\n.md pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.md pre .bar{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line)}\n.md pre code{display:block;background:none;border:none;padding:12px;overflow-x:auto;color:var(--fg);white-space:pre}\n.md a{color:var(--a)}.md blockquote{border-left:3px solid var(--faint);padding-left:12px;color:var(--dim)}\n.md table{border-collapse:collapse;margin:8px 0;font-size:13.5px}.md td,.md th{border:1px solid var(--line);padding:5px 9px}\n.think{font-size:13px;color:var(--dim);margin:6px 0}\n.think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;font-style:italic}\n.think pre{white-space:pre-wrap;font:12.5px/1.55 var(--sans);font-style:italic;margin:6px 0 0 22px;max-height:240px;overflow:auto}\n.tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}\n.tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}\n.tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}\n.tool .h .t{color:var(--faint)}\n.tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}\n.tool.closed .body,.tool .body:empty{display:none}\n.tool .st{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.tool .log{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.add{color:var(--ok)}.del{color:var(--err)}\n.pbar{height:6px;border-radius:4px;background:var(--line);margin:0 12px 10px;overflow:hidden}\n.pbar i{display:block;height:100%;background:var(--sk,var(--a));transition:width .2s}\n.pbar.ind i{width:30%!important;animation:ind 1.1s ease-in-out infinite}\n@keyframes ind{0%{margin-left:-30%}100%{margin-left:100%}}\n.skill{border-color:color-mix(in srgb,var(--sk) 45%,var(--line))}\n.skill .h b{color:var(--sk)}\n.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--a);border-radius:50%;animation:sp .8s linear infinite;flex-shrink:0}\n@keyframes sp{to{transform:rotate(360deg)}}\n.stats{font:12px var(--mono);color:var(--dim);display:flex;align-items:center;gap:6px;margin:4px 0 22px}\n.stats svg{color:var(--ok)}\n.info{font:12.5px var(--mono);color:var(--dim);margin:8px 0}.info.err{color:var(--err)}.info.warn{color:var(--warn)}\n.confirm{border:1px solid var(--warn);border-radius:10px;padding:12px;margin:10px 0}\n.confirm pre{font:12px var(--mono);white-space:pre-wrap;color:var(--dim);margin:8px 0;max-height:200px;overflow:auto}\n.confirm .btns{display:flex;gap:8px}\n.btn{padding:7px 13px;border-radius:8px;font:500 12.5px var(--mono);background:var(--a);color:#fff}\n.btn.ghost{background:none;color:var(--dim);border:1px solid var(--line)}\n.working{display:flex;align-items:center;gap:8px;font:12.5px var(--mono);color:var(--dim);margin:10px 0}\n.shimmer{background:linear-gradient(90deg,var(--dim) 30%,var(--fg) 50%,var(--dim) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}\n@keyframes sh{from{background-position:150% 0}to{background-position:-50% 0}}\n.composer{padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}\n.box{max-width:820px;margin:0 auto;border:1px solid var(--line);border-radius:14px;background:var(--bg2);transition:border-color .15s}\n.box:focus-within{border-color:var(--a)}\ntextarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--fg);font:15px/1.5 var(--sans);padding:12px 14px 4px;max-height:220px}\n.row{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}\n.ib{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--dim)}\n.ib:hover{background:var(--bg3);color:var(--fg)}\n.ib.rec{background:var(--err);color:#fff;animation:pulse 1s infinite}\n@keyframes pulse{50%{opacity:.6}}\n.send{background:var(--a);color:#fff}.send:hover{background:var(--a);filter:brightness(1.1);color:#fff}\n.send:disabled{opacity:.35;cursor:default}\n.spacer{flex:1}\n.status{max-width:820px;margin:8px auto 0;display:flex;gap:14px;align-items:center;font:11.5px var(--mono);color:var(--dim);flex-wrap:wrap}\n.ctx{display:flex;align-items:center;gap:6px}.ctx .bar{width:70px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}.ctx .bar i{display:block;height:100%;background:var(--ok)}\n.popup{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;padding:16px;z-index:20}\n.popup>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:8px;width:min(420px,100%);max-height:70vh;overflow:auto}\n.popup button{display:flex;width:100%;text-align:left;padding:9px 12px;border-radius:8px;gap:10px;align-items:center}\n.popup button:hover{background:var(--bg2)}.popup .d{color:var(--dim);font-size:12px;margin-left:auto}\n.hidden{display:none!important}\n@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:fixed;inset:0 25% 0 0;z-index:15;transform:translateX(-102%);transition:transform .2s;box-shadow:0 0 60px rgba(0,0,0,.5)}\n  aside.open{transform:none}.ib.menu{display:grid}.inner{padding:16px 14px}.composer{padding:0 10px 10px}}\n</style>\n</head>\n<body>\n<div class=\"app\">\n<aside id=\"side\">\n  <div class=\"brand\"><i></i>me<small id=\"mode\"></small></div>\n  <button class=\"newbtn\" onclick=\"newChat()\"><svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>New chat</button>\n  <div class=\"slist\" id=\"slist\"></div>\n  <div class=\"side-foot\"><a id=\"acct\" href=\"/account\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg><span id=\"who\">account</span></a>\n    <span class=\"spacer\"></span><button class=\"ib\" onclick=\"toggleTheme()\" title=\"theme\"><svg viewBox=\"0 0 24 24\"><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg></button></div>\n</aside>\n<main>\n  <header>\n    <button class=\"ib menu\" onclick=\"side.classList.toggle('open')\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 12h16M4 17h16\"/></svg></button>\n    <div class=\"title\" id=\"title\">New chat</div>\n    <button class=\"pill\" id=\"wsPill\" title=\"workspace\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg><span id=\"ws\">\u2014</span></button>\n  </header>\n  <div id=\"chat\"><div class=\"inner\" id=\"log\"></div></div>\n  <div class=\"composer\">\n    <div class=\"box\">\n      <textarea id=\"input\" rows=\"1\" placeholder=\"Ask anything\u2026\"></textarea>\n      <div class=\"row\">\n        <button class=\"pill\" id=\"modelBtn\" onclick=\"pickModel()\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2\"/></svg><span id=\"model\">model</span></button>\n        <span class=\"spacer\"></span>\n        <button class=\"ib\" id=\"mic\" title=\"hold to talk\"><svg viewBox=\"0 0 24 24\"><rect x=\"9\" y=\"3\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5 11a7 7 0 0 0 14 0M12 18v3\"/></svg></button>\n        <button class=\"ib send\" id=\"send\" onclick=\"sendOrStop()\" disabled><svg viewBox=\"0 0 24 24\" id=\"sendIcon\"><path d=\"M12 19V5M5 12l7-7 7 7\"/></svg></button>\n      </div>\n    </div>\n    <div class=\"status\"><span class=\"ctx\" id=\"ctx\"></span><span id=\"tok\"></span><span id=\"sync\"></span></div>\n  </div>\n</main>\n</div>\n<div class=\"popup hidden\" id=\"popup\" onclick=\"if(event.target===this)this.classList.add('hidden')\"><div id=\"pbody\"></div></div>\n<script>\nconst MODE = \"__MODE__\";\nconst $ = id => document.getElementById(id);\nconst side = $(\"side\");\nconst esc = s => String(s ?? \"\").replace(/[&<>\"]/g, c => ({\"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\"})[c]);\nconst human = n => !n ? \"0\" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(\".0\", \"\") + \"k\" : (n / 1e6).toFixed(1).replace(\".0\", \"\") + \"M\";\nconst dur = s => s < 60 ? s.toFixed(1) + \"s\" : Math.floor(s / 60) + \"m\" + String(Math.floor(s % 60)).padStart(2, \"0\") + \"s\";\nconst COLORS = {red:\"#ff6b7a\",green:\"#5ad18a\",blue:\"#6ba6ff\",magenta:\"#d27cff\",cyan:\"#4fd1c5\",yellow:\"#e7c66b\",orange:\"#ffb454\",purple:\"#8b7cff\",pink:\"#ff8fc7\"};\nconst I = {\n  check: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--ok)\"><path d=\"M5 12l5 5 9-11\"/></svg>',\n  x: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--err)\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg>',\n  stop: '<path d=\"M7 7h10v10H7z\" fill=\"currentColor\"/>', up: '<path d=\"M12 19V5M5 12l7-7 7 7\"/>',\n  think: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z\"/></svg>',\n};\nlet token = localStorage.getItem(\"me_token\") || \"\", base = \"\", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;\n\n// \u2500\u2500\u2500 transport: identical endpoints for local (`me web`) and cloud (/app) \u2500\u2500\u2500\nasync function api(path, body, method) {\n  const h = {\"Content-Type\": \"application/json\"};\n  if (token) h.Authorization = \"Bearer \" + token;\n  const r = await fetch(path, {method: method || (body !== undefined ? \"POST\" : \"GET\"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});\n  const j = await r.json().catch(() => ({}));\n  if (r.status === 401 && MODE === \"cloud\") { location.href = \"/account#cloud\"; throw new Error(\"login\"); }\n  if (!r.ok) throw new Error(j.detail || r.statusText);\n  return j;\n}\nconst A = {\n  async boot() {\n    if (MODE === \"local\") {\n      const k = new URLSearchParams(location.search).get(\"k\"); if (k) { token = k; localStorage.setItem(\"me_token\", k); }\n      base = \"/api/agent\"; return api(base + \"/state\");\n    }\n    if (!token) { location.href = \"/account#cloud\"; return; }\n    const q = new URLSearchParams(location.search);\n    let w;\n    if (q.get(\"s\") || q.get(\"ws\")) w = await api(\"/api/cloud\", {session: q.get(\"s\"), ws: q.get(\"ws\")});\n    else w = (await api(\"/api/cloud\"))[0] || await api(\"/api/cloud\", {});\n    return A.attach(w);\n  },\n  async attach(w) { base = \"/api/cloud/\" + w.id; after = 0; return A.state(w); },\n  async state(w) {\n    if (MODE === \"local\") return api(base + \"/state\");\n    const [cfg, sessions, me] = await Promise.all([api(\"/api/doc?key=config\").then(d => JSON.parse(d.content)).catch(() => ({})), api(\"/api/sessions\"), api(\"/api/me\")]);\n    let session = null;\n    if (w && w.session) session = await api(\"/api/doc?key=\" + encodeURIComponent(\"session/\" + w.session)).then(d => JSON.parse(d.content)).catch(() => null);\n    return {mode: \"cloud\", user: me.username, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w};\n  },\n  async load(id) {\n    if (MODE === \"local\") { await api(base + \"/load\", {id}); return api(base + \"/state\"); }\n    const w = await api(\"/api/cloud\", {session: id}); return A.attach(w);\n  },\n  async newChat() { await api(base + \"/new\", {}); return A.state(state.worker); },\n  async setModel(name) {\n    if (MODE === \"local\") return api(base + \"/model\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.model = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  voice: (blob) => fetch(MODE === \"local\" ? \"/api/agent/voice\" : \"/api/voice\", {method: \"POST\", headers: {\"Content-Type\": blob.type, ...(token ? {Authorization: \"Bearer \" + token} : {})}, body: blob}).then(r => r.json()),\n};\n\n// \u2500\u2500\u2500 markdown \u2500\u2500\u2500\nfunction md(src) {\n  const blocks = [];\n  src = src.replace(/```(\\w*)\\n?([\\s\\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\\u0000${blocks.length - 1}\\u0000`; });\n  let h = esc(src)\n    .replace(/^### (.*)$/gm, \"<h3>$1</h3>\").replace(/^## (.*)$/gm, \"<h2>$1</h2>\").replace(/^# (.*)$/gm, \"<h1>$1</h1>\")\n    .replace(/^&gt; (.*)$/gm, \"<blockquote>$1</blockquote>\")\n    .replace(/`([^`\\n]+)`/g, \"<code>$1</code>\").replace(/\\*\\*([^*]+)\\*\\*/g, \"<b>$1</b>\").replace(/(^|\\W)\\*([^*\\n]+)\\*/g, \"$1<i>$2</i>\")\n    .replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  h = h.replace(/(?:^|\\n)((?:[-*] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ul>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.slice(2) + \"</li>\").join(\"\") + \"</ul>\\n\");\n  h = h.replace(/(?:^|\\n)((?:\\d+[.)] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ol>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.replace(/^\\d+[.)] /, \"\") + \"</li>\").join(\"\") + \"</ol>\\n\");\n  h = h.split(/\\n{2,}/).map(p => /^\\s*<(h\\d|ul|ol|blockquote|\\u0000)/.test(p) || p.startsWith(\"\\u0000\") ? p : \"<p>\" + p.replace(/\\n/g, \"<br>\") + \"</p>\").join(\"\");\n  return h.replace(/\\u0000(\\d+)\\u0000/g, (_, i) => `<pre><div class=\"bar\"><span>${esc(blocks[i][0] || \"code\")}</span><button onclick=\"navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)\">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);\n}\n\n// \u2500\u2500\u2500 rendering \u2500\u2500\u2500\nconst log = $(\"log\"), chat = $(\"chat\");\nlet stick = true;\nchat.addEventListener(\"scroll\", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);\nfunction scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }\nlet workEl = null;\nfunction el(html) { const d = document.createElement(\"div\"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }\nfunction clearLog() { log.innerHTML = \"\"; live = {}; cur = {}; workEl = null; }\nfunction emptyState() {\n  log.innerHTML = `<div class=\"empty\" style=\"min-height:60vh\"><div><h2>what are we <span>building?</span></h2><p>${MODE === \"cloud\" ? \"Runs in your cloud sandbox \u00b7 files sync to all your machines\" : \"Running locally on this machine\"}</p></div></div>`;\n}\nfunction userMsg(t) { if (log.querySelector(\".empty\")) log.innerHTML = \"\"; el(`<div class=\"msg user\"><div class=\"bub\">${esc(t)}</div></div>`); }\nfunction toolCard(name, label, args, skill) {\n  const isSkill = name === \"skill\" && args && args.action;\n  const color = isSkill ? (COLORS[skill?.color] || \"var(--a)\") : \"var(--a)\";\n  const title = isSkill ? `${esc(args.name)} \u00b7 ${esc(args.action)}` : esc(name);\n  return el(`<div class=\"tool ${isSkill ? \"skill\" : \"\"} closed\" style=\"--sk:${color}\"><div class=\"h\" onclick=\"this.parentNode.classList.toggle('closed')\"><span class=\"ic\"><span class=\"spin\"></span></span><b>${title}</b><span class=\"lab\">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class=\"t\"></span></div><div class=\"st hidden\"></div><div class=\"pbar hidden\"><i></i></div><div class=\"log hidden\"></div><div class=\"body\"></div></div>`);\n}\nfunction diffHtml(t) { return t.split(\"\\n\").map(l => `<span class=\"${l[0] === \"+\" ? \"add\" : l[0] === \"-\" ? \"del\" : \"\"}\">${esc(l)}</span>`).join(\"\\n\"); }\nfunction onEvent(e) {\n  const t = e.type;\n  if (t === \"user\") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }\n  if (t === \"turn_start\") { busy = true; turnT0 = Date.now(); setBusy(); return; }\n  if (t === \"reasoning\") {\n    if (!cur.think) { cur.think = el(`<details class=\"think\"><summary>${I.think}<span class=\"shimmer\">thinking\u2026</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }\n    cur.think.querySelector(\"pre\").textContent += e.text; scroll(); return;\n  }\n  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector(\"summary span\").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };\n  if (t === \"text\") {\n    endThink();\n    if (!cur.text) { cur.text = el(`<div class=\"msg md\"></div>`); cur.raw = \"\"; }\n    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;\n  }\n  if (t === \"tool_start\") {\n    endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;\n    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;\n  }\n  if (t === \"tool_event\") {\n    const c = live[e.id]; if (!c) return;\n    if (e.t === \"status\") { const s = c.querySelector(\".st\"); s.classList.remove(\"hidden\"); s.textContent = e.text; }\n    else if (e.t === \"progress\") { const p = c.querySelector(\".pbar\"); p.classList.remove(\"hidden\"); p.classList.toggle(\"ind\", e.v == null); if (e.v != null) p.firstChild.style.width = Math.round(e.v * 100) + \"%\"; }\n    else if (e.t === \"diff\" && e.text.trim()) { c.querySelector(\".body\").innerHTML = diffHtml(e.text); c.classList.remove(\"closed\"); }\n    else { const l = c.querySelector(\".log\"); l.classList.remove(\"hidden\"); l.textContent = (\"\u203a \" + e.text + \"\\n\" + l.textContent).split(\"\\n\").slice(0, 3).join(\"\\n\"); }\n    scroll(); return;\n  }\n  if (t === \"tool_end\") {\n    const c = live[e.id]; if (!c) return; delete live[e.id];\n    c.querySelector(\".ic\").innerHTML = e.ok ? I.check : I.x; c.querySelector(\".t\").textContent = dur(e.time);\n    c.querySelectorAll(\".st,.pbar,.log\").forEach(x => x.classList.add(\"hidden\"));\n    const b = c.querySelector(\".body\"); if (!b.innerHTML) b.textContent = (e.output || \"\").slice(0, 20000);\n    if (!e.ok) c.classList.remove(\"closed\");\n    return;\n  }\n  if (t === \"confirm\") {\n    const c = el(`<div class=\"confirm\"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class=\"btns\"><button class=\"btn\">allow</button><button class=\"btn ghost\">deny</button></div></div>`);\n    const [y, n] = c.querySelectorAll(\"button\");\n    y.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: true}); c.remove(); };\n    n.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: false}); c.remove(); };\n    return;\n  }\n  if (t === \"usage\") { state.ctx = e.ctx; renderStatus(e.in, e.out); return; }\n  if (t === \"error\") { el(`<div class=\"info ${e.text === \"interrupted\" ? \"warn\" : \"err\"}\">${esc(e.text)}</div>`); return; }\n  if (t === \"turn_end\") {\n    endThink(); busy = false; cur = {}; setBusy();\n    el(`<div class=\"stats\">${I.check}${dur(e.time)} \u00b7 \u2191 ${human(e.in)} \u2193 ${human(e.out)} \u00b7 ${human(e.in + e.out)} tokens</div>`);\n    state.ctx = e.ctx; renderStatus(); refreshSessions(); return;\n  }\n  if (t === \"loaded\" && e.title) $(\"title\").textContent = e.title;\n  if (t === \"exit\") { el(`<div class=\"info warn\">sandbox stopped \u2014 send a message to restart</div>`); busy = false; setBusy(); }\n}\nfunction renderHistory(s) {\n  clearLog();\n  if (!s || !s.messages || !s.messages.length) return emptyState();\n  const txt = c => Array.isArray(c) ? c.filter(x => x.type === \"text\").map(x => x.text).join(\" \") : (c || \"\");\n  const outs = {};\n  s.messages.forEach(m => { if (m.role === \"tool\") outs[m.tool_call_id] = m.content; });\n  s.messages.forEach(m => {\n    if (m.role === \"user\" && txt(m.content) !== \"(images from read)\") userMsg(txt(m.content));\n    else if (m.role === \"assistant\") {\n      if (m.content) el(`<div class=\"msg md\">${md(m.content)}</div>`);\n      (m.tool_calls || []).forEach(tc => {\n        let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}\n        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || \"\", a);\n        c.querySelector(\".ic\").innerHTML = I.check; c.querySelector(\".body\").textContent = String(outs[tc.id] || \"\").slice(0, 8000);\n      });\n    }\n  });\n  $(\"title\").textContent = s.title || \"Chat\";\n  setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);\n}\nfunction renderStatus(tin, tout) {\n  const m = (state.config?.models || []).find(x => x.name === state.config?.model);\n  $(\"model\").textContent = m ? m.name + (m.effort ? \" \u00b7 \" + m.effort : \"\") : \"no model\";\n  const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;\n  const col = f < .6 ? \"var(--ok)\" : f < .85 ? \"var(--warn)\" : \"var(--err)\";\n  $(\"ctx\").innerHTML = ctx ? `ctx <span class=\"bar\"><i style=\"width:${(f * 100).toFixed(1)}%;background:${col}\"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;\n  const u = state.session?.usage || {};\n  $(\"tok\").textContent = tin !== undefined ? `this task \u2191${human(tin)} \u2193${human(tout)}` : `session \u2191${human(u.in)} \u2193${human(u.out)}`;\n  $(\"ws\").textContent = state.ws || (MODE === \"local\" ? (state.cwd || \"local\").split(/[\\\\/]/).pop() : \"cloud\");\n}\nfunction renderSessions() {\n  const ss = state.sessions || [], sid = state.session?.id;\n  const groups = {};\n  ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;\n    const g = age < 1 ? \"Today\" : age < 7 ? \"This week\" : \"Older\"; (groups[g] ??= []).push(s); });\n  $(\"slist\").innerHTML = Object.entries(groups).map(([g, l]) => `<div class=\"lbl\">${g}</div>` + l.map(s =>\n    `<button class=\"si ${s.id === sid ? \"on\" : \"\"}\" onclick=\"loadSession('${esc(s.id)}')\" title=\"${esc(s.cwd || \"\")}\">${esc(s.title || \"(untitled)\")}</button>`).join(\"\")).join(\"\") || '<div class=\"lbl\">no chats yet</div>';\n}\nasync function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }\nfunction setBusy() {\n  $(\"sendIcon\").innerHTML = busy ? I.stop : I.up;\n  $(\"send\").disabled = !busy && !$(\"input\").value.trim();\n  if (busy && (!workEl || workEl.parentNode !== log)) {\n    workEl = document.createElement(\"div\"); workEl.className = \"working\";\n    workEl.innerHTML = '<span class=\"spin\"></span><span class=\"shimmer\">working\u2026</span><span class=\"el\"></span>'; log.appendChild(workEl); scroll();\n  }\n  if (!busy && workEl) { workEl.remove(); workEl = null; }\n}\nsetInterval(() => { const w = document.querySelector(\".working .el\"); if (w && busy) w.textContent = dur((Date.now() - turnT0) / 1000); }, 200);\n\n// \u2500\u2500\u2500 actions \u2500\u2500\u2500\nasync function poll() {\n  const my = ++polling;\n  while (my === polling) {\n    try {\n      const r = await api(`${base}/events?after=${after}`);\n      if (my !== polling) return;\n      for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }\n      if (r.state) { busy = r.state.busy; setBusy(); }\n    } catch (e) {\n      if (MODE === \"cloud\" && /no such cloud session/.test(e.message)) { const w = await api(\"/api/cloud\", {session: state.session?.id}); await A.attach(w); continue; }\n      await new Promise(r => setTimeout(r, 2000));\n    }\n  }\n}\nasync function apply(s, history = true) {\n  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();\n  $(\"mode\").textContent = MODE === \"cloud\" ? \"cloud\" : \"local\";\n  $(\"who\").textContent = s.user || (MODE === \"local\" ? \"local\" : \"account\");\n  after = s.after ?? after;\n  if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }\n  (s.pending || []).forEach(onEvent);\n  poll();\n}\nasync function send() {\n  const t = $(\"input\").value.trim(); if (!t || busy) return;\n  $(\"input\").value = \"\"; grow(); userMsg(t);\n  if ($(\"title\").textContent === \"New chat\") $(\"title\").textContent = t.split(\"\\n\")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;\n  try { await api(base + \"/prompt\", {text: t}); } catch (e) { el(`<div class=\"info err\">${esc(e.message)}</div>`); busy = false; setBusy(); }\n}\nfunction sendOrStop() { busy ? api(base + \"/cancel\", {}) : send(); }\nasync function newChat() { side.classList.remove(\"open\"); await apply(await A.newChat()); history.replaceState(null, \"\", location.pathname); $(\"title\").textContent = \"New chat\"; }\nasync function loadSession(id) { side.classList.remove(\"open\"); polling++; await apply(await A.load(id)); if (MODE === \"cloud\") history.replaceState(null, \"\", \"?s=\" + id); }\nfunction pickModel() {\n  const ms = state.config?.models || [];\n  $(\"pbody\").innerHTML = ms.map(m => `<button onclick=\"setModel('${esc(m.name)}')\"><span>${m.name === state.config.model ? \"\u25cf\" : \"\u25cb\"}</span>${esc(m.name)}<span class=\"d\">${esc(m.id)}</span></button>`).join(\"\") || '<p style=\"padding:12px;color:var(--dim)\">No models \u2014 add one in your account or with /models.</p>';\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setModel(n) { $(\"popup\").classList.add(\"hidden\"); await A.setModel(n); state.config.model = n; renderStatus(); }\nfunction toggleTheme() { const r = document.documentElement, d = r.dataset.theme === \"dark\" || (!r.dataset.theme && matchMedia(\"(prefers-color-scheme: dark)\").matches); r.dataset.theme = d ? \"light\" : \"dark\"; localStorage.setItem(\"me_theme\", r.dataset.theme); }\nif (localStorage.getItem(\"me_theme\")) document.documentElement.dataset.theme = localStorage.getItem(\"me_theme\");\nconst inp = $(\"input\");\nfunction grow() { inp.style.height = \"auto\"; inp.style.height = Math.min(220, inp.scrollHeight) + \"px\"; setBusy(); }\ninp.addEventListener(\"input\", grow);\ninp.addEventListener(\"keydown\", e => { if (e.key === \"Enter\" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === \"Escape\" && busy) api(base + \"/cancel\", {}); });\n// voice: hold the mic button (or hold space in an empty input)\nlet rec = null, chunks = [];\nasync function recStart() {\n  if (rec) return;\n  try {\n    const stream = await navigator.mediaDevices.getUserMedia({audio: true});\n    rec = new MediaRecorder(stream); chunks = [];\n    rec.ondataavailable = e => chunks.push(e.data);\n    rec.onstop = async () => {\n      stream.getTracks().forEach(t => t.stop()); $(\"mic\").classList.remove(\"rec\");\n      const blob = new Blob(chunks, {type: rec.mimeType || \"audio/webm\"}); rec = null;\n      if (blob.size < 2000) return;\n      inp.placeholder = \"transcribing\u2026\";\n      try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(\" \") ? \" \" : \"\") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }\n      finally { inp.placeholder = \"Ask anything\u2026\"; }\n    };\n    rec.start(); $(\"mic\").classList.add(\"rec\");\n  } catch (e) { alert(\"microphone: \" + e.message); }\n}\nfunction recStop() { if (rec && rec.state === \"recording\") rec.stop(); }\nconst mic = $(\"mic\");\nmic.addEventListener(\"pointerdown\", e => { e.preventDefault(); recStart(); });\n[\"pointerup\", \"pointerleave\", \"pointercancel\"].forEach(ev => mic.addEventListener(ev, recStop));\nlet spaceT = 0;\ninp.addEventListener(\"keydown\", e => { if (e.code === \"Space\" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });\ninp.addEventListener(\"keyup\", e => { if (e.code === \"Space\") recStop(); });\n$(\"wsPill\").onclick = () => { if (MODE === \"cloud\") location.href = \"/account#workspaces\"; };\nA.boot().then(s => s && apply(s)).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`));\n</script>\n</body>\n</html>\n"
+
+
+class WebSession:
+    """Agent + event log for the browser UI. Same endpoint shape as the cloud runner (/api/cloud/<id>/...)."""
+
+    def __init__(self, store):
+        import collections
+        self.s = store
+        self.cloud = Cloud(store)
+        self.ws = Workspaces(store, self.cloud)
+        self.events = collections.deque(maxlen=2000)
+        self.seq = 0
+        self.cond = threading.Condition()
+        self.waits = {}
+        self.agent = Agent(store, self.push, self.confirm, self.ask)
+
+    def push(self, e):
+        with self.cond:
+            self.seq += 1
+            self.events.append(dict(e, seq=self.seq))
+            self.cond.notify_all()
+        if e["type"] == "turn_end" and self.cloud.online:
+            def after():
+                self.cloud.sync()
+                if self.agent.session.get("ws"):
+                    try:
+                        self.ws.sync(self.agent.session["ws"])
+                    except CloudError:
+                        pass
+            threading.Thread(target=after, daemon=True).start()
+
+    def _wait(self, kind, **kw):
+        rid = uuid.uuid4().hex[:8]
+        ev = threading.Event()
+        e = dict(type=kind, id=rid, **kw)
+        self.waits[rid] = [ev, None, e]
+        self.push(e)
+        ev.wait()
+        return self.waits.pop(rid)[1]
+
+    def confirm(self, name, args):
+        return bool(self._wait("confirm", name=name, args=args))
+
+    def ask(self, q):
+        return self._wait("ask", text=q) or ""
+
+    def state(self):
+        ses = self.agent.session
+        return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used,
+                "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
+                "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
+                "pending": [w[2] for w in list(self.waits.values())],
+                "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
+
+    def handle(self, method, path, body):
+        a = self.agent
+        if path == "/state":
+            return self.state()
+        if path.startswith("/events"):
+            import urllib.parse as up
+            after = int(up.parse_qs(up.urlparse(path).query).get("after", ["0"])[0])
+            with self.cond:
+                if self.seq <= after:
+                    self.cond.wait(25)
+                evs = [e for e in self.events if e["seq"] > after]
+            return {"events": evs, "state": {"busy": a.busy}}
+        if path == "/prompt":
+            if a.busy:
+                raise ValueError("still working")
+            self.push({"type": "user", "text": body["text"]})
+            if not a.session.get("ws") and self.cloud.online:
+                a.session["ws"] = self.ws.for_dir(os.getcwd())
+            threading.Thread(target=a.run, args=(body["text"],), daemon=True).start()
+            return {"ok": True}
+        if path == "/cancel":
+            a.cancel.set()
+            return {"ok": True}
+        if path == "/new":
+            a.session = new_session()
+            a.ctx_used = 0
+            return {"ok": True}
+        if path == "/load":
+            a.load(body["id"])
+            return self.state()
+        if path == "/model":
+            self.s.config["model"] = body["name"]
+            self.s.save()
+            return {"ok": True}
+        if path in ("/confirm", "/answer"):
+            w = self.waits.get(body.get("id"))
+            if w:
+                w[1] = body.get("ok") if path == "/confirm" else body.get("text")
+                w[0].set()
+            return {"ok": True}
+        raise KeyError(path)
+
+
+def groq_transcribe(cfg, audio, ctype="audio/webm"):
+    v = cfg.get("voice") or {}
+    key = v.get("groq_key") or next((p.get("api_key") for p in cfg.get("providers", {}).values() if "groq.com" in p.get("base_url", "")), "")
+    if not key:
+        raise ValueError("set a Groq API key (web account → Voice, or /voice key)")
+    b = uuid.uuid4().hex
+    ext = ctype.split("/")[-1].split(";")[0]
+    parts = [f'--{b}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{v.get("model") or "whisper-large-v3"}\r\n'.encode()]
+    if v.get("language"):
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="language"\r\n\r\n{v["language"]}\r\n'.encode())
+    parts.append(f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="voice.{ext}"\r\n\r\n'.encode() + audio + b"\r\n")
+    parts.append(f"--{b}--\r\n".encode())
+    r = urllib.request.Request("https://api.groq.com/openai/v1/audio/transcriptions", data=b"".join(parts), method="POST",
+                               headers={"Authorization": "Bearer " + key, "Content-Type": f"multipart/form-data; boundary={b}", "User-Agent": "me"})
+    return json.loads(urllib.request.urlopen(r, timeout=60).read()).get("text", "").strip()
+
+
+def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import secrets as _sec
+    ws = WebSession(store)
+    key = "" if host in ("127.0.0.1", "localhost") else _sec.token_urlsafe(16)
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, data, ctype="application/json"):
+            raw = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def _authed(self):
+            if not key:
+                return True
+            return self.headers.get("Authorization", "") == "Bearer " + key
+
+        def _route(self, method):
+            path = self.path
+            if method == "GET" and (path == "/" or path.startswith("/?")):
+                return self._send(200, WEBUI.replace("__MODE__", "local").encode(), "text/html; charset=utf-8")
+            if not path.startswith("/api/agent"):
+                return self._send(404, {"detail": "not found"})
+            if not self._authed():
+                return self._send(401, {"detail": "open the link printed in the terminal (it carries the access key)"})
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if method == "POST" else b""
+            sub = path[len("/api/agent"):]
+            try:
+                if sub == "/voice":
+                    return self._send(200, {"text": groq_transcribe(store.config, raw, self.headers.get("Content-Type", "audio/webm"))})
+                return self._send(200, ws.handle(method, sub, json.loads(raw or b"{}")))
+            except KeyError:
+                return self._send(404, {"detail": "not found"})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)})
+
+        def do_GET(self):
+            self._route("GET")
+
+        def do_POST(self):
+            self._route("POST")
+
+    srv = ThreadingHTTPServer((host, port), H)
+    srv.daemon_threads = True
+    url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}/" + (f"?k={key}" if key else "")
+    print(f"me web · {url}\n  agent runs here, in {os.getcwd()} · ctrl+c to stop")
+    if host == "0.0.0.0":
+        print(f"  from other devices on your network use this machine's IP with ?k={key}")
+    if open_browser:
+        try:
+            import webbrowser
+            if os.environ.get("TERMUX_VERSION") and shutil.which("termux-open-url"):
+                subprocess.Popen(["termux-open-url", url])
+            else:
+                webbrowser.open(url)
+        except Exception:
+            pass
+    if store.auth.get("token"):
+        ws.cloud.watch(lambda n: store.config.update(jload(store.cfg_path) or {}))
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbye")
 
 
 # ───────────────────────────── terminal ─────────────────────────────
@@ -1463,8 +2095,8 @@ def render_md(text, width, indent=2):
 COMMANDS = [
     ("help", "show commands & keys"), ("model", "switch model"), ("models", "add / edit / sync models"),
     ("provider", "add / edit API providers"), ("effort", "reasoning effort: none…xhigh"), ("prompt", "edit your system prompt"),
-    ("skills", "list / toggle / create skills"), ("secret", "set env secrets for skills"), ("new", "new session"),
-    ("sessions", "resume a past session"), ("clear", "clear screen + new session"), ("copy", "copy last answer"),
+    ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
+    ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"),
     ("yolo", "toggle auto-approve tools"), ("sync", "sync with cloud now"), ("login", "log in / register"),
     ("2fa", "authenticator (TOTP) on/off"), ("logout", "log out of cloud"), ("config", "settings"), ("update", "update me"),
     ("exit", "quit"),
@@ -1496,6 +2128,7 @@ class TUI:
     def __init__(self, store):
         self.s = store
         self.cloud = Cloud(store)
+        self.ws = Workspaces(store, self.cloud)
         self.term = Term()
         self.blocks = []
         self.input, self.cur = "", 0
@@ -1609,6 +2242,7 @@ class TUI:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
                 self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens")
                 self.cur_text = self.cur_reason = None
+                self.sync_ws()
             self.redraw()
 
     # ─── modal helpers (called from worker threads; block until answered) ───
@@ -1756,6 +2390,13 @@ class TUI:
                     out.append(Line().add("    │ ", rgb(TH["faint"])).add(l[: W - 8], dim))
         elif name == "bash":
             out.append(Line().add("    └ ", rgb(TH["faint"])).add(f"running {dur(time.time() - b.t0)}", dim))
+        elif b.status or b.progress:
+            if b.status:
+                out.append(Line().add("    └ ", rgb(TH["faint"])).add(b.status[: W - 10], dim))
+            if b.progress and b.progress.get("v") is not None:
+                l = Line().add("      ")
+                l.segs.extend(self._bar(b.progress["v"], min(40, W - 12), TH["accent"]))
+                out.append(l)
         return out
 
     def _bar(self, frac, width, color):
@@ -1886,6 +2527,10 @@ class TUI:
         u = self.agent.session.get("usage", {})
         L.add("   ↑", faint).add(human(u.get("in", 0)), dim).add(" ↓", faint).add(human(u.get("out", 0)), dim)
         right = Line()
+        for segs in PLUGINS.collect("status", self):
+            for t, c in segs:
+                right.add(t, rgb(TH.get(c, c) if not str(c).startswith("#") else c))
+            right.add("  ")
         if self.s.config["settings"].get("yolo"):
             right.add("yolo ", rgb(TH["warn"]))
         cs = self.cloud.status
@@ -2078,6 +2723,8 @@ class TUI:
     def handle_key(self, k):
         if self.modal:
             return self.modal_key(k)
+        if PLUGINS.emit("key", self, k):
+            return
         if k == "ctrl-c":
             if self.agent.busy:
                 self.agent.cancel.set()
@@ -2095,7 +2742,7 @@ class TUI:
         elif k == "enter":
             if self.sugg and self.input.startswith("/") and " " not in self.input.strip():
                 self.accept_sugg()
-                if self.input.strip() in [f"/{c}" for c, _ in COMMANDS]:
+                if self.input.strip() in [f"/{c}" for c, _ in self.all_commands()]:
                     self.submit()
                 return
             if self.sugg and self.sel < len(self.sugg) and "@" in self.input:
@@ -2219,7 +2866,7 @@ class TUI:
             parts = t[1:].split(" ", 1)
             if len(parts) == 1:
                 q = parts[0].lower()
-                scored = [(fuzzy(q, c), c, d) for c, d in COMMANDS]
+                scored = [(fuzzy(q, c), c, d) for c, d in self.all_commands()]
                 self.sugg = [("/" + c, "/" + c, d) for s, c, d in sorted((x for x in scored if x[0] is not None), key=lambda x: x[0])]
             else:
                 cmd, arg = parts
@@ -2353,11 +3000,104 @@ class TUI:
             if p.suffix.lower() in IMAGE_EXT and p.exists():
                 images.append(read_any(p)[1])
         self.add("user", text=text)
+        self.ensure_ws()
         if not self.s.model():
             self.info("no model yet — let's set one up", "warn")
             self.bg(self.setup_provider)
             return
         self.bg(self.agent.run, text, images)
+
+    def _on_remote_change(self, n):
+        cfg = jload(self.s.cfg_path)
+        if cfg:
+            self.s.config = cfg
+        self.toast(f"☁ {n} updates from cloud", "ok")
+        if not self.agent.busy:
+            self.sync_ws()
+
+    def ensure_ws(self):
+        """Attach the session to the cloud workspace of this folder (auto-creates one for git repos)."""
+        ses = self.agent.session
+        if ses.get("ws") or not self.cloud.online or self.ws.disabled:
+            return
+        wid = self.ws.for_dir(os.getcwd())
+        if not wid and self.s.config["settings"].get("auto_workspace", True) and Path(".git").exists() \
+                and os.path.abspath(os.getcwd()) != str(Path.home()):
+            try:
+                wid = self.ws.link(os.getcwd())
+                self.toast(f"☁ project linked as workspace {wid}", "ok")
+            except CloudError:
+                return
+        if wid:
+            ses["ws"] = wid
+            self.sync_ws()
+
+    def sync_ws(self, quiet=True):
+        wid = self.agent.session.get("ws")
+        if not wid or not self.cloud.online:
+            return
+
+        def run():
+            try:
+                up, down = self.ws.sync(wid)
+                if (up or down) and not quiet or down:
+                    self.toast(f"☁ files ↑{up} ↓{down}", "ok")
+            except CloudError as e:
+                if not quiet:
+                    self.info(f"✗ workspace sync: {e}", "err")
+        threading.Thread(target=run, daemon=True).start()
+
+    def cmd_workspace(self, arg):
+        if not self.cloud.online:
+            return self.info("log in first — /login", "warn")
+        wid = self.agent.session.get("ws") or self.ws.for_dir(os.getcwd())
+        items = []
+        if wid:
+            items += [("sync", "↻ sync now", self.ws.local_path(wid) or ""), ("unlink", "unlink this folder", "files stay in the cloud")]
+        else:
+            items += [("link", "link this folder", os.getcwd())]
+        items += [("clone", "get a cloud workspace into a folder", ""), ("auto", "auto-link git repos: " +
+                  ("on" if self.s.config["settings"].get("auto_workspace", True) else "off"), "")]
+        v = self.pick("Workspace — code files sync to the cloud (≤1 MB each, heavy/ignored skipped)", items)
+        if v == "link":
+            wid = self.ws.link(os.getcwd(), self.prompt("Workspace name", Path(os.getcwd()).name) or None)
+            self.agent.session["ws"] = wid
+            self.sync_ws(quiet=False)
+        elif v == "sync":
+            self.agent.session["ws"] = wid
+            up, down = self.ws.sync(wid, emit=None)
+            self.toast(f"☁ files ↑{up} ↓{down}", "ok")
+        elif v == "unlink":
+            self.ws.unlink(wid)
+            self.agent.session.pop("ws", None)
+            self.toast("unlinked")
+        elif v == "auto":
+            st = self.s.config["settings"]
+            st["auto_workspace"] = not st.get("auto_workspace", True)
+            self.s.save()
+        elif v == "clone":
+            lst = self.cloud.req("GET", "/api/ws")
+            wid = self.pick("Cloud workspaces", [(w["id"], w["name"], f"{w['files']} files · {human(w['bytes'])}B") for w in lst])
+            if wid:
+                self.open_ws(wid, next(w["name"] for w in lst if w["id"] == wid))
+
+    def open_ws(self, wid, name):
+        """Make sure a cloud workspace exists locally, pull it, and cd into it."""
+        path = self.ws.local_path(wid)
+        if not path:
+            path = self.prompt("Local folder for this workspace", str(Path.home() / "me-workspaces" / name))
+            if not path:
+                return False
+            path = os.path.expanduser(path)
+            self.ws.attach(wid, path, name)
+        Path(path).mkdir(parents=True, exist_ok=True)
+        up, down = self.ws.sync(wid)
+        os.chdir(path)
+        self.agent.session["cwd"] = path
+        self.agent.session["ws"] = wid
+        self.files_cache = None
+        self.toast(f"☁ {name}: ↓{down} files · cwd {path}", "ok")
+        return True
 
     def bg(self, fn, *a):
         def run():
@@ -2369,14 +3109,19 @@ class TUI:
         threading.Thread(target=run, daemon=True).start()
 
     # ─── commands (run in worker thread; may block on modals) ───
+    def all_commands(self):
+        return COMMANDS + [(n, d) for n, (_, d) in PLUGINS.commands.items()]
+
     def command(self, cmd, arg):
-        names = [c for c, _ in COMMANDS]
+        names = [c for c, _ in self.all_commands()]
         if cmd not in names:
             cands = [c for c in names if c.startswith(cmd)]
             if len(cands) == 1:
                 cmd = cands[0]
             else:
                 return self.info(f"unknown command /{cmd} — /help", "err")
+        if cmd in PLUGINS.commands:
+            return PLUGINS.commands[cmd][0](self, arg)
         getattr(self, "cmd_" + cmd.replace("2fa", "twofa"))(arg)
 
     def cmd_help(self, arg):
@@ -2684,6 +3429,54 @@ class TUI:
                     Path(sk["path"]).unlink()
                     self.s.save()
 
+    def cmd_plugins(self, arg):
+        while True:
+            d = self.s.home / "plugins"
+            dis = self.s.config["settings"].setdefault("disabled_plugins", [])
+            files = sorted(d.glob("*.py"))
+            items = [(p.stem, ("○ " if p.stem in dis else "● ") + p.stem,
+                      PLUGINS.errors.get(p.stem) or (meta_line(p.read_text("utf-8")) if p.exists() else "")) for p in files]
+            items += [("+market", "+ browse plugin marketplace", ""), ("+new", "+ new plugin from template", "")]
+            v = self.pick("Plugins (changes apply after restart)", items, hint="● on ○ off")
+            if v is None:
+                return
+            if v == "+new":
+                n = self.prompt("Plugin name")
+                if n:
+                    n = re.sub(r"[^a-z0-9_-]", "-", n.lower())
+                    (d / f"{n}.py").write_text(PLUGIN_TEMPLATE.replace("NAME", n), "utf-8")
+                    self.s.save()
+                    self.info(f"created {d / (n + '.py')} — restart me to load it", "ok")
+                continue
+            if v == "+market":
+                try:
+                    items = [x for x in self.cloud.req("GET", "/api/market?kind=plugin", token=False)]
+                except CloudError as e:
+                    self.info(f"✗ {e}", "err")
+                    continue
+                mid = self.pick("Plugin marketplace", [(x["id"], x["name"], x["description"]) for x in items])
+                if mid:
+                    x = self.cloud.req("GET", f"/api/market/{mid}", token=False)
+                    (d / f"{x['name']}.py").write_text(x["content"], "utf-8")
+                    if self.cloud.online:
+                        try:
+                            self.cloud.req("POST", f"/api/market/{mid}/install", {})
+                        except CloudError:
+                            pass
+                    self.s.save()
+                    self.info(f"installed plugin {x['name']} — restart me (/update force or relaunch) to load it", "ok")
+                continue
+            act = self.pick(v, [("toggle", "disable" if v not in dis else "enable", ""), ("view", "view source", ""), ("del", "delete", "")])
+            if act == "toggle":
+                dis.remove(v) if v in dis else dis.append(v)
+                self.s.save()
+            elif act == "view":
+                self.add("assistant", text=f"```python\n{(d / (v + '.py')).read_text('utf-8')}\n```").done = True
+                return
+            elif act == "del" and self.pick(f"Delete {v}?", [(False, "no", ""), (True, "yes", "")]):
+                (d / f"{v}.py").unlink()
+                self.s.save()
+
     def cmd_sessions(self, arg):
         ss = self.s.sessions()
         if not ss:
@@ -2713,7 +3506,13 @@ class TUI:
                             a = {}
                         b = self.add("tool", name=tc["function"]["name"], args=a, label=self.agent.tools.preview(tc["function"]["name"], a))
                         b.done, b.ok, b.collapsed = True, True, True
-        if self.agent.session.get("cwd") and os.path.isdir(self.agent.session["cwd"]):
+        wid = self.agent.session.get("ws")
+        if wid and self.cloud.online:
+            try:
+                self.open_ws(wid, Path(self.agent.session.get("cwd", wid)).name)
+            except CloudError as e:
+                self.info(f"✗ workspace: {e}", "err")
+        elif self.agent.session.get("cwd") and os.path.isdir(self.agent.session["cwd"]):
             os.chdir(self.agent.session["cwd"])
         self.toast(f"resumed · {len(self.agent.session['messages'])} messages", "ok")
 
@@ -2770,6 +3569,9 @@ class TUI:
                 self.s.config = local_cfg
                 self.s.save()
             self.toast(f"synced · {n} items from cloud", "ok")
+        if not PLUGINS.loaded:
+            PLUGINS.load(self.s)
+            PLUGINS.collect("startup", self)
         return True
 
     def cmd_logout(self, arg):
@@ -2846,6 +3648,9 @@ class TUI:
         self.add("welcome", text=os.getcwd().replace(str(Path.home()), "~"))
 
     def startup(self):
+        PLUGINS.collect("startup", self)
+        for n, e in PLUGINS.errors.items():
+            self.info(f"✗ plugin {n}: {e}", "err")
         if not self.s.auth.get("token") and not self.s.auth.get("skip"):
             v = self.pick("Welcome to me — sync everything across your machines", [
                 ("login", "log in / create account", "config, keys, skills & chats follow you everywhere"),
@@ -2878,12 +3683,14 @@ class TUI:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()
         self.bg(self.startup)
+        self.cloud.watch(self._on_remote_change, lambda v: setattr(self, "update_avail", v),
+                         lambda: not self.agent.busy and self.sync_ws())
         last, last_sync = 0, time.time()
         try:
             while self.running:
-                if self.cloud.online and not self.agent.busy and time.time() - last_sync > 30:
+                if self.cloud.online and not self.agent.busy and time.time() - last_sync > 60:
                     last_sync = time.time()
-                    self.cloud.sync_bg(lambda n: n > 0 and self.toast(f"☁ {n} updates from cloud", "ok"))
+                    self.sync_ws()
                 try:
                     k = self.term.q.get(timeout=0.05)
                     with self.lock:
@@ -2894,6 +3701,8 @@ class TUI:
                     self.dirty = True
                 except queue.Empty:
                     pass
+                if PLUGINS.emit("tick", self):
+                    self.dirty = True
                 animating = self.agent.busy or self.tools_live or self.cloud.status == "syncing" or (self.notice[0] and time.time() - self.notice[1] < 4.5)
                 now = time.time()
                 if (self.dirty or (animating and now - last > 0.08)) and now - last > 0.016:
@@ -2968,18 +3777,58 @@ def danger(ctx, path: str):
 '''
 
 
+PLUGIN_TEMPLATE = '''"""
+name: NAME
+description: what this plugin changes in me
+---
+Plugins run inside me with full access: `plugin` registry + `me` module.
+"""
+
+
+@plugin.command("hello", "example command from NAME")
+def hello(tui, arg):
+    tui.info(f"hello from NAME plugin! arg={arg!r}", "ok")
+
+
+@plugin.tool("now", "Current local date and time.", {})
+def now(args, ctx):
+    import time
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@plugin.on("event")
+def on_event(e):
+    if e["type"] == "turn_end" and e["time"] > 60:
+        pass  # e.g. notify somewhere about long tasks
+'''
+
+
+def meta_line(text):
+    m = re.search(r"^description:\s*(.+)$", text, re.M)
+    return m.group(1).strip()[:60] if m else ""
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 
 def main():
     args = sys.argv[1:]
     store = Store()
+    if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
+        if store.auth.get("token"):
+            Cloud(store).sync()
+            store.config = jload(store.cfg_path) or store.config
+        PLUGINS.load(store)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
     if args and args[0] in ("-h", "--help"):
         return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me -p \"task\"     run once (add -y to auto-approve)\n"
-                     f"  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
+                     f"  me web [port]   browser UI on localhost:8080 (--lan to open on your network)\n  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
                      f"  env: ME_HOME={HOME}  ME_SERVER={SERVER}")
+    if args and args[0] in ("web", "--web"):
+        port = next((int(a) for a in args[1:] if a.isdigit()), 8080)
+        host = "0.0.0.0" if "--lan" in args else "127.0.0.1"
+        return run_web(store, host, port, "--no-open" not in args)
     if args and args[0] == "--sync":
         c = Cloud(store)
         n = c.sync()
@@ -3000,7 +3849,9 @@ def main():
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return print("me: not a terminal. use: me -p \"task\"")
-    TUI(store).run()
+    tui = TUI(store)
+    PLUGINS.tui = tui
+    tui.run()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,17 @@ MAX_DOC = 20 * 1024 * 1024
 
 app = FastAPI(title="me cloud", docs_url=None, redoc_url=None)
 lock = threading.Lock()
+changed = threading.Condition()  # notified on every doc write → instant sync via /api/changes
+
+
+ws_rev = {}  # uid -> counter of workspace file changes (not stored in docs)
+
+
+def notify(uid=None):
+    if uid is not None:
+        ws_rev[uid] = ws_rev.get(uid, 0) + 1
+    with changed:
+        changed.notify_all()
 
 
 def db():
@@ -35,8 +46,28 @@ CREATE TABLE IF NOT EXISTS docs(user_id INTEGER, key TEXT, content TEXT, ts REAL
   PRIMARY KEY(user_id, key));
 CREATE TABLE IF NOT EXISTS market(id INTEGER PRIMARY KEY, name TEXT UNIQUE, author TEXT, user_id INTEGER, description TEXT, icon TEXT,
   color TEXT, ext TEXT, content TEXT, installs INTEGER DEFAULT 0, created REAL, updated REAL);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS tg_links(chat_id INTEGER PRIMARY KEY, user_id INTEGER, created REAL);
 CREATE INDEX IF NOT EXISTS docs_rev ON docs(user_id, rev);
 """)
+
+for col, ddl in (("kind", "TEXT DEFAULT 'skill'"), ("is_default", "INTEGER DEFAULT 0")):
+    try:
+        conn.execute(f"ALTER TABLE market ADD COLUMN {col} {ddl}")
+    except sqlite3.OperationalError:
+        pass
+try:
+    conn.execute("ALTER TABLE users ADD COLUMN seeded INTEGER DEFAULT 0")
+except sqlite3.OperationalError:
+    pass
+
+
+def setting(key, value=None):
+    if value is None:
+        r = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return r[0] if r else ""
+    conn.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, value))
+
 
 # ─── crypto helpers ───
 
@@ -123,6 +154,8 @@ def register(c: Creds, req: Request):
         first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
         cur = conn.execute("INSERT INTO users(username,pw,admin,created,seen) VALUES(?,?,?,?,?)",
                            (c.username, pw_hash(c.password), int(first), time.time(), time.time()))
+    seed_user(cur.lastrowid)
+    with lock:
         return {"token": new_token(cur.lastrowid, c.device or "web"), "username": c.username}
 
 
@@ -240,7 +273,7 @@ def sync(r: SyncReq, u=Depends(user)):
         pushed = set()
         conn.execute("BEGIN")
         for d in r.push:
-            if not re.fullmatch(r"(config|skill/[\w.-]+|session/[\w.-]+)", d.key) or len(d.content) > MAX_DOC:
+            if not re.fullmatch(KEY_RX, d.key) or len(d.content) > MAX_DOC:
                 continue
             cur = conn.execute("SELECT ts FROM docs WHERE user_id=? AND key=?", (uid, d.key)).fetchone()
             if cur and cur["ts"] > d.ts:
@@ -250,19 +283,22 @@ def sync(r: SyncReq, u=Depends(user)):
                          (uid, d.key, "" if d.deleted else d.content, d.ts, rev, int(d.deleted), len(d.content)))
             pushed.add((d.key, rev))
         conn.execute("COMMIT")
+        if pushed:
+            notify()
         out = [dict(key=x["key"], content=x["content"], ts=x["ts"], deleted=bool(x["deleted"]))
                for x in conn.execute("SELECT * FROM docs WHERE user_id=? AND rev>? ORDER BY rev", (uid, r.cursor))
                if (x["key"], x["rev"]) not in pushed]
     return {"cursor": rev, "docs": out}
 
 
-KEY_RX = r"(config|skill/[\w.-]+|session/[\w.-]+)"
+KEY_RX = r"(config|skill/[\w.-]+|plugin/[\w.-]+\.py|session/[\w.-]+)"
 
 
 def put_doc(uid, key, content, deleted=False):
     with lock:
         rev = conn.execute("SELECT COALESCE(MAX(rev),0)+1 FROM docs WHERE user_id=?", (uid,)).fetchone()[0]
         conn.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?)", (uid, key, "" if deleted else content, time.time(), rev, int(deleted), len(content)))
+    notify()
 
 
 class DocPut(BaseModel):
@@ -329,10 +365,22 @@ class Publish(BaseModel):
 
 
 @app.get("/api/market")
-def market(q: str = ""):
-    rows = conn.execute("SELECT id,name,author,description,icon,color,ext,installs,updated FROM market ORDER BY installs DESC, updated DESC").fetchall()
+def market(q: str = "", kind: str = ""):
+    rows = conn.execute("SELECT id,name,author,description,icon,color,ext,installs,updated,kind FROM market ORDER BY installs DESC, updated DESC").fetchall()
     q = q.lower()
-    return [dict(r) for r in rows if not q or q in (r["name"] + " " + (r["description"] or "")).lower()]
+    return [dict(r) for r in rows if (not q or q in (r["name"] + " " + (r["description"] or "")).lower()) and (not kind or r["kind"] == kind)]
+
+
+def doc_key_for(r):
+    return f"plugin/{r['name']}.py" if r["kind"] == "plugin" else f"skill/{r['name']}.{r['ext']}"
+
+
+def seed_user(uid):
+    """Install default plugins/skills for a user once."""
+    for r in conn.execute("SELECT * FROM market WHERE is_default=1"):
+        if not conn.execute("SELECT 1 FROM docs WHERE user_id=? AND key=?", (uid, doc_key_for(r))).fetchone():
+            put_doc(uid, doc_key_for(r), r["content"])
+    conn.execute("UPDATE users SET seeded=1 WHERE id=?", (uid,))
 
 
 @app.get("/api/market/{mid}")
@@ -354,16 +402,17 @@ def market_publish(p: Publish, u=Depends(user)):
     if len(p.content) > 200_000:
         raise HTTPException(400, "too big")
     ext = "md" if p.ext == "md" else "py"
+    kind = "plugin" if meta.get("kind") == "plugin" else "skill"
     cur = conn.execute("SELECT user_id FROM market WHERE name=?", (name,)).fetchone()
     if cur and cur["user_id"] != u["id"] and not u["admin"]:
         raise HTTPException(409, "name taken by another author")
     now = time.time()
     if cur:
-        conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,updated=? WHERE name=?",
-                     (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, name))
+        conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,updated=?,kind=? WHERE name=?",
+                     (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, kind, name))
     else:
-        conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                     (name, u["username"], u["id"], meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, now))
+        conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                     (name, u["username"], u["id"], meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, now, kind))
     return {"ok": True, "name": name}
 
 
@@ -372,7 +421,7 @@ def market_install(mid: int, u=Depends(user)):
     r = conn.execute("SELECT * FROM market WHERE id=?", (mid,)).fetchone()
     if not r:
         raise HTTPException(404)
-    put_doc(u["id"], f"skill/{r['name']}.{r['ext']}", r["content"])
+    put_doc(u["id"], doc_key_for(r), r["content"])
     conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (mid,))
     return {"ok": True}
 
@@ -384,17 +433,40 @@ def market_delete(mid: int, u=Depends(user)):
 
 
 def seed_market():
+    """Built-in skills/plugins from server/market are (re)published by the system author on start."""
     for p in sorted((HERE / "market").glob("*.*")):
         c = p.read_text("utf-8")
         meta = skill_meta(c)
-        if meta.get("name") and not conn.execute("SELECT 1 FROM market WHERE name=?", (meta["name"],)).fetchone():
-            now = time.time()
-            conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                         (meta["name"], "me", 0, meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"),
-                          p.suffix[1:], c, now, now))
+        if not meta.get("name"):
+            continue
+        now = time.time()
+        vals = (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), p.suffix[1:], c,
+                "plugin" if meta.get("kind") == "plugin" else "skill", int(meta.get("default") == "true"))
+        if conn.execute("SELECT 1 FROM market WHERE name=?", (meta["name"],)).fetchone():
+            conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,kind=?,is_default=?,updated=? WHERE name=? AND user_id=0",
+                         (*vals, now, meta["name"]))
+        else:
+            conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,kind,is_default,created,updated) "
+                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (meta["name"], "me", 0, *vals, now, now))
+    for r in conn.execute("SELECT id FROM users WHERE seeded=0").fetchall():
+        seed_user(r["id"])
 
 
 seed_market()
+
+
+@app.get("/api/changes")
+def changes(cursor: int = 0, ws: int = -1, wait: int = 25, u=Depends(user)):
+    """Long-poll: returns as soon as the user's data moves past `cursor` (or after `wait` seconds)."""
+    end = time.time() + min(wait, 50)
+    while True:
+        rev = conn.execute("SELECT COALESCE(MAX(rev),0) FROM docs WHERE user_id=?", (u["id"],)).fetchone()[0]
+        wsr = ws_rev.get(u["id"], 0)
+        ws_changed = ws >= 0 and wsr != ws
+        if rev > cursor or ws_changed or time.time() >= end:
+            return {"cursor": rev, "changed": rev > cursor, "ws": wsr, "ws_changed": ws_changed, "version": client_version()}
+        with changed:
+            changed.wait(max(0.1, end - time.time()))
 
 
 @app.get("/api/docs")
@@ -489,3 +561,12 @@ def raw_skill(name: str):
 @app.get("/healthz")
 def health():
     return Response("ok")
+
+
+@app.on_event("startup")
+async def _threads():
+    import anyio.to_thread
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 300  # long-polls hold threads
+
+
+import routes_cloud  # noqa: E402,F401  (registers workspace/cloud/telegram/admin routes)

@@ -73,6 +73,16 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 .msg.tool{font:12px/1.5 var(--mono);color:var(--dim);background:var(--bg2);max-height:160px;overflow:auto}
 .msg .who{font:11px var(--mono);color:var(--dim);margin-bottom:4px;text-transform:uppercase}
 .key{font-family:var(--mono);letter-spacing:1px}
+.btn-a{font:500 13px var(--mono);background:var(--a);color:#fff;border-radius:8px;padding:9px 15px;text-decoration:none;white-space:nowrap}
+.btn-a.sm{padding:5px 10px;font-size:12px}
+.hero{background:linear-gradient(135deg,rgba(139,124,255,.10),rgba(79,209,197,.06))}
+.ftree{display:grid;grid-template-columns:260px 1fr;gap:12px;margin-top:14px;min-height:300px}
+#wsfiles{border:1px solid var(--line);border-radius:10px;max-height:520px;overflow:auto;padding:6px}
+#wsfiles button{display:block;width:100%;text-align:left;background:none;color:var(--dim);padding:4px 8px;border-radius:6px;font:12.5px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#wsfiles button:hover,#wsfiles button.on{background:var(--bg2);color:var(--fg)}
+.fview{border:1px solid var(--line);border-radius:10px;background:var(--bg2);padding:12px;font:12.5px/1.55 var(--mono);overflow:auto;max-height:520px;white-space:pre;color:var(--fg);margin:0}
+@media (max-width:760px){.ftree{grid-template-columns:1fr}.tabs button{padding:10px 11px}}
+.msg .md p{margin:4px 0}.msg details summary{cursor:pointer;color:var(--dim);font:12px var(--mono)}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--line);padding:10px 16px;border-radius:10px;font-size:13px;z-index:10}
 </style>
 </head>
@@ -97,12 +107,14 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 
 <div id="dash" class="hidden">
   <div class="tabs" id="tabs">
-    <button data-tab="overview">overview</button><button data-tab="models">models &amp; keys</button><button data-tab="skills">skills</button>
-    <button data-tab="market">marketplace</button><button data-tab="sessions">sessions</button><button data-tab="security">security</button>
+    <button data-tab="overview">overview</button><button data-tab="cloud">cloud</button><button data-tab="models">models &amp; keys</button><button data-tab="skills">skills</button>
+    <button data-tab="plugins">plugins</button><button data-tab="market">marketplace</button><button data-tab="sessions">sessions</button><button data-tab="workspaces">workspaces</button><button data-tab="security">security</button>
     <button data-tab="admin" class="hidden" id="tadmin">admin</button>
   </div>
 
   <div data-pane="overview">
+    <div class="card hero"><div class="row"><div><h2 style="margin:0">work from anywhere</h2><p class="dim" style="margin-top:4px">Open the agent in your browser — it runs in your cloud sandbox and syncs back to every machine.</p></div>
+      <a class="btn-a" href="/app">open web app →</a></div></div>
     <div class="card"><div class="stats" id="stats"></div></div>
     <div class="card"><h2>install on a new machine</h2>
       <p class="dim" style="margin-bottom:10px">Run, then <code>/login</code> — config, keys, skills and chats appear instantly.</p>
@@ -119,6 +131,20 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
     <div class="card">
       <div class="row"><h2 style="margin:0">models</h2><div class="btns" style="margin:0"><button class="ghost sm" onclick="fetchModels()">↻ fetch from provider</button><button class="sm" onclick="editModel()">+ add model</button></div></div>
       <table id="models" style="margin-top:10px"></table>
+    </div>
+    <div class="card">
+      <h2>web search</h2>
+      <p class="dim" style="margin-bottom:10px">With a DeepSeek key, <code>web_search</code> uses DeepSeek's built-in search (best quality). Without it — DuckDuckGo. A DeepSeek provider above is used automatically.</p>
+      <div class="f2"><div><label>DeepSeek API key</label><input id="ds_key" type="password" onfocus="this.type='text'" placeholder="sk-…"></div>
+      <div><label>search model</label><input id="ds_model" placeholder="deepseek-v4-flash"></div></div>
+      <div class="btns"><button onclick="saveSearch()">save</button></div>
+    </div>
+    <div class="card">
+      <h2>voice input</h2>
+      <p class="dim" style="margin-bottom:10px">Groq Whisper large v3. Hold <code>space</code> in the terminal, hold the mic in the web app, or send a voice message to the Telegram bot.</p>
+      <div class="f3"><div><label>Groq API key</label><input id="vk" type="password" onfocus="this.type='text'" placeholder="gsk_…"></div>
+      <div><label>model</label><input id="vm" placeholder="whisper-large-v3"></div><div><label>language (blank = auto)</label><input id="vl" placeholder="ru"></div></div>
+      <div class="btns"><button onclick="saveVoice()">save</button><a class="dim" style="font-size:12px" href="https://console.groq.com/keys" target="_blank">get a key →</a></div>
     </div>
     <div class="card">
       <h2>system prompt</h2>
@@ -140,11 +166,34 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
     </div>
   </div>
 
+  <div data-pane="cloud">
+    <div class="card"><div class="row"><div><h2 style="margin:0">cloud sandbox</h2><p class="dim" style="margin-top:4px">Each cloud session runs <code>me</code> in an isolated sandbox with your workspace files. Idle sandboxes stop after 15 min; your work stays synced.</p></div>
+      <a class="btn-a" href="/app">open web app →</a></div><table id="workers" style="margin-top:14px"></table></div>
+    <div class="card"><div class="row"><h2 style="margin:0">telegram</h2><span id="tgstate"></span></div>
+      <p class="dim" style="margin:6px 0 10px">Chat with your agent from Telegram — text or voice. Tasks run in your cloud sandbox.</p><div id="tgbody"></div></div>
+    <div class="card"><h2>local web UI</h2><p class="dim">Same interface, agent on your own machine: <code>me web</code> → opens <code>localhost:8080</code>. On Android use Termux: <code>pkg install python</code>, then the install command.</p></div>
+  </div>
+
+  <div data-pane="plugins">
+    <div class="card">
+      <div class="row"><div><h2 style="margin:0">plugins</h2><p class="dim" style="margin-top:4px">Plugins change <code>me</code> itself — new commands, tools, keybindings, UI. They run with full access, install only what you trust. Restart <code>me</code> to apply.</p></div>
+        <div class="btns" style="margin:0"><button class="ghost sm" onclick="tab('market');mkKind='plugin';renderMarket()">browse</button><button class="sm" onclick="editPlugin()">+ new plugin</button></div></div>
+      <div class="grid" id="myplugins" style="margin-top:14px"></div>
+    </div>
+  </div>
+
+  <div data-pane="workspaces">
+    <div class="card"><h2>workspaces</h2><p class="dim" style="margin-bottom:12px">Project folders synced between your machines and the cloud. Code files ≤ 1 MB; heavy, binary and .gitignored files stay local.</p>
+      <table id="wslist"></table></div>
+    <div class="card hidden" id="wsview"><div class="row"><h2 style="margin:0" id="wsname"></h2><div class="btns" style="margin:0"><a class="btn-a sm" id="wsopen">open in cloud →</a><button class="danger sm" id="wsdel">delete</button></div></div>
+      <div class="ftree"><div id="wsfiles"></div><pre id="wsfile" class="fview">select a file</pre></div></div>
+  </div>
+
   <div data-pane="market">
     <div class="card">
       <div class="row"><div><h2 style="margin:0">skills marketplace</h2><p class="dim" style="margin-top:4px">Install in one click — it lands on all your machines on next sync.</p></div>
         <button class="ghost sm" onclick="publish()">publish a skill</button></div>
-      <input id="mq" placeholder="search skills…" style="margin-top:14px">
+      <div class="row" style="margin-top:14px;flex-wrap:nowrap"><div class="switch" id="mkind"><button class="on" data-k="skill">skills</button><button data-k="plugin">plugins</button></div><input id="mq" placeholder="search…"></div>
       <div class="grid" id="mk" style="margin-top:14px"></div>
     </div>
   </div>
@@ -162,7 +211,13 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
     <div class="btns"><button class="danger" onclick="logout()">log out</button></div>
   </div>
 
-  <div data-pane="admin"><div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div></div>
+  <div data-pane="admin">
+    <div class="card"><h2>server</h2><div class="stats" id="srv"></div></div>
+    <div class="card"><h2>telegram bot</h2><p class="dim" style="margin-bottom:10px">Create a bot with @BotFather and paste its token. Users connect it from the cloud tab.</p>
+      <div class="row" style="flex-wrap:nowrap"><input id="tgtok" type="password" onfocus="this.type='text'" placeholder="123456:ABC…"><button onclick="saveTg()">save</button></div><div class="err" id="tge"></div></div>
+    <div class="card"><h2>cloud sandboxes</h2><table id="aworkers"></table></div>
+    <div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
+  </div>
 </div>
 </div>
 <div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()"><div id="mbody"></div></div>
@@ -171,12 +226,12 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 const S = "__SERVER__";
 const COLORS = {red:"#ff6b7a",green:"#5ad18a",blue:"#6ba6ff",magenta:"#d27cff",cyan:"#4fd1c5",yellow:"#e7c66b",orange:"#ffb454",purple:"#8b7cff",pink:"#ff8fc7"};
 const EFFORTS = ["", "minimal", "low", "medium", "high", "xhigh"];
-let tok = localStorage.getItem("me_token"), me = null, cfg = null, mode = "login", skills = [], market = [], sessions = [];
+let tok = localStorage.getItem("me_token"), me = null, cfg = null, mode = "login", skills = [], plugins = [], market = [], sessions = [], mkKind = "skill";
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const ago = t => { if (!t) return "—"; const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; };
 const size = b => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
-const human = n => n < 1000 ? String(n || 0) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
+const human = n => !n ? "0" : n < 1000 ? String(n || 0) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
 const col = c => COLORS[c] || (String(c || "").startsWith("#") ? c : "#8b7cff");
 function toast(m) { const d = document.createElement("div"); d.className = "toast"; d.textContent = m; document.body.appendChild(d); setTimeout(() => d.remove(), 2200); }
 async function api(path, body, method) {
@@ -221,6 +276,8 @@ function tab(name) {
   history.replaceState(null, "", "#" + name);
   if (name === "market") loadMarket();
   if (name === "admin") loadAdmin();
+  if (name === "cloud") loadCloud();
+  if (name === "workspaces") loadWs();
 }
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
 
@@ -317,6 +374,11 @@ async function addFetched(prov) {
 // ── skills ──
 async function loadSkills() {
   const docs = await api("/api/docs");
+  plugins = await Promise.all(docs.filter(d => d.key.startsWith("plugin/")).map(async d => {
+    const c = (await api("/api/doc?key=" + encodeURIComponent(d.key))).content;
+    return {key: d.key, file: d.key.slice(7), content: c, ...meta(c), name: d.key.slice(7).replace(/\.py$/, "")};
+  }));
+  renderPlugins();
   skills = await Promise.all(docs.filter(d => d.key.startsWith("skill/")).map(async d => {
     const c = (await api("/api/doc?key=" + encodeURIComponent(d.key))).content;
     return {key: d.key, file: d.key.slice(6), content: c, ...meta(c), name: meta(c).name || d.key.slice(6).replace(/\.\w+$/, "")};
@@ -386,17 +448,118 @@ async function saveSecret(old) {
   cfg.secrets[k] = $("se_v").value; closeModal(); await saveCfg();
 }
 
+// ── plugins ──
+function renderPlugins() {
+  const dis = cfg.settings.disabled_plugins || [];
+  $("myplugins").innerHTML = plugins.length ? plugins.map((s, i) => skillCard(s,
+    `<span>${dis.includes(s.name) ? '<span class="tag">off</span>' : '<span class="tag on">on</span>'} ${esc(s.file)}</span>
+     <span><button class="ghost sm" onclick="togglePlugin(${i})">${dis.includes(s.name) ? "enable" : "disable"}</button> <button class="ghost sm" onclick="editPlugin(${i})">edit</button></span>`)).join("")
+    : '<p class="dim">No plugins.</p>';
+}
+async function togglePlugin(i) {
+  const n = plugins[i].name, d = cfg.settings.disabled_plugins ??= [];
+  d.includes(n) ? d.splice(d.indexOf(n), 1) : d.push(n);
+  await saveCfg(); renderPlugins();
+}
+const PTEMPLATE = `"""
+name: my-plugin
+kind: plugin
+description: what this plugin changes in me
+---
+Runs inside me with full access: \`plugin\` registry + \`me\` module.
+"""
+
+
+@plugin.command("hello", "example command")
+def hello(tui, arg):
+    tui.info("hello from my-plugin", "ok")
+
+
+@plugin.tool("now", "Current local date and time.", {})
+def now(args, ctx):
+    import time
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+`;
+function editPlugin(i) {
+  const s = i === undefined ? {file: "", content: PTEMPLATE} : plugins[i];
+  modal(`<div class="row"><h2 style="margin:0">${i === undefined ? "new plugin" : esc(s.file)}</h2><span class="dim" style="font-size:12px">@plugin.command · @plugin.tool · @plugin.on("key"|"event"|"status"|…)</span></div>
+    ${i === undefined ? `<label>file name</label><input id="pl_f" placeholder="my-plugin.py">` : ""}
+    <label>source</label><textarea id="sk_c" rows="22" spellcheck="false">${esc(s.content)}</textarea>
+    <div class="btns"><button onclick="savePlugin(${i ?? -1})">save &amp; sync</button><button class="ghost" onclick="closeModal()">cancel</button>
+    <button class="ghost" onclick="publishFrom()">publish to marketplace</button>
+    ${i !== undefined ? `<button class="danger" style="margin-left:auto" onclick="delPlugin(${i})">delete</button>` : ""}</div><div class="err" id="ske"></div>`);
+}
+async function savePlugin(i) {
+  const content = $("sk_c").value;
+  let file = i >= 0 ? plugins[i].file : ($("pl_f").value.trim() || (meta(content).name || "plugin") + ".py");
+  if (!file.endsWith(".py")) file += ".py";
+  if (!/^[\w.-]+$/.test(file)) return $("ske").textContent = "file name: letters, digits, _ . -";
+  try { await api("/api/doc", {key: "plugin/" + file, content}, "PUT"); closeModal(); toast("plugin saved · restart me to apply"); loadSkills(); }
+  catch (e) { $("ske").textContent = e.message; }
+}
+async function delPlugin(i) { if (!confirm("Delete " + plugins[i].file + " on all devices?")) return; await api("/api/doc?key=" + encodeURIComponent(plugins[i].key), undefined, "DELETE"); closeModal(); loadSkills(); }
+
+// ── search / voice ──
+function renderKeys() {
+  $("ds_key").value = cfg.search?.deepseek_key || ""; $("ds_model").value = cfg.search?.model || "";
+  $("vk").value = cfg.voice?.groq_key || ""; $("vm").value = cfg.voice?.model || ""; $("vl").value = cfg.voice?.language || "";
+}
+async function saveSearch() { cfg.search = {deepseek_key: $("ds_key").value.trim(), model: $("ds_model").value.trim() || "deepseek-v4-flash"}; await saveCfg("search settings saved"); }
+async function saveVoice() { cfg.voice = {groq_key: $("vk").value.trim(), model: $("vm").value.trim() || "whisper-large-v3", language: $("vl").value.trim()}; await saveCfg("voice settings saved"); }
+
+// ── cloud + telegram ──
+async function loadCloud() {
+  const ws = await api("/api/cloud");
+  $("workers").innerHTML = ws.length ? "<tr><th>session</th><th>workspace</th><th>state</th><th>last activity</th><th></th></tr>" + ws.map(w =>
+    `<tr><td>${esc(w.title || w.session || "—")}</td><td class="dim">${esc(w.ws)}</td><td>${w.busy ? '<span class="tag a">working</span>' : '<span class="tag on">idle</span>'}</td>
+     <td class="dim">${ago(w.last)}</td><td style="text-align:right;white-space:nowrap"><a class="btn-a sm" href="/app?s=${esc(w.session || "")}">open</a> <button class="ghost sm" onclick="stopWorker('${w.id}')">stop</button></td></tr>`).join("")
+    : '<tr><td class="dim">No sandboxes running. Open the web app or message the Telegram bot to start one.</td></tr>';
+  const t = await api("/api/tg");
+  $("tgstate").innerHTML = t.linked ? '<span class="tag on">connected</span>' : '<span class="tag">not connected</span>';
+  $("tgbody").innerHTML = !t.bot ? '<p class="dim">The admin has not configured a bot yet.</p>'
+    : t.linked ? `<div class="btns"><a class="btn-a" href="https://t.me/${esc(t.bot)}" target="_blank">open @${esc(t.bot)}</a><button class="ghost" onclick="tgUnlink()">disconnect</button></div>`
+    : `<div class="btns"><button onclick="tgLink()">connect @${esc(t.bot)}</button></div>`;
+}
+async function stopWorker(id) { await api("/api/cloud/" + id, undefined, "DELETE"); loadCloud(); }
+async function tgLink() { const r = await api("/api/tg/link", {}); window.open(r.url, "_blank"); setTimeout(loadCloud, 8000); }
+async function tgUnlink() { await api("/api/tg/link", undefined, "DELETE"); loadCloud(); }
+
+// ── workspaces ──
+let wsCur = null;
+async function loadWs() {
+  const ws = await api("/api/ws");
+  $("wslist").innerHTML = ws.length ? "<tr><th>name</th><th>files</th><th>size</th><th>updated</th><th></th></tr>" + ws.map(w =>
+    `<tr class="click" onclick="viewWs('${esc(w.id)}','${esc(w.name)}')"><td><b>${esc(w.name)}</b> <span class="dim" style="font-size:12px">${esc(w.id)}</span></td><td>${w.files}</td><td class="dim">${size(w.bytes)}</td><td class="dim">${ago(w.updated)}</td>
+     <td style="text-align:right"><a class="btn-a sm" href="/app?ws=${esc(w.id)}" onclick="event.stopPropagation()">open in cloud</a></td></tr>`).join("")
+    : '<tr><td class="dim">No workspaces yet. Run <code>me</code> inside a git repo (auto-linked) or use <code>/workspace</code>.</td></tr>';
+}
+async function viewWs(id, name) {
+  wsCur = id; $("wsview").classList.remove("hidden"); $("wsname").textContent = name; $("wsopen").href = "/app?ws=" + id;
+  $("wsdel").onclick = async () => { if (!confirm("Delete workspace " + name + " from the cloud? Local copies stay.")) return; await api("/api/ws/" + id, undefined, "DELETE"); $("wsview").classList.add("hidden"); loadWs(); };
+  const files = Object.keys((await api(`/api/ws/${id}/manifest`)).files).sort();
+  $("wsfiles").innerHTML = files.map(f => `<button onclick="viewFile(this,'${esc(f)}')" title="${esc(f)}">${esc(f)}</button>`).join("") || '<p class="dim" style="padding:8px">empty</p>';
+  $("wsfile").textContent = "select a file"; $("wsview").scrollIntoView({behavior: "smooth"});
+}
+async function viewFile(b, f) {
+  document.querySelectorAll("#wsfiles button").forEach(x => x.classList.toggle("on", x === b));
+  const r = await api(`/api/ws/${wsCur}/file?path=` + encodeURIComponent(f));
+  $("wsfile").textContent = r.binary ? `binary file · ${size(r.size)}` : r.text;
+}
+
 // ── marketplace ──
 async function loadMarket() { market = await api("/api/market"); renderMarket(); }
 function renderMarket() {
-  const q = $("mq").value.toLowerCase(), mine = new Set(skills.map(s => s.name));
-  const list = market.filter(m => !q || (m.name + " " + m.description).toLowerCase().includes(q));
+  const q = $("mq").value.toLowerCase();
+  document.querySelectorAll("#mkind button").forEach(b => b.classList.toggle("on", b.dataset.k === mkKind));
+  const mine = new Set([...skills.map(s => s.name), ...plugins.map(s => s.name)]);
+  const list = market.filter(m => (m.kind || "skill") === mkKind && (!q || (m.name + " " + m.description).toLowerCase().includes(q)));
   $("mk").innerHTML = list.map(m => skillCard(m,
     `<span>by ${esc(m.author)} · ${m.installs} installs</span><span><button class="ghost sm" onclick="viewMarket(${m.id})">view</button>
      ${!tok ? "" : mine.has(m.name) ? '<span class="tag on">installed</span>' : `<button class="sm" onclick="install(${m.id},this)">install</button>`}</span>`)).join("")
     || '<p class="dim">Nothing found.</p>';
 }
 $("mq").oninput = renderMarket;
+document.querySelectorAll("#mkind button").forEach(b => b.onclick = () => { mkKind = b.dataset.k; renderMarket(); });
 async function install(id, btn) {
   if (btn) btn.textContent = "…";
   await api(`/api/market/${id}/install`, {}); toast("installed · syncing to your devices"); await loadSkills(); await loadMarket();
@@ -440,16 +603,25 @@ async function loadSessions() {
 async function viewSession(id) {
   const d = JSON.parse((await api("/api/doc?key=" + encodeURIComponent("session/" + id))).content);
   const txt = c => Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : (c || "");
+  const outs = {};
+  d.messages.forEach(m => { if (m.role === "tool") outs[m.tool_call_id] = m.content; });
   const msgs = d.messages.map(m => {
     if (m.role === "user") return `<div class="msg user"><div class="who">you</div>${esc(txt(m.content))}</div>`;
-    if (m.role === "tool") return `<div class="msg tool">${esc(String(m.content).slice(0, 2000))}</div>`;
-    let h = m.content ? `<div class="msg assistant"><div class="who">me</div>${esc(m.content)}</div>` : "";
-    (m.tool_calls || []).forEach(tc => h += `<div class="msg tool">▸ ${esc(tc.function.name)} ${esc(tc.function.arguments.slice(0, 300))}</div>`);
+    if (m.role === "tool") return "";
+    let h = m.content ? `<div class="msg assistant"><div class="who">me</div><div class="md">${mdl(m.content)}</div></div>` : "";
+    (m.tool_calls || []).forEach(tc => { let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}
+      const lab = a.path || a.cmd || a.pattern || a.query || a.url || (a.name ? a.name + (a.action ? " · " + a.action : "") : "");
+      h += `<details class="msg tool"><summary>▸ ${esc(tc.function.name)} <span>${esc(String(lab).slice(0, 120))}</span></summary>${esc(String(outs[tc.id] ?? "").slice(0, 4000))}</details>`; });
     return h;
   }).join("");
+  const u = d.usage || {};
   modal(`<div class="row"><h2 style="margin:0">${esc(d.title || "session")}</h2><div class="btns" style="margin:0">
-    <button class="danger sm" onclick="delSession('${esc(id)}')">delete</button><button class="ghost sm" onclick="closeModal()">close</button></div></div>
-    <p class="dim" style="font-size:12px;margin:6px 0 12px">${esc(d.cwd)} · ${new Date(d.created * 1000).toLocaleString()} · resume in terminal: <code>/sessions</code></p>${msgs}`);
+    <a class="btn-a sm" href="/app?s=${esc(id)}">continue in cloud</a><button class="danger sm" onclick="delSession('${esc(id)}')">delete</button><button class="ghost sm" onclick="closeModal()">close</button></div></div>
+    <p class="dim" style="font-size:12px;margin:6px 0 12px">${esc(d.cwd)} · ${new Date(d.created * 1000).toLocaleString()} · ${d.messages.length} messages · ↑${human(u.in)} ↓${human(u.out)} tokens${d.ws ? " · workspace " + esc(d.ws) : ""} · terminal: <code>/sessions</code></p>${msgs}`);
+}
+function mdl(t) {
+  return esc(t).replace(/```(\w*)\n([\s\S]*?)```/g, (_, l, c) => `<pre class="fview" style="max-height:300px">${c}</pre>`)
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
 }
 async function delSession(id) { if (!confirm("Delete session everywhere?")) return; await api("/api/doc?key=" + encodeURIComponent("session/" + id), undefined, "DELETE"); closeModal(); loadSessions(); }
 
@@ -474,7 +646,18 @@ async function changePw() {
   try { await api("/api/password", {old: $("po").value, new: $("pn").value}); $("pe").className = "err okmsg"; $("pe").textContent = "changed · other devices logged out"; load(); }
   catch (e) { $("pe").className = "err"; $("pe").textContent = e.message; }
 }
+async function saveTg() {
+  try { const r = await api("/api/admin/settings", {tg_token: $("tgtok").value}); $("tge").className = "err okmsg"; $("tge").textContent = r.tg_bot ? "bot @" + r.tg_bot + " is running" : "bot disabled"; }
+  catch (e) { $("tge").className = "err"; $("tge").textContent = e.message; }
+}
 async function loadAdmin() {
+  const [st, ss] = await Promise.all([api("/api/admin/stats"), api("/api/admin/settings")]);
+  $("srv").innerHTML = [["load", st.load[0].toFixed(2) + " / " + st.cpus + " cpu"], ["memory free", st.mem_avail_mb + " / " + st.mem_total_mb + " MB"], ["disk free", st.disk_free_gb + " GB"],
+    ["sandboxes", st.workers + " / " + st.max_workers], ["isolation", ss.sandbox ? "bubblewrap" : "none"]].map(([l, v]) => `<div class="stat"><b style="font-size:17px">${v}</b><span>${l}</span></div>`).join("");
+  $("tgtok").placeholder = ss.tg_token_set ? `configured · @${ss.tg_bot}` : "123456:ABC…";
+  $("aworkers").innerHTML = ss.workers.length ? "<tr><th>user</th><th>session</th><th>workspace</th><th>state</th><th>last</th></tr>" + ss.workers.map(w =>
+    `<tr><td>${esc(w.user)}</td><td>${esc(w.title || "—")}</td><td class="dim">${esc(w.ws)}</td><td>${w.busy ? '<span class="tag a">working</span>' : '<span class="tag on">idle</span>'}</td><td class="dim">${ago(w.last)}</td></tr>`).join("")
+    : '<tr><td class="dim">none running</td></tr>';
   const us = await api("/api/admin/users");
   $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>devices</th><th>2fa</th></tr>" + us.map(u =>
     `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag a">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString()}</td>
@@ -499,9 +682,9 @@ async function load() {
   $("tadmin").classList.toggle("hidden", !me.admin);
   await loadCfg();
   const k = me.kinds;
-  $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["models", cfg.models.length], ["devices", me.devices.length], ["synced", size(me.bytes)]]
+  $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["plugins", k.plugin || 0], ["models", cfg.models.length], ["devices", me.devices.length], ["synced", size(me.bytes)]]
     .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
-  renderModels(); renderSecurity();
+  renderModels(); renderSecurity(); renderKeys();
   await Promise.all([loadSkills(), loadSessions()]);
   tab(want);
 }
