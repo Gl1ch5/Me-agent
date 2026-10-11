@@ -2,7 +2,7 @@
 Run: uvicorn app:app --host 127.0.0.1 --port 8790
 Env: ME_DB (sqlite path), ME_CLIENT (path to me.py), ME_PUBLIC_URL (e.g. https://me-agent.ru)
 """
-import base64, hashlib, hmac, os, re, secrets, sqlite3, struct, threading, time
+import base64, hashlib, hmac, json, os, re, secrets, sqlite3, struct, threading, time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE CO
 CREATE TABLE IF NOT EXISTS tokens(hash TEXT PRIMARY KEY, user_id INTEGER, device TEXT, created REAL, used REAL);
 CREATE TABLE IF NOT EXISTS docs(user_id INTEGER, key TEXT, content TEXT, ts REAL, rev INTEGER, deleted INTEGER DEFAULT 0, size INTEGER,
   PRIMARY KEY(user_id, key));
+CREATE TABLE IF NOT EXISTS market(id INTEGER PRIMARY KEY, name TEXT UNIQUE, author TEXT, user_id INTEGER, description TEXT, icon TEXT,
+  color TEXT, ext TEXT, content TEXT, installs INTEGER DEFAULT 0, created REAL, updated REAL);
 CREATE INDEX IF NOT EXISTS docs_rev ON docs(user_id, rev);
 """)
 
@@ -254,6 +256,147 @@ def sync(r: SyncReq, u=Depends(user)):
     return {"cursor": rev, "docs": out}
 
 
+KEY_RX = r"(config|skill/[\w.-]+|session/[\w.-]+)"
+
+
+def put_doc(uid, key, content, deleted=False):
+    with lock:
+        rev = conn.execute("SELECT COALESCE(MAX(rev),0)+1 FROM docs WHERE user_id=?", (uid,)).fetchone()[0]
+        conn.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,?,?,?)", (uid, key, "" if deleted else content, time.time(), rev, int(deleted), len(content)))
+
+
+class DocPut(BaseModel):
+    key: str
+    content: str
+
+
+@app.get("/api/doc")
+def doc_get(key: str, u=Depends(user)):
+    r = conn.execute("SELECT content,ts FROM docs WHERE user_id=? AND key=? AND deleted=0", (u["id"], key)).fetchone()
+    if not r:
+        raise HTTPException(404, "not found")
+    return {"key": key, "content": r["content"], "ts": r["ts"]}
+
+
+@app.put("/api/doc")
+def doc_put(d: DocPut, u=Depends(user)):
+    if not re.fullmatch(KEY_RX, d.key) or len(d.content) > MAX_DOC:
+        raise HTTPException(400, "bad key")
+    if d.key == "config":
+        try:
+            json.loads(d.content)
+        except ValueError:
+            raise HTTPException(400, "config must be JSON")
+    put_doc(u["id"], d.key, d.content)
+    return {"ok": True}
+
+
+@app.delete("/api/doc")
+def doc_del(key: str, u=Depends(user)):
+    put_doc(u["id"], key, "", deleted=True)
+    return {"ok": True}
+
+
+@app.get("/api/sessions")
+def sessions(u=Depends(user)):
+    out = []
+    for r in conn.execute("SELECT key,content,ts FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'session/%' ORDER BY ts DESC", (u["id"],)):
+        try:
+            d = json.loads(r["content"])
+        except ValueError:
+            continue
+        out.append({"id": d.get("id"), "title": d.get("title"), "cwd": d.get("cwd"), "updated": d.get("updated", r["ts"]),
+                    "messages": len(d.get("messages", [])), "usage": d.get("usage", {})})
+    return out
+
+
+# ─── marketplace ───
+
+
+def skill_meta(content):
+    m = re.search(r'(?:"""|^---)\s*\n(.*?)\n---', content, re.S | re.M)
+    meta = {}
+    for line in (m.group(1).splitlines() if m else []):
+        k, _, v = line.partition(":")
+        if k.strip() and v.strip():
+            meta[k.strip()] = v.strip()
+    return meta
+
+
+class Publish(BaseModel):
+    content: str
+    ext: str = "py"
+
+
+@app.get("/api/market")
+def market(q: str = ""):
+    rows = conn.execute("SELECT id,name,author,description,icon,color,ext,installs,updated FROM market ORDER BY installs DESC, updated DESC").fetchall()
+    q = q.lower()
+    return [dict(r) for r in rows if not q or q in (r["name"] + " " + (r["description"] or "")).lower()]
+
+
+@app.get("/api/market/{mid}")
+def market_get(mid: int):
+    r = conn.execute("SELECT * FROM market WHERE id=?", (mid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    d = dict(r)
+    d.pop("user_id")
+    return d
+
+
+@app.post("/api/market")
+def market_publish(p: Publish, u=Depends(user)):
+    meta = skill_meta(p.content)
+    name = meta.get("name", "")
+    if not re.fullmatch(r"[a-z0-9_-]{2,40}", name):
+        raise HTTPException(400, "skill needs 'name: lowercase-name' in its header")
+    if len(p.content) > 200_000:
+        raise HTTPException(400, "too big")
+    ext = "md" if p.ext == "md" else "py"
+    cur = conn.execute("SELECT user_id FROM market WHERE name=?", (name,)).fetchone()
+    if cur and cur["user_id"] != u["id"] and not u["admin"]:
+        raise HTTPException(409, "name taken by another author")
+    now = time.time()
+    if cur:
+        conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,updated=? WHERE name=?",
+                     (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, name))
+    else:
+        conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                     (name, u["username"], u["id"], meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, now))
+    return {"ok": True, "name": name}
+
+
+@app.post("/api/market/{mid}/install")
+def market_install(mid: int, u=Depends(user)):
+    r = conn.execute("SELECT * FROM market WHERE id=?", (mid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    put_doc(u["id"], f"skill/{r['name']}.{r['ext']}", r["content"])
+    conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (mid,))
+    return {"ok": True}
+
+
+@app.delete("/api/market/{mid}")
+def market_delete(mid: int, u=Depends(user)):
+    conn.execute("DELETE FROM market WHERE id=? AND (user_id=? OR ?)", (mid, u["id"], u["admin"]))
+    return {"ok": True}
+
+
+def seed_market():
+    for p in sorted((HERE / "market").glob("*.*")):
+        c = p.read_text("utf-8")
+        meta = skill_meta(c)
+        if meta.get("name") and not conn.execute("SELECT 1 FROM market WHERE name=?", (meta["name"],)).fetchone():
+            now = time.time()
+            conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                         (meta["name"], "me", 0, meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"),
+                          p.suffix[1:], c, now, now))
+
+
+seed_market()
+
+
 @app.get("/api/docs")
 def docs(u=Depends(user)):
     return [dict(key=r["key"], ts=r["ts"], size=r["size"]) for r in
@@ -330,12 +473,17 @@ def favicon():
     return FileResponse(HERE / "site" / "favicon.svg", media_type="image/svg+xml")
 
 
+@app.get("/market")
+def market_page(req: Request):
+    return page("account.html", req)
+
+
 @app.get("/skills/{name}")
-def example_skill(name: str):
-    p = HERE / "skills" / name
-    if not re.fullmatch(r"[\w.-]+", name) or not p.exists():
+def raw_skill(name: str):
+    r = conn.execute("SELECT content FROM market WHERE name=?", (name.rsplit(".", 1)[0],)).fetchone()
+    if not r:
         raise HTTPException(404)
-    return PlainTextResponse(p.read_text("utf-8"))
+    return PlainTextResponse(r["content"])
 
 
 @app.get("/healthz")

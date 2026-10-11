@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -2878,9 +2878,12 @@ class TUI:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()
         self.bg(self.startup)
-        last = 0
+        last, last_sync = 0, time.time()
         try:
             while self.running:
+                if self.cloud.online and not self.agent.busy and time.time() - last_sync > 30:
+                    last_sync = time.time()
+                    self.cloud.sync_bg(lambda n: n > 0 and self.toast(f"☁ {n} updates from cloud", "ok"))
                 try:
                     k = self.term.q.get(timeout=0.05)
                     with self.lock:

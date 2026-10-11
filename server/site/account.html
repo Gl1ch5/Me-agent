@@ -8,95 +8,196 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
-:root{--bg:#0b0c10;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;
+:root{--bg:#0b0c10;--bg2:#111319;--bg3:#161922;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--y:#e7c66b;
   --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
-:root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}}
+:root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
-.wrap{max-width:760px;margin:0 auto;padding:0 20px 80px}
-nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0 40px}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased;font-size:14.5px}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px 80px}
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0 26px;gap:12px}
 .logo{font-family:var(--mono);font-weight:700;font-size:20px;display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit}
 .logo i{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}
-h1{font-family:var(--mono);font-size:30px;letter-spacing:-1px;margin-bottom:6px}
-h2{font-family:var(--mono);font-size:16px;margin:0 0 14px}
+h1{font-family:var(--mono);font-size:28px;letter-spacing:-1px;margin-bottom:6px}
+h2{font-family:var(--mono);font-size:15px;margin:0 0 14px}
 .dim{color:var(--dim)}
-.card{border:1px solid var(--line);border-radius:14px;padding:24px;margin-top:20px;background:var(--bg)}
-input{width:100%;font:15px var(--sans);background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:12px 14px;margin-top:10px;outline:none}
-input:focus{border-color:var(--a)}
-button{font:500 14px var(--mono);background:var(--a);color:#fff;border:none;border-radius:9px;padding:11px 18px;cursor:pointer;margin-top:14px}
+.card{border:1px solid var(--line);border-radius:14px;padding:22px;margin-top:16px;background:var(--bg)}
+input,textarea,select{width:100%;font:14px var(--sans);background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:10px 12px;outline:none}
+textarea{font:13px/1.55 var(--mono);resize:vertical;min-height:120px;tab-size:4}
+input:focus,textarea:focus,select:focus{border-color:var(--a)}
+label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px}
+button{font:500 13px var(--mono);background:var(--a);color:#fff;border:none;border-radius:8px;padding:9px 15px;cursor:pointer}
+button:hover{filter:brightness(1.1)}
 button.ghost{background:none;color:var(--dim);border:1px solid var(--line)}
-button.ghost:hover{color:var(--fg)}
-button.small{padding:5px 10px;font-size:12px;margin:0}
+button.ghost:hover{color:var(--fg);border-color:var(--faint)}
+button.danger{background:none;color:var(--err);border:1px solid var(--line)}
+button.sm{padding:5px 10px;font-size:12px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center}
 .switch{display:flex;gap:4px;background:var(--bg2);padding:4px;border-radius:10px;width:max-content}
-.switch button{margin:0;background:none;color:var(--dim);padding:8px 16px}
+.switch button{background:none;color:var(--dim);padding:8px 16px}
 .switch button.on{background:var(--line);color:var(--fg)}
-.err{color:var(--err);font-size:14px;margin-top:10px;min-height:18px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto;margin-top:22px}
+.tabs button{background:none;color:var(--dim);border-radius:0;padding:12px 16px;border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button.on{color:var(--fg);border-bottom-color:var(--a)}
+.err{color:var(--err);font-size:13px;margin-top:8px;min-height:16px}
+.okmsg{color:var(--ok)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
 .stat{background:var(--bg2);border-radius:10px;padding:14px}
 .stat b{display:block;font:600 22px var(--mono)}
 .stat span{font-size:12px;color:var(--dim)}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
-th{text-align:left;color:var(--dim);font-weight:500;padding:8px 6px;border-bottom:1px solid var(--line)}
-td{padding:9px 6px;border-bottom:1px solid var(--line)}
-.tag{font:11px var(--mono);padding:2px 7px;border-radius:5px;background:var(--line);color:var(--dim)}
+th{text-align:left;color:var(--dim);font-weight:500;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.click{cursor:pointer}tr.click:hover td{background:var(--bg2)}
+.tag{font:11px var(--mono);padding:2px 7px;border-radius:5px;background:var(--line);color:var(--dim);white-space:nowrap}
 .tag.on{background:rgba(90,209,138,.15);color:var(--ok)}
+.tag.a{background:rgba(139,124,255,.15);color:var(--a)}
 #qr{background:#fff;padding:12px;border-radius:10px;width:max-content;margin:14px 0}
-code{font-family:var(--mono);font-size:13px;background:var(--bg2);padding:2px 6px;border-radius:5px;word-break:break-all}
+code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 6px;border-radius:5px;word-break:break-all}
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.hidden{display:none}
-.chips{display:flex;flex-wrap:wrap;gap:6px}
+.hidden{display:none!important}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.sk{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--bg);display:flex;flex-direction:column;gap:8px}
+.sk .t{display:flex;align-items:center;gap:10px;font:600 14px var(--mono)}
+.sk .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;flex-shrink:0}
+.sk p{color:var(--dim);font-size:13px;line-height:1.5;flex:1}
+.sk .f{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim)}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.f3{display:grid;grid-template-columns:repeat(3,1fr);gap:0 14px}
+@media (max-width:640px){.f2,.f3{grid-template-columns:1fr}}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:16px;z-index:9}
+.modal>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:22px;width:min(860px,100%);max-height:90vh;overflow:auto}
+.msg{padding:12px 14px;border-radius:10px;margin:8px 0;white-space:pre-wrap;font-size:13.5px;line-height:1.55;word-break:break-word}
+.msg.user{background:var(--bg3);border-left:3px solid var(--y)}
+.msg.assistant{background:var(--bg2)}
+.msg.tool{font:12px/1.5 var(--mono);color:var(--dim);background:var(--bg2);max-height:160px;overflow:auto}
+.msg .who{font:11px var(--mono);color:var(--dim);margin-bottom:4px;text-transform:uppercase}
+.key{font-family:var(--mono);letter-spacing:1px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--line);padding:10px 16px;border-radius:10px;font-size:13px;z-index:10}
 </style>
 </head>
 <body>
 <div class="wrap">
-<nav><a class="logo" href="/"><i></i>me</a><a href="/" class="dim" style="font-size:14px">← home</a></nav>
+<nav><a class="logo" href="/"><i></i>me</a><div class="row" style="gap:16px"><a href="/" class="dim" style="font-size:14px;text-decoration:none">home</a><span id="who" class="dim"></span></div></nav>
 
-<div id="auth">
+<div id="auth" class="hidden">
   <h1>your account</h1>
-  <p class="dim">Same login as in the terminal (<code>/login</code>).</p>
-  <div class="card">
+  <p class="dim">Same login as in the terminal (<code>/login</code>). Everything you change here syncs to every machine.</p>
+  <div class="card" style="max-width:460px">
     <div class="switch"><button class="on" data-m="login">log in</button><button data-m="register">create account</button></div>
     <form id="f">
-      <input id="u" placeholder="username" autocomplete="username" required>
-      <input id="p" type="password" placeholder="password" autocomplete="current-password" required>
-      <input id="c" class="hidden" placeholder="authenticator code" inputmode="numeric" autocomplete="one-time-code">
-      <button type="submit" id="go">log in</button>
+      <input id="u" placeholder="username" autocomplete="username" required style="margin-top:14px">
+      <input id="p" type="password" placeholder="password" autocomplete="current-password" required style="margin-top:10px">
+      <input id="c" class="hidden" placeholder="authenticator code" inputmode="numeric" autocomplete="one-time-code" style="margin-top:10px">
+      <div class="btns"><button type="submit" id="go">log in</button></div>
       <div class="err" id="e"></div>
     </form>
   </div>
 </div>
 
 <div id="dash" class="hidden">
-  <div class="row"><div><h1 id="hello"></h1><p class="dim" id="since"></p></div><button class="ghost" id="out">log out</button></div>
-  <div class="card"><div class="stats" id="stats"></div></div>
-  <div class="card"><h2>skills</h2><div class="chips" id="skills"></div></div>
-  <div class="card">
-    <div class="row"><h2 style="margin:0">authenticator (2FA)</h2><span id="tstate"></span></div>
-    <div id="tbody" style="margin-top:12px"></div>
+  <div class="tabs" id="tabs">
+    <button data-tab="overview">overview</button><button data-tab="models">models &amp; keys</button><button data-tab="skills">skills</button>
+    <button data-tab="market">marketplace</button><button data-tab="sessions">sessions</button><button data-tab="security">security</button>
+    <button data-tab="admin" class="hidden" id="tadmin">admin</button>
   </div>
-  <div class="card"><h2>devices</h2><table id="dev"></table></div>
-  <div class="card">
-    <h2>password</h2>
-    <input id="po" type="password" placeholder="current password"><input id="pn" type="password" placeholder="new password">
-    <button id="pw">change</button><div class="err" id="pe"></div>
+
+  <div data-pane="overview">
+    <div class="card"><div class="stats" id="stats"></div></div>
+    <div class="card"><h2>install on a new machine</h2>
+      <p class="dim" style="margin-bottom:10px">Run, then <code>/login</code> — config, keys, skills and chats appear instantly.</p>
+      <code id="i1"></code><br><br><code id="i2"></code></div>
+    <div class="card"><div class="row"><h2 style="margin:0">recent sessions</h2><button class="ghost sm" onclick="tab('sessions')">all</button></div><table id="recent" style="margin-top:10px"></table></div>
   </div>
-  <div class="card hidden" id="admin"><h2>users · admin</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
+
+  <div data-pane="models">
+    <div class="card">
+      <div class="row"><h2 style="margin:0">providers</h2><button class="sm" onclick="editProvider()">+ add provider</button></div>
+      <p class="dim" style="margin:6px 0 10px">Any OpenAI-compatible API. Keys are stored in your account and sync to every device.</p>
+      <table id="provs"></table>
+    </div>
+    <div class="card">
+      <div class="row"><h2 style="margin:0">models</h2><div class="btns" style="margin:0"><button class="ghost sm" onclick="fetchModels()">↻ fetch from provider</button><button class="sm" onclick="editModel()">+ add model</button></div></div>
+      <table id="models" style="margin-top:10px"></table>
+    </div>
+    <div class="card">
+      <h2>system prompt</h2>
+      <p class="dim" style="margin-bottom:10px">Appended to me's tiny base prompt on every machine.</p>
+      <textarea id="prompt" rows="6" placeholder="e.g. Answer in Russian. Prefer uv over pip."></textarea>
+      <div class="btns"><button onclick="savePrompt()">save</button></div>
+    </div>
+  </div>
+
+  <div data-pane="skills">
+    <div class="card">
+      <div class="row"><h2 style="margin:0">your skills</h2><div class="btns" style="margin:0"><button class="ghost sm" onclick="tab('market')">browse marketplace</button><button class="sm" onclick="editSkill()">+ new skill</button></div></div>
+      <div class="grid" id="myskills" style="margin-top:14px"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h2 style="margin:0">secrets</h2><button class="sm" onclick="editSecret()">+ add secret</button></div>
+      <p class="dim" style="margin:6px 0 10px">Environment variables passed to skills (e.g. <code>GITHUB_TOKEN</code>).</p>
+      <table id="secrets"></table>
+    </div>
+  </div>
+
+  <div data-pane="market">
+    <div class="card">
+      <div class="row"><div><h2 style="margin:0">skills marketplace</h2><p class="dim" style="margin-top:4px">Install in one click — it lands on all your machines on next sync.</p></div>
+        <button class="ghost sm" onclick="publish()">publish a skill</button></div>
+      <input id="mq" placeholder="search skills…" style="margin-top:14px">
+      <div class="grid" id="mk" style="margin-top:14px"></div>
+    </div>
+  </div>
+
+  <div data-pane="sessions">
+    <div class="card"><h2>sessions</h2><input id="sq" placeholder="filter…" style="margin-bottom:10px"><table id="sess"></table></div>
+  </div>
+
+  <div data-pane="security">
+    <div class="card"><div class="row"><h2 style="margin:0">authenticator (2FA)</h2><span id="tstate"></span></div><div id="tbody" style="margin-top:12px"></div></div>
+    <div class="card"><h2>devices</h2><table id="dev"></table></div>
+    <div class="card" style="max-width:480px"><h2>password</h2>
+      <input id="po" type="password" placeholder="current password"><input id="pn" type="password" placeholder="new password" style="margin-top:10px">
+      <div class="btns"><button onclick="changePw()">change</button></div><div class="err" id="pe"></div></div>
+    <div class="btns"><button class="danger" onclick="logout()">log out</button></div>
+  </div>
+
+  <div data-pane="admin"><div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div></div>
 </div>
 </div>
+<div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()"><div id="mbody"></div></div>
 
 <script>
-let mode = "login", tok = localStorage.getItem("me_token");
+const S = "__SERVER__";
+const COLORS = {red:"#ff6b7a",green:"#5ad18a",blue:"#6ba6ff",magenta:"#d27cff",cyan:"#4fd1c5",yellow:"#e7c66b",orange:"#ffb454",purple:"#8b7cff",pink:"#ff8fc7"};
+const EFFORTS = ["", "minimal", "low", "medium", "high", "xhigh"];
+let tok = localStorage.getItem("me_token"), me = null, cfg = null, mode = "login", skills = [], market = [], sessions = [];
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const ago = t => { if (!t) return "—"; const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; };
 const size = b => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
-const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+const human = n => n < 1000 ? String(n || 0) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
+const col = c => COLORS[c] || (String(c || "").startsWith("#") ? c : "#8b7cff");
+function toast(m) { const d = document.createElement("div"); d.className = "toast"; d.textContent = m; document.body.appendChild(d); setTimeout(() => d.remove(), 2200); }
 async function api(path, body, method) {
-  const r = await fetch(path, {method: method || (body ? "POST" : "GET"), headers: {"Content-Type": "application/json", ...(tok ? {Authorization: "Bearer " + tok} : {})}, body: body ? JSON.stringify(body) : undefined});
+  const r = await fetch(path, {method: method || (body !== undefined ? "POST" : "GET"), headers: {"Content-Type": "application/json", ...(tok ? {Authorization: "Bearer " + tok} : {})}, body: body !== undefined ? JSON.stringify(body) : undefined});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || r.statusText);
   return j;
 }
+function modal(html) { $("mbody").innerHTML = html; $("modal").classList.remove("hidden"); }
+function closeModal() { $("modal").classList.add("hidden"); }
+function meta(content) {
+  const m = content.match(/(?:"""|^---)\s*\n([\s\S]*?)\n---/m), o = {};
+  if (m) m[1].split("\n").forEach(l => { const i = l.indexOf(":"); if (i > 0 && l.slice(i + 1).trim()) o[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+  return o;
+}
+function skillCard(s, actions) {
+  return `<div class="sk"><div class="t"><span class="ic" style="background:${col(s.color)}22;color:${col(s.color)}">${esc(s.icon || "◆")}</span>${esc(s.name)}</div>
+    <p>${esc(s.description || "")}</p><div class="f">${actions}</div></div>`;
+}
+
+// ── auth ──
 document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
   mode = b.dataset.m; document.querySelectorAll(".switch button").forEach(x => x.classList.toggle("on", x === b));
   $("go").textContent = mode === "login" ? "log in" : "create account"; $("e").textContent = "";
@@ -104,52 +205,307 @@ document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
 $("f").onsubmit = async e => {
   e.preventDefault(); $("e").textContent = "";
   try {
-    const r = await api("/api/" + mode, {username: $("u").value.trim(), password: $("p").value, totp: $("c").value || null, device: "web"});
+    const r = await api("/api/" + mode, {username: $("u").value.trim(), password: $("p").value, totp: $("c").value || null, device: "web · " + navigator.platform});
     tok = r.token; localStorage.setItem("me_token", tok); load();
   } catch (err) {
-    if (err.message === "totp_required" || err.message === "totp_invalid") {
-      $("c").classList.remove("hidden"); $("c").focus();
-      $("e").textContent = err.message === "totp_invalid" ? "wrong code" : "enter your authenticator code";
-    } else $("e").textContent = err.message;
+    if (/^totp_/.test(err.message)) { $("c").classList.remove("hidden"); $("c").focus(); $("e").textContent = err.message === "totp_invalid" ? "wrong code" : "enter your authenticator code"; }
+    else $("e").textContent = err.message;
   }
 };
-$("out").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} localStorage.removeItem("me_token"); location.reload(); };
-$("pw").onclick = async () => {
-  try { await api("/api/password", {old: $("po").value, new: $("pn").value}); $("pe").style.color = "var(--ok)"; $("pe").textContent = "changed · other devices logged out"; load(); }
-  catch (e) { $("pe").style.color = ""; $("pe").textContent = e.message; }
-};
-async function load() {
-  let me;
-  try { me = await api("/api/me"); } catch (e) { localStorage.removeItem("me_token"); tok = null; return; }
-  $("auth").classList.add("hidden"); $("dash").classList.remove("hidden");
-  $("hello").textContent = me.username;
-  $("since").textContent = `member since ${new Date(me.created * 1000).toLocaleDateString()}`;
-  const k = me.kinds;
-  $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["devices", me.devices.length], ["synced", size(me.bytes)]]
-    .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
-  $("skills").innerHTML = me.skills.length ? me.skills.map(s => `<span class="tag">${esc(s)}</span>`).join("") : '<span class="dim">no skills yet — /skills in the terminal</span>';
+async function logout() { try { await api("/api/logout", {}); } catch (e) {} localStorage.removeItem("me_token"); location.href = "/account"; }
+
+// ── tabs ──
+function tab(name) {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== name));
+  history.replaceState(null, "", "#" + name);
+  if (name === "market") loadMarket();
+  if (name === "admin") loadAdmin();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
+
+// ── config ──
+async function loadCfg() {
+  try { cfg = JSON.parse((await api("/api/doc?key=config")).content); } catch (e) { cfg = {}; }
+  cfg.providers ??= {}; cfg.models ??= []; cfg.secrets ??= {}; cfg.settings ??= {yolo: false, mouse: true, disabled_skills: []}; cfg.prompt ??= "";
+}
+async function saveCfg(msg) { await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); toast(msg || "saved · syncing to your devices"); renderModels(); renderSkills(); }
+
+function renderModels() {
+  const pv = Object.entries(cfg.providers);
+  $("provs").innerHTML = pv.length ? "<tr><th>name</th><th>base url</th><th>api key</th><th></th></tr>" + pv.map(([n, p]) =>
+    `<tr><td><b>${esc(n)}</b></td><td class="dim">${esc(p.base_url)}</td><td class="key dim">${p.api_key ? esc(p.api_key.slice(0, 5)) + "••••" + esc(p.api_key.slice(-4)) : "—"}</td>
+     <td style="text-align:right;white-space:nowrap"><button class="ghost sm" onclick="editProvider('${esc(n)}')">edit</button></td></tr>`).join("")
+    : '<tr><td class="dim">No providers yet. Add OpenAI, OpenRouter, DeepSeek, a local Ollama…</td></tr>';
+  $("models").innerHTML = cfg.models.length ? "<tr><th>name</th><th>model id</th><th>provider</th><th>context</th><th>effort</th><th></th></tr>" + cfg.models.map((m, i) =>
+    `<tr><td><b>${esc(m.name)}</b> ${m.name === cfg.model ? '<span class="tag on">active</span>' : ""}</td><td class="dim">${esc(m.id)}</td><td class="dim">${esc(m.provider)}</td>
+     <td class="dim">${human(m.context)}</td><td class="dim">${esc(m.effort || "—")}</td>
+     <td style="text-align:right;white-space:nowrap">${m.name !== cfg.model ? `<button class="ghost sm" onclick="useModel(${i})">use</button> ` : ""}<button class="ghost sm" onclick="editModel(${i})">edit</button></td></tr>`).join("")
+    : '<tr><td class="dim">No models yet — add a provider and fetch its models.</td></tr>';
+  $("prompt").value = cfg.prompt || "";
+}
+function editProvider(name) {
+  const p = name ? cfg.providers[name] : {base_url: "https://api.openai.com/v1", api_key: ""};
+  modal(`<h2>${name ? "edit provider" : "add provider"}</h2>
+    <label>name</label><input id="pv_n" value="${esc(name || "")}" placeholder="openai">
+    <label>base url</label><input id="pv_u" value="${esc(p.base_url)}" placeholder="https://openrouter.ai/api/v1">
+    <label>api key</label><input id="pv_k" value="${esc(p.api_key)}" placeholder="sk-…" type="password" onfocus="this.type='text'">
+    <div class="btns"><button onclick="saveProvider('${esc(name || "")}')">save</button><button class="ghost" onclick="closeModal()">cancel</button>
+    ${name ? `<button class="danger" style="margin-left:auto" onclick="delProvider('${esc(name)}')">delete</button>` : ""}</div>`);
+}
+async function saveProvider(old) {
+  const n = $("pv_n").value.trim(); if (!n) return;
+  if (old && old !== n) { delete cfg.providers[old]; cfg.models.forEach(m => { if (m.provider === old) m.provider = n; }); }
+  cfg.providers[n] = {base_url: $("pv_u").value.trim().replace(/\/$/, ""), api_key: $("pv_k").value.trim()};
+  closeModal(); await saveCfg();
+}
+async function delProvider(n) { if (!confirm(`Delete provider ${n}?`)) return; delete cfg.providers[n]; closeModal(); await saveCfg(); }
+async function useModel(i) { cfg.model = cfg.models[i].name; await saveCfg(`active model → ${cfg.model}`); }
+function editModel(i) {
+  const m = i === undefined ? {name: "", id: "", provider: Object.keys(cfg.providers)[0] || "", api: "chat", context: 128000, max_out: "", effort: "", temperature: "", vision: true} : cfg.models[i];
+  modal(`<h2>${i === undefined ? "add model" : "edit model"}</h2>
+    <div class="f2"><div><label>display name</label><input id="m_name" value="${esc(m.name)}"></div><div><label>API model id</label><input id="m_id" value="${esc(m.id)}" placeholder="gpt-5"></div></div>
+    <div class="f3"><div><label>provider</label><select id="m_prov">${Object.keys(cfg.providers).map(p => `<option ${p === m.provider ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></div>
+    <div><label>api style</label><select id="m_api"><option value="chat" ${m.api !== "responses" ? "selected" : ""}>chat/completions</option><option value="responses" ${m.api === "responses" ? "selected" : ""}>responses</option></select></div>
+    <div><label>reasoning effort</label><select id="m_eff">${EFFORTS.map(e => `<option value="${e}" ${e === (m.effort || "") ? "selected" : ""}>${e || "none"}</option>`).join("")}</select></div></div>
+    <div class="f3"><div><label>context window</label><input id="m_ctx" value="${esc(m.context)}"></div><div><label>max output (blank = default)</label><input id="m_max" value="${esc(m.max_out)}"></div>
+    <div><label>temperature (blank = default)</label><input id="m_t" value="${esc(m.temperature)}"></div></div>
+    <label><input type="checkbox" id="m_vis" ${m.vision !== false ? "checked" : ""} style="width:auto;margin-right:6px">send images (vision)</label>
+    <div class="btns"><button onclick="saveModel(${i ?? -1})">save</button><button class="ghost" onclick="closeModal()">cancel</button>
+    ${i !== undefined ? `<button class="danger" style="margin-left:auto" onclick="delModel(${i})">delete</button>` : ""}</div>`);
+}
+async function saveModel(i) {
+  const num = v => v === "" ? "" : parseInt(String(v).replace(/k$/i, "000")) || "";
+  const m = {name: $("m_name").value.trim() || $("m_id").value.trim(), id: $("m_id").value.trim(), provider: $("m_prov").value, api: $("m_api").value,
+    context: num($("m_ctx").value) || 128000, max_out: num($("m_max").value), effort: $("m_eff").value, temperature: $("m_t").value, vision: $("m_vis").checked};
+  if (!m.id) return;
+  if (i < 0) cfg.models.push(m); else { if (cfg.model === cfg.models[i].name) cfg.model = m.name; cfg.models[i] = m; }
+  if (!cfg.model) cfg.model = m.name;
+  closeModal(); await saveCfg();
+}
+async function delModel(i) { const n = cfg.models[i].name; cfg.models.splice(i, 1); if (cfg.model === n) cfg.model = cfg.models[0]?.name || null; closeModal(); await saveCfg(); }
+async function savePrompt() { cfg.prompt = $("prompt").value.trim(); await saveCfg("prompt saved"); }
+async function fetchModels() {
+  const pv = Object.keys(cfg.providers);
+  if (!pv.length) return editProvider();
+  modal(`<h2>fetch models</h2><label>provider</label><select id="fp">${pv.map(p => `<option>${esc(p)}</option>`).join("")}</select>
+    <div class="btns"><button onclick="doFetch()">fetch</button><button class="ghost" onclick="closeModal()">cancel</button></div>
+    <p class="dim" style="font-size:12px;margin-top:10px">Requested from your browser. If the provider blocks browsers (CORS), use <code>/models</code> in the terminal.</p><div id="fl"></div>`);
+}
+async function doFetch() {
+  const name = $("fp").value, p = cfg.providers[name];
+  $("fl").innerHTML = '<p class="dim" style="margin-top:12px">loading…</p>';
+  try {
+    const r = await fetch(p.base_url + "/models", {headers: p.api_key ? {Authorization: "Bearer " + p.api_key} : {}});
+    const ids = ((await r.json()).data || []).map(m => ({id: m.id, ctx: m.context_length || m.context_window || m.top_provider?.context_length})).sort((a, b) => a.id.localeCompare(b.id));
+    const have = new Set(cfg.models.filter(m => m.provider === name).map(m => m.id));
+    $("fl").innerHTML = `<input id="ff" placeholder="filter ${ids.length} models…" style="margin-top:12px" oninput="document.querySelectorAll('#fl .fm').forEach(r=>r.classList.toggle('hidden',!r.dataset.id.toLowerCase().includes(this.value.toLowerCase())))">
+      <div style="max-height:46vh;overflow:auto;margin-top:8px">${ids.map(m => `<label class="fm" data-id="${esc(m.id)}" style="display:flex;gap:8px;align-items:center;color:var(--fg);font-size:13px;margin:6px 0">
+      <input type="checkbox" style="width:auto" value="${esc(m.id)}" data-ctx="${m.ctx || ""}" ${have.has(m.id) ? "checked disabled" : ""}>${esc(m.id)} <span class="dim">${m.ctx ? human(m.ctx) : ""}</span></label>`).join("")}</div>
+      <div class="btns"><button onclick="addFetched('${esc(name)}')">add selected</button></div>`;
+  } catch (e) { $("fl").innerHTML = `<p class="err">${esc(e.message)} — try /models in the terminal</p>`; }
+}
+async function addFetched(prov) {
+  document.querySelectorAll("#fl input[type=checkbox]:checked:not(:disabled)").forEach(c => {
+    let n = c.value.split("/").pop(); if (cfg.models.some(m => m.name === n)) n = prov + "/" + n;
+    cfg.models.push({name: n, id: c.value, provider: prov, api: "chat", context: parseInt(c.dataset.ctx) || 128000, max_out: "", effort: "", temperature: "", vision: true});
+  });
+  if (!cfg.model && cfg.models.length) cfg.model = cfg.models[0].name;
+  closeModal(); await saveCfg();
+}
+
+// ── skills ──
+async function loadSkills() {
+  const docs = await api("/api/docs");
+  skills = await Promise.all(docs.filter(d => d.key.startsWith("skill/")).map(async d => {
+    const c = (await api("/api/doc?key=" + encodeURIComponent(d.key))).content;
+    return {key: d.key, file: d.key.slice(6), content: c, ...meta(c), name: meta(c).name || d.key.slice(6).replace(/\.\w+$/, "")};
+  }));
+  renderSkills();
+}
+function renderSkills() {
+  const dis = cfg.settings.disabled_skills || [];
+  $("myskills").innerHTML = skills.length ? skills.map((s, i) => skillCard(s,
+    `<span>${dis.includes(s.name) ? '<span class="tag">off</span>' : '<span class="tag on">on</span>'} ${esc(s.file)}</span>
+     <span><button class="ghost sm" onclick="toggleSkill(${i})">${dis.includes(s.name) ? "enable" : "disable"}</button> <button class="ghost sm" onclick="editSkill(${i})">edit</button></span>`)).join("")
+    : '<p class="dim">No skills yet. Write one or install from the marketplace.</p>';
+  const sec = Object.keys(cfg.secrets);
+  $("secrets").innerHTML = sec.length ? sec.map(k => `<tr><td class="key">${esc(k)}</td><td class="dim key">••••••••</td><td style="text-align:right"><button class="ghost sm" onclick="editSecret('${esc(k)}')">edit</button></td></tr>`).join("")
+    : '<tr><td class="dim">No secrets.</td></tr>';
+}
+async function toggleSkill(i) {
+  const n = skills[i].name, d = cfg.settings.disabled_skills ??= [];
+  d.includes(n) ? d.splice(d.indexOf(n), 1) : d.push(n);
+  await saveCfg();
+}
+const TEMPLATE = `"""
+name: my-skill
+description: one line — when should the agent use this
+icon: ◆
+color: purple
+---
+Instructions for the model (loaded only when the skill is used).
+"""
+
+
+@action
+def hello(ctx, who: str = "world"):
+    "Say hello"
+    for i in ctx.progress(range(3), "warming up"):
+        ctx.log(f"step {i}")
+    return f"hello, {who}!"
+`;
+function editSkill(i) {
+  const s = i === undefined ? {file: "", content: TEMPLATE} : skills[i];
+  modal(`<div class="row"><h2 style="margin:0">${i === undefined ? "new skill" : esc(s.file)}</h2><span class="dim" style="font-size:12px">.py = guide + @action functions · .md = guide only</span></div>
+    ${i === undefined ? `<label>file name</label><input id="sk_f" placeholder="my-skill.py">` : ""}
+    <label>source</label><textarea id="sk_c" rows="22" spellcheck="false">${esc(s.content)}</textarea>
+    <div class="btns"><button onclick="saveSkill(${i ?? -1})">save &amp; sync</button><button class="ghost" onclick="closeModal()">cancel</button>
+    <button class="ghost" onclick="publishFrom()">publish to marketplace</button>
+    ${i !== undefined ? `<button class="danger" style="margin-left:auto" onclick="delSkill(${i})">delete</button>` : ""}</div><div class="err" id="ske"></div>`);
+  $("sk_c").onkeydown = e => { if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "    "); } };
+}
+async function saveSkill(i) {
+  const content = $("sk_c").value;
+  let file = i >= 0 ? skills[i].file : ($("sk_f").value.trim() || (meta(content).name || "skill") + ".py");
+  if (!/\.(py|md)$/.test(file)) file += ".py";
+  if (!/^[\w.-]+$/.test(file)) return $("ske").textContent = "file name: letters, digits, _ . -";
+  try { await api("/api/doc", {key: "skill/" + file, content}, "PUT"); closeModal(); toast("skill saved · syncing"); loadSkills(); }
+  catch (e) { $("ske").textContent = e.message; }
+}
+async function delSkill(i) { if (!confirm("Delete " + skills[i].file + " on all devices?")) return; await api("/api/doc?key=" + encodeURIComponent(skills[i].key), undefined, "DELETE"); closeModal(); loadSkills(); }
+function editSecret(k) {
+  modal(`<h2>${k ? "edit secret" : "add secret"}</h2><label>name</label><input id="se_k" value="${esc(k || "")}" placeholder="GITHUB_TOKEN" class="key">
+    <label>value</label><input id="se_v" type="password" value="${esc(k ? cfg.secrets[k] : "")}" onfocus="this.type='text'">
+    <div class="btns"><button onclick="saveSecret('${esc(k || "")}')">save</button><button class="ghost" onclick="closeModal()">cancel</button>
+    ${k ? `<button class="danger" style="margin-left:auto" onclick="delete cfg.secrets['${esc(k)}'];closeModal();saveCfg()">delete</button>` : ""}</div>`);
+}
+async function saveSecret(old) {
+  const k = $("se_k").value.trim(); if (!k) return;
+  if (old && old !== k) delete cfg.secrets[old];
+  cfg.secrets[k] = $("se_v").value; closeModal(); await saveCfg();
+}
+
+// ── marketplace ──
+async function loadMarket() { market = await api("/api/market"); renderMarket(); }
+function renderMarket() {
+  const q = $("mq").value.toLowerCase(), mine = new Set(skills.map(s => s.name));
+  const list = market.filter(m => !q || (m.name + " " + m.description).toLowerCase().includes(q));
+  $("mk").innerHTML = list.map(m => skillCard(m,
+    `<span>by ${esc(m.author)} · ${m.installs} installs</span><span><button class="ghost sm" onclick="viewMarket(${m.id})">view</button>
+     ${!tok ? "" : mine.has(m.name) ? '<span class="tag on">installed</span>' : `<button class="sm" onclick="install(${m.id},this)">install</button>`}</span>`)).join("")
+    || '<p class="dim">Nothing found.</p>';
+}
+$("mq").oninput = renderMarket;
+async function install(id, btn) {
+  if (btn) btn.textContent = "…";
+  await api(`/api/market/${id}/install`, {}); toast("installed · syncing to your devices"); await loadSkills(); await loadMarket();
+}
+async function viewMarket(id) {
+  const m = await api("/api/market/" + id);
+  modal(`<div class="row"><div class="sk" style="border:none;padding:0"><div class="t"><span class="ic" style="background:${col(m.color)}22;color:${col(m.color)}">${esc(m.icon)}</span>${esc(m.name)}</div></div>
+    <span class="dim" style="font-size:12px">by ${esc(m.author)} · ${m.installs} installs · ${esc(m.ext)}</span></div>
+    <p class="dim" style="margin:10px 0">${esc(m.description)}</p><textarea rows="20" readonly spellcheck="false">${esc(m.content)}</textarea>
+    <div class="btns">${tok ? `<button onclick="install(${m.id});closeModal()">install</button>` : '<a href="/account" style="color:var(--a)">log in to install</a>'}
+    <button class="ghost" onclick="closeModal()">close</button>
+    ${me && (me.admin || me.username === m.author) ? `<button class="danger" style="margin-left:auto" onclick="unpublish(${m.id})">remove from marketplace</button>` : ""}</div>`);
+}
+async function unpublish(id) { if (!confirm("Remove from marketplace?")) return; await api("/api/market/" + id, undefined, "DELETE"); closeModal(); loadMarket(); }
+function publish() {
+  modal(`<h2>publish a skill</h2><p class="dim" style="margin-bottom:10px">Pick one of yours. Its header needs <code>name:</code> and <code>description:</code>. Don't include secrets — use <code>env:</code>.</p>
+    <select id="pub">${skills.map((s, i) => `<option value="${i}">${esc(s.file)}</option>`).join("")}</select>
+    <div class="btns"><button onclick="doPublish(skills[$('pub').value])">publish</button><button class="ghost" onclick="closeModal()">cancel</button></div><div class="err" id="pbe"></div>`);
+  if (!skills.length) $("pbe").textContent = "you have no skills yet";
+}
+async function publishFrom() {
+  const content = $("sk_c").value;
+  try { await api("/api/market", {content, ext: /^---/.test(content) ? "md" : "py"}); closeModal(); toast("published"); tab("market"); }
+  catch (e) { $("ske").textContent = e.message; }
+}
+async function doPublish(s) {
+  try { await api("/api/market", {content: s.content, ext: s.file.endsWith(".md") ? "md" : "py"}); closeModal(); toast("published"); loadMarket(); }
+  catch (e) { $("pbe").textContent = e.message; }
+}
+
+// ── sessions ──
+async function loadSessions() {
+  sessions = await api("/api/sessions");
+  const row = s => `<tr class="click" onclick="viewSession('${esc(s.id)}')"><td>${esc(s.title || "(untitled)")}</td><td class="dim">${esc((s.cwd || "").replace(/^\/(home|Users)\/[^/]+/, "~"))}</td>
+    <td class="dim">${s.messages} msgs</td><td class="dim">↑${human(s.usage?.in)} ↓${human(s.usage?.out)}</td><td class="dim" style="white-space:nowrap">${ago(s.updated)}</td></tr>`;
+  const head = "<tr><th>title</th><th>dir</th><th>messages</th><th>tokens</th><th>updated</th></tr>";
+  $("recent").innerHTML = sessions.length ? head + sessions.slice(0, 5).map(row).join("") : '<tr><td class="dim">No sessions yet.</td></tr>';
+  const render = () => { const q = $("sq").value.toLowerCase(); $("sess").innerHTML = head + sessions.filter(s => !q || (s.title + s.cwd).toLowerCase().includes(q)).map(row).join(""); };
+  $("sq").oninput = render; render();
+}
+async function viewSession(id) {
+  const d = JSON.parse((await api("/api/doc?key=" + encodeURIComponent("session/" + id))).content);
+  const txt = c => Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : (c || "");
+  const msgs = d.messages.map(m => {
+    if (m.role === "user") return `<div class="msg user"><div class="who">you</div>${esc(txt(m.content))}</div>`;
+    if (m.role === "tool") return `<div class="msg tool">${esc(String(m.content).slice(0, 2000))}</div>`;
+    let h = m.content ? `<div class="msg assistant"><div class="who">me</div>${esc(m.content)}</div>` : "";
+    (m.tool_calls || []).forEach(tc => h += `<div class="msg tool">▸ ${esc(tc.function.name)} ${esc(tc.function.arguments.slice(0, 300))}</div>`);
+    return h;
+  }).join("");
+  modal(`<div class="row"><h2 style="margin:0">${esc(d.title || "session")}</h2><div class="btns" style="margin:0">
+    <button class="danger sm" onclick="delSession('${esc(id)}')">delete</button><button class="ghost sm" onclick="closeModal()">close</button></div></div>
+    <p class="dim" style="font-size:12px;margin:6px 0 12px">${esc(d.cwd)} · ${new Date(d.created * 1000).toLocaleString()} · resume in terminal: <code>/sessions</code></p>${msgs}`);
+}
+async function delSession(id) { if (!confirm("Delete session everywhere?")) return; await api("/api/doc?key=" + encodeURIComponent("session/" + id), undefined, "DELETE"); closeModal(); loadSessions(); }
+
+// ── security ──
+function renderSecurity() {
   $("tstate").innerHTML = me.totp_enabled ? '<span class="tag on">on</span>' : '<span class="tag">off</span>';
   $("tbody").innerHTML = me.totp_enabled
-    ? `<p class="dim">Login asks for a 6-digit code.</p><input id="tc" placeholder="current code to turn off" inputmode="numeric"><button class="ghost" id="toff">turn off</button><div class="err" id="te"></div>`
-    : `<p class="dim">Optional. Adds a 6-digit code from Google Authenticator, Aegis, 1Password… to every login.</p><button id="ton">set up</button><div id="tsetup"></div>`;
+    ? `<p class="dim">Login asks for a 6-digit code.</p><input id="tc" placeholder="current code to turn off" inputmode="numeric" style="max-width:260px;margin-top:10px"><div class="btns"><button class="ghost" id="toff">turn off</button></div><div class="err" id="te"></div>`
+    : `<p class="dim">Optional. Adds a code from Google Authenticator, Aegis, 1Password… to every login.</p><div class="btns"><button id="ton">set up</button></div><div id="tsetup"></div>`;
   if (me.totp_enabled) $("toff").onclick = async () => { try { await api("/api/totp/disable", {code: $("tc").value}); load(); } catch (e) { $("te").textContent = e.message; } };
   else $("ton").onclick = async () => {
     const r = await api("/api/totp/setup", {});
-    $("tsetup").innerHTML = `<div id="qr"></div><p class="dim" style="font-size:13px">or enter key: <code>${r.secret}</code></p><input id="tc" placeholder="6-digit code" inputmode="numeric"><button id="tok">enable</button><div class="err" id="te"></div>`;
+    $("tsetup").innerHTML = `<div id="qr"></div><p class="dim" style="font-size:13px">or enter key: <code>${r.secret}</code></p><input id="tc" placeholder="6-digit code" inputmode="numeric" style="max-width:260px;margin-top:10px"><div class="btns"><button id="tok">enable</button></div><div class="err" id="te"></div>`;
     new QRCode($("qr"), {text: r.uri, width: 168, height: 168});
     $("tok").onclick = async () => { try { await api("/api/totp/enable", {code: $("tc").value}); load(); } catch (e) { $("te").textContent = e.message; } };
   };
   $("dev").innerHTML = "<tr><th>device</th><th>last used</th><th></th></tr>" + me.devices.map(d =>
-    `<tr><td>${esc(d.device || "?")} ${d.current ? '<span class="tag on">this</span>' : ""}</td><td class="dim">${ago(d.used)}</td><td style="text-align:right">${d.current ? "" : `<button class="ghost small" data-id="${d.id}">revoke</button>`}</td></tr>`).join("");
-  $("dev").querySelectorAll("button").forEach(b => b.onclick = async () => { await api("/api/devices/" + b.dataset.id, null, "DELETE"); load(); });
-  if (me.admin) {
-    const us = await api("/api/admin/users");
-    $("admin").classList.remove("hidden");
-    $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>dev</th><th>2fa</th></tr>" + us.map(u =>
-      `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString()}</td><td>${u.docs}</td><td class="dim">${size(u.bytes)}</td><td>${u.devices}</td><td>${u.totp_on ? '<span class="tag on">on</span>' : ""}</td></tr>`).join("");
-  }
+    `<tr><td>${esc(d.device || "?")} ${d.current ? '<span class="tag on">this</span>' : ""}</td><td class="dim">${ago(d.used)}</td><td style="text-align:right">${d.current ? "" : `<button class="ghost sm" data-id="${d.id}">revoke</button>`}</td></tr>`).join("");
+  $("dev").querySelectorAll("button").forEach(b => b.onclick = async () => { await api("/api/devices/" + b.dataset.id, undefined, "DELETE"); load(); });
 }
-if (tok) load();
+async function changePw() {
+  try { await api("/api/password", {old: $("po").value, new: $("pn").value}); $("pe").className = "err okmsg"; $("pe").textContent = "changed · other devices logged out"; load(); }
+  catch (e) { $("pe").className = "err"; $("pe").textContent = e.message; }
+}
+async function loadAdmin() {
+  const us = await api("/api/admin/users");
+  $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>devices</th><th>2fa</th></tr>" + us.map(u =>
+    `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag a">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString()}</td>
+     <td>${u.docs}</td><td class="dim">${size(u.bytes)}</td><td>${u.devices}</td><td>${u.totp_on ? '<span class="tag on">on</span>' : ""}</td></tr>`).join("");
+}
+
+// ── boot ──
+async function load() {
+  try { me = await api("/api/me"); } catch (e) { localStorage.removeItem("me_token"); tok = null; me = null; }
+  $("i1").textContent = `curl -fsSL ${S}/i | sh`; $("i2").textContent = `irm ${S}/i.ps1 | iex`;
+  const want = location.hash.slice(1) || (location.pathname === "/market" ? "market" : "overview");
+  if (!me) {
+    if (want === "market" || location.pathname === "/market") { // public marketplace
+      $("dash").classList.remove("hidden"); $("tabs").classList.add("hidden");
+      document.querySelectorAll("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== "market"));
+      $("who").innerHTML = '<a href="/account" style="color:var(--a)">log in</a>'; loadMarket(); return;
+    }
+    $("auth").classList.remove("hidden"); $("dash").classList.add("hidden"); return;
+  }
+  $("auth").classList.add("hidden"); $("dash").classList.remove("hidden"); $("tabs").classList.remove("hidden");
+  $("who").textContent = me.username;
+  $("tadmin").classList.toggle("hidden", !me.admin);
+  await loadCfg();
+  const k = me.kinds;
+  $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["models", cfg.models.length], ["devices", me.devices.length], ["synced", size(me.bytes)]]
+    .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+  renderModels(); renderSecurity();
+  await Promise.all([loadSkills(), loadSessions()]);
+  tab(want);
+}
+load();
 </script>
 </body>
 </html>
