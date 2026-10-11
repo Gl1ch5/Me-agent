@@ -121,3 +121,29 @@ textarea{width:100%;background:none;border:none;outline:none;resize:none;color:v
   .status .tok{display:none}
 }
 .tool .h .lab{direction:ltr}
+.todo-card{margin:0 12px 10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px;max-height:38vh;overflow:auto}
+.tc-h{display:flex;justify-content:space-between;align-items:center;font:12px var(--mono);color:var(--dim)}.tc-h b{color:var(--fg);font-weight:600}
+.tc-bar{height:4px;border-radius:3px;background:var(--line);margin:8px 0;overflow:hidden}.tc-bar i{display:block;height:100%;background:var(--ok)}
+.tc-i{display:flex;gap:8px;align-items:flex-start;padding:3px 0;line-height:1.4}.tc-i.done{color:var(--dim);text-decoration:line-through;text-decoration-color:var(--faint)}
+.tc-i.doing{color:var(--fg);font-weight:500}
+.tc-b{width:15px;height:15px;border:1.5px solid var(--faint);border-radius:4px;flex-shrink:0;display:grid;place-items:center;margin-top:1px}
+.tc-i.done .tc-b{border-color:var(--ok);color:var(--ok)}.tc-i.doing .tc-b{border:none}.tc-b svg{width:11px;height:11px;stroke-width:2.6}.tc-b .spin{width:13px;height:13px}
+.goal{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:13.5px}
+.goal.working{border-color:color-mix(in srgb,var(--a) 50%,var(--line))}.goal.done{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}.goal.blocked{border-color:color-mix(in srgb,var(--err) 55%,var(--line))}
+.review{border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}
+.rv-h{display:flex;justify-content:space-between;padding:9px 12px;font-size:13px;border-bottom:1px solid var(--line)}.rv-h .d{color:var(--dim);font:12px var(--mono)}
+.review details{border-bottom:1px solid var(--line)}.review summary{display:flex;gap:8px;align-items:center;padding:7px 12px;font:12.5px var(--mono);cursor:pointer;list-style:none}
+.review summary .rv-p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.review pre{font:12px/1.5 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre;color:var(--dim);background:var(--bg2)}
+.review .btns{display:flex;gap:8px;padding:10px 12px;font:12px var(--mono)}.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--line))}
+.tag{font:10.5px var(--mono);color:var(--b);border:1px solid var(--line);border-radius:5px;padding:0 5px}
+.dim{color:var(--dim)}.err{color:var(--err)}
+.perm{font:11.5px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1px 7px}
+.perm.full{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.perm.read{color:var(--b)}
+.atts{display:flex;gap:6px;flex-wrap:wrap;padding:10px 10px 0}
+.att{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:3px 4px 3px 4px;font:12px var(--mono);max-width:100%;background:var(--bg)}
+.att img{width:28px;height:28px;object-fit:cover;border-radius:5px}.att .an{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att button{width:22px;height:22px;display:grid;place-items:center;color:var(--dim);border-radius:6px}.att button:hover{background:var(--bg3)}
+header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:760px){#previewBtn span{display:none}.status .cost{order:5}}
+@media (max-width:420px){#wsPill span{max-width:70px;overflow:hidden;text-overflow:ellipsis}}

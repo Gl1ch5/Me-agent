@@ -28,11 +28,21 @@ async function apply(s, history = true) {
   poll();
 }
 async function send() {
-  const t = $("input").value.trim(); if (!t || busy) return;
-  if (t === "/compact") { $("input").value = ""; grow(); return api(base + "/compact", {}).catch(e => el(`<div class="info err">${esc(e.message)}</div>`)); }
-  $("input").value = ""; grow(); userMsg(t);
+  let t = $("input").value.trim(); if ((!t && !atts.length) || busy) return;
+  const fail = e => el(`<div class="info err">${esc(e.message)}</div>`);
+  if (t === "/compact") { $("input").value = ""; grow(); return api(base + "/compact", {}).catch(fail); }
+  if (t === "/undo") { $("input").value = ""; grow(); return A.undo().catch(fail); }
+  const goal = /^\/goal\s+/.test(t);
+  if (goal) t = t.replace(/^\/goal\s+/, "").replace(/^"|"$/g, "");
+  const images = atts.filter(a => a.image).map(a => a.url);
+  const files = [];
+  for (const a of atts.filter(a => !a.image)) { try { files.push(await A.upload(a.name, a.b64)); } catch (e) { fail(e); } }
+  if (files.length) t += (t ? "\n\n" : "") + "Attached: " + files.join(", ");
+  if (!t && images.length) t = "(see the attached image" + (images.length > 1 ? "s" : "") + ")";
+  atts = []; renderAtts();
+  $("input").value = ""; grow(); userMsg((goal ? "/goal " : "") + t + (images.length ? `  [${images.length} image${images.length > 1 ? "s" : ""}]` : ""));
   if ($("title").textContent === "New chat") $("title").textContent = t.split("\n")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;
-  try { await api(base + "/prompt", {text: t}); } catch (e) { el(`<div class="info err">${esc(e.message)}</div>`); busy = false; setBusy(); }
+  try { await (goal ? A.goal(t) : A.prompt(t, images)); } catch (e) { fail(e); busy = false; setBusy(); }
 }
 function sendOrStop() { busy ? api(base + "/cancel", {}) : send(); }
 function openSide() { side.classList.add("open"); $("scrim").classList.add("on"); }

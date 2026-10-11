@@ -31,7 +31,7 @@ const A = {
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
     return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,
-            agent: session?.agent || ag.current, agents: ag.agents, context};
+            agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },
   async load(id) {
     if (MODE === "local") { await api(base + "/load", {id}); return api(base + "/state"); }
@@ -46,6 +46,21 @@ const A = {
   async setModel(name) {
     if (MODE === "local") return api(base + "/model", {name});
     const d = await api("/api/doc?key=config"); const cfg = JSON.parse(d.content); cfg.model = name;
+    await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); await api(base + "/sync", {});
+  },
+  prompt: (text, images) => api(base + "/prompt", {text, images: images || []}),
+  goal: (text) => api(base + "/goal", {text}),
+  undo: () => api(base + "/undo", {}),
+  async upload(name, b64) {  // non-image attachments go into the project so the agent can read them
+    if (MODE === "local") return (await api(base + "/upload", {name, b64})).path;
+    const path = "uploads/" + name.replace(/[^\w.-]+/g, "_").slice(0, 80);
+    await api(`/api/ws/${state.ws}/files`, {put: [{path, b64, mtime: Date.now() / 1000}]});
+    await api(base + "/sync", {}).catch(() => {});
+    return path;
+  },
+  async setPerm(mode) {
+    if (MODE === "local") return api(base + "/perm", {mode});
+    const d = await api("/api/doc?key=config"); const cfg = JSON.parse(d.content); cfg.settings = {...(cfg.settings || {}), perm: mode, yolo: false};
     await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); await api(base + "/sync", {});
   },
   voice: (blob) => fetch(MODE === "local" ? "/api/agent/voice" : "/api/voice", {method: "POST", headers: {"Content-Type": blob.type, ...(token ? {Authorization: "Bearer " + token} : {})}, body: blob}).then(r => r.json()),

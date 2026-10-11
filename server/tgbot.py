@@ -1,18 +1,21 @@
 """Telegram frontend: chat with your cloud agent from any device.
-Admin sets the bot token in the web admin tab; users link their account from the web account (Telegram card).
+Two kinds of bots share this code: the optional global bot (token set by the admin) and personal bots — each user can paste
+their own @BotFather token in the account; one poller runs per token and a personal bot only ever serves its owner.
 """
 import json, secrets, threading, time, urllib.parse, urllib.request, uuid
 
 
 class Bot:
-    def __init__(self, db, runner, users, token_for, transcribe):
-        self.db, self.runner = db, runner
+    def __init__(self, db, runner, users, token_for, transcribe, owner=None):
+        self.db, self.runner, self.owner = db, runner, owner
+        self.stopped = False
         self.users, self.token_for, self.transcribe = users, token_for, transcribe
         self.token = None
         self.username = ""
         self.offset = 0
         self.codes = {}  # code -> (uid, expires)
         self.state = {}  # chat_id -> {"worker": id, "session": sid, "ws": wid}
+        self.asks = {}  # chat_id -> pending agent question: {"id", "worker", "options", "t"}
         self.thread = None
 
     # ─── telegram api ───
@@ -31,6 +34,73 @@ class Bot:
         for i in range(0, max(1, len(text)), 4000):
             out = self.call("sendMessage", chat_id=chat, text=text[i:i + 4000] or "…", disable_web_page_preview=True, **kw)
         return out
+
+    def send_file(self, chat, name, data, caption=""):
+        import mimetypes
+        b = uuid.uuid4().hex
+        parts = [f'--{b}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{chat}\r\n'.encode()]
+        if caption:
+            parts.append(f'--{b}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n{caption[:1000]}\r\n'.encode())
+        ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        parts.append(f'--{b}\r\nContent-Disposition: form-data; name="document"; filename="{name}"\r\nContent-Type: {ctype}\r\n\r\n'.encode()
+                     + data + b"\r\n")
+        parts.append(f"--{b}--\r\n".encode())
+        req = urllib.request.Request(f"https://api.telegram.org/bot{self.token}/sendDocument", data=b"".join(parts),
+                                     headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            j = json.loads(r.read())
+        if not j.get("ok"):
+            raise RuntimeError(j.get("description"))
+        return j["result"]
+
+    def chats_of(self, uid):
+        return [r[0] for r in self.db.execute("SELECT chat_id FROM tg_links WHERE user_id=? AND COALESCE(bot,'')=?", (uid, self.key))]
+
+    @property
+    def key(self):
+        """tg_links.bot: '' for the global bot, the bot's username for a personal one (same chat id can link to both)."""
+        return "" if self.owner is None else (self.username or "?")
+
+    def stop(self):
+        self.stopped = True
+        self.token = None
+
+    # ─── agent questions: the sandbox waits for an answer, so Telegram must answer or time out ───
+    ASK_TIMEOUT = 600
+
+    def on_ask(self, w, e):
+        """A linked chat is driving worker w: show its question and remember that the next reply answers it."""
+        options = [str(o) for o in (e.get("options") or [])][:8]
+        for chat, st in list(self.state.items()):
+            if st.get("worker") != w.id:
+                continue
+            self.asks[chat] = {"id": e["id"], "worker": w, "options": options, "t": time.time()}
+            kw = {"reply_markup": {"inline_keyboard": [[{"text": o[:60], "callback_data": f"a:{i}"}] for i, o in enumerate(options)]}} if options else {}
+            hint = "" if options else f"\n\nReply with your answer (you have {self.ASK_TIMEOUT // 60} min)."
+            self.send(chat, "❓ " + (e.get("text") or "The agent has a question.") + hint, **kw)
+            t = threading.Timer(self.ASK_TIMEOUT, self._ask_timeout, args=(chat, e["id"]))
+            t.daemon = True
+            t.start()
+            return True
+        return False
+
+    def answer(self, chat, text):
+        """Route a reply to the pending question of this chat. False if nothing is waiting."""
+        a = self.asks.pop(chat, None)
+        if not a:
+            return False
+        try:
+            a["worker"].send({"type": "answer", "id": a["id"], "text": text})
+        except Exception:
+            pass
+        return True
+
+    def _ask_timeout(self, chat, aid):
+        a = self.asks.get(chat)
+        if a and a["id"] == aid:
+            self.asks.pop(chat, None)
+            a["worker"].send({"type": "answer", "id": aid, "text": ""})
+            self.send(chat, "No answer in time — the agent continues without it.")
 
     def edit(self, chat, mid, text):
         try:
@@ -54,16 +124,18 @@ class Bot:
             self.thread.start()
 
     def link_code(self, uid):
+        if self.owner is not None and uid != self.owner:
+            return None
         code = secrets.token_urlsafe(8)
         self.codes[code] = (uid, time.time() + 600)
         return f"https://t.me/{self.username}?start={code}" if self.username else None
 
     def uid_for(self, chat):
-        r = self.db.execute("SELECT user_id FROM tg_links WHERE chat_id=?", (chat,)).fetchone()
+        r = self.db.execute("SELECT user_id FROM tg_links WHERE chat_id=? AND COALESCE(bot,'')=?", (chat, self.key)).fetchone()
         return r[0] if r else None
 
     def loop(self):
-        while True:
+        while not self.stopped:
             if not self.token:
                 time.sleep(5)
                 continue
@@ -90,7 +162,8 @@ class Bot:
                 code = text.split(" ", 1)[1].strip() if " " in text else ""
                 uid, exp = self.codes.pop(code, (None, 0))
                 if uid and exp > time.time():
-                    self.db.execute("INSERT OR REPLACE INTO tg_links VALUES(?,?,?)", (chat, uid, time.time()))
+                    self.db.execute("DELETE FROM tg_links WHERE chat_id=? AND COALESCE(bot,'')=?", (chat, self.key))
+                    self.db.execute("INSERT INTO tg_links(chat_id,user_id,created,bot) VALUES(?,?,?,?)", (chat, uid, time.time(), self.key))
                     return self.send(chat, "Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\n/help for commands.")
                 return self.send(chat, "Open your account on the me site → Telegram → connect.")
             uid = self.uid_for(chat)
@@ -107,7 +180,11 @@ class Bot:
             if not text:
                 return
             if text.startswith("/"):
+                if text.split()[0] == "/stop":
+                    self.asks.pop(chat, None)
                 return self.command(chat, uid, text)
+            if self.answer(chat, text):
+                return self.send(chat, "✓ answer sent")
             self.run(chat, uid, text)
         except Exception as e:
             try:
@@ -217,6 +294,12 @@ class Bot:
             return
         kind, _, val = q["data"].partition(":")
         st = self.state.setdefault(chat, {})
+        if kind == "a":  # answer to an agent question from its buttons
+            a = self.asks.get(chat)
+            if a and val.isdigit() and int(val) < len(a["options"]):
+                self.answer(chat, a["options"][int(val)])
+                return self.send(chat, "✓ " + a["options"][int(val)])
+            return self.send(chat, "that question is no longer open")
         if kind == "s":
             st["session"] = val
             st.pop("worker", None)

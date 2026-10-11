@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.4.2"
+VERSION = "0.5.2"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -214,6 +214,8 @@ class Cloud:
             docs["theme/" + p.name] = p
         for p in (self.s.home / "agents").glob("*.md"):
             docs["agent/" + p.name] = p
+        for p in (self.s.home / "memory").glob("*.json"):
+            docs["memory/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -223,7 +225,8 @@ class Cloud:
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
         return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "theme": self.s.home / "themes" / name,
-                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json"),
+                "memory": self.s.home / "memory" / name}.get(kind)
 
     def sync(self):
         if not self.online:
@@ -529,12 +532,33 @@ class Provider:
                 except ValueError:
                     pass
 
-    def stream(self, system, messages, tools, emit, cancel):
-        """Returns (assistant_message, usage). Emits text/reasoning deltas."""
+    def cache_mode(self):
+        """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
+        c = self.m.get("cache")
+        if c in ("anthropic", "openai", "off"):
+            return "" if c == "off" else c
+        mid = str(self.m.get("id", "")).lower()
+        if "claude" in mid or "anthropic" in self.base:
+            return "anthropic"
+        if "api.openai.com" in self.base:
+            return "openai"
+        return ""  # DeepSeek, Gemini, Groq… cache a stable prefix automatically
+
+    @staticmethod
+    def _cached(u):
+        d = u.get("prompt_tokens_details") or u.get("input_tokens_details") or {}
+        return int(d.get("cached_tokens") or u.get("cache_read_input_tokens") or u.get("prompt_cache_hit_tokens") or 0)
+
+    def stream(self, system, messages, tools, emit, cancel, cache_key=None):
+        """Returns (assistant_message, usage). Emits text/reasoning deltas. The system prompt + tools form a stable prefix."""
         if self.m.get("api") == "responses":
-            return self._responses(system, messages, tools, emit, cancel)
+            return self._responses(system, messages, tools, emit, cancel, cache_key)
+        cm = self.cache_mode()
+        sysmsg = {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cm == "anthropic" else system}
         body = {"model": self.m["id"], "stream": True, "stream_options": {"include_usage": True},
-                "messages": [{"role": "system", "content": system}] + messages}
+                "messages": [sysmsg] + messages}
+        if cm == "openai" and cache_key:
+            body["prompt_cache_key"] = cache_key
         if tools:
             body["tools"] = [{"type": "function", "function": t} for t in tools]
         if self.m.get("effort") and self.m["effort"] != "none":
@@ -566,9 +590,9 @@ class Provider:
         if calls:
             msg["tool_calls"] = [{"id": c["id"] or "call_" + uuid.uuid4().hex[:8], "type": "function",
                                   "function": {"name": c["name"], "arguments": c["args"] or "{}"}} for _, c in sorted(calls.items())]
-        return msg, {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)}
+        return msg, {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0), "cached": self._cached(usage)}
 
-    def _responses(self, system, messages, tools, emit, cancel):
+    def _responses(self, system, messages, tools, emit, cancel, cache_key=None):
         items = []
         for m in messages:
             if m["role"] == "tool":
@@ -586,6 +610,8 @@ class Provider:
                          {"type": "input_image", "image_url": x["image_url"]["url"]} for x in c]
                 items.append({"role": "user", "content": c})
         body = {"model": self.m["id"], "stream": True, "instructions": system, "input": items, "store": False}
+        if self.cache_mode() == "openai" and cache_key:
+            body["prompt_cache_key"] = cache_key
         if tools:
             body["tools"] = [dict(type="function", **t) for t in tools]
         if self.m.get("effort") and self.m["effort"] != "none":
@@ -613,7 +639,7 @@ class Provider:
         if calls:
             msg["tool_calls"] = [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                                  for c in calls.values()]
-        return msg, {"in": usage.get("input_tokens", 0), "out": usage.get("output_tokens", 0)}
+        return msg, {"in": usage.get("input_tokens", 0), "out": usage.get("output_tokens", 0), "cached": self._cached(usage)}
 
 
 def list_models(prov):
@@ -920,31 +946,37 @@ class Skills:
 
 # ───────────────────────────── tools ─────────────────────────────
 
+def _obj(props, req):
+    return {"type": "object", "properties": {k: ({"type": v} if isinstance(v, str) else v) for k, v in props.items()}, "required": req}
+
+
 TOOLS = [
-    {"name": "read", "description": "Read file (text/code/pdf/docx/xlsx/pptx/ipynb/image) or list dir. Lines numbered.",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}},
-                    "required": ["path"]}},
-    {"name": "write", "description": "Create/overwrite file.",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-    {"name": "edit", "description": "Replace exact unique text in file (all=true: every match).",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
-                                                     "all": {"type": "boolean"}}, "required": ["path", "old", "new"]}},
-    {"name": "bash", "description": "Run shell command in cwd.",
-     "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}, "timeout": {"type": "integer", "description": "sec, default 120"}},
-                    "required": ["cmd"]}},
-    {"name": "ls", "description": "Glob files, e.g. src/**/*.py.",
-     "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
-    {"name": "grep", "description": "Regex search in files.",
-     "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}},
-                    "required": ["pattern"]}},
-    {"name": "web_search", "description": "Search the web; returns answer with sources.",
-     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "web_fetch", "description": "Fetch URL as text.",
-     "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
-    {"name": "skill", "description": "Use a skill: no action → its guide+actions; else run action with args.",
-     "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "action": {"type": "string"}, "args": {"type": "object"}},
-                    "required": ["name"]}},
+    {"name": "read", "description": "Read file or dir (code, pdf, office, image).",
+     "parameters": _obj({"path": "string", "offset": "integer", "limit": "integer"}, ["path"])},
+    {"name": "write", "description": "Create/overwrite file.", "parameters": _obj({"path": "string", "content": "string"}, ["path", "content"])},
+    {"name": "edit", "description": "Replace exact old→new; all=true for every match; lines='a-b'; edits=[…].",
+     "parameters": _obj({"path": "string", "old": "string", "new": "string", "all": "boolean", "lines": "string",
+                         "edits": {"type": "array", "items": {"type": "object"}}}, ["path"])},
+    {"name": "bash", "description": "Run shell command in cwd.", "parameters": _obj({"cmd": "string", "timeout": "integer"}, ["cmd"])},
+    {"name": "ls", "description": "Glob files; pattern=map gives repo map.",
+     "parameters": _obj({"pattern": "string"}, ["pattern"])},
+    {"name": "grep", "description": "Regex search in files.", "parameters": _obj({"pattern": "string", "path": "string", "glob": "string"}, ["pattern"])},
+    {"name": "web_search", "description": "Search the web.", "parameters": _obj({"query": "string"}, ["query"])},
+    {"name": "web_fetch", "description": "Fetch URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
+    {"name": "skill", "description": "Use a skill (no action = guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
+    {"name": "todo", "description": "Set checklist (whole list); 'x ' done, '> ' doing.",
+     "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}}, ["items"])},
+    {"name": "memory", "description": "Global memory: text adds a note, forget=id removes one.",
+     "parameters": _obj({"text": "string", "forget": "string"}, [])},
+    {"name": "task", "description": "Run a subagent on a job; returns its report.",
+     "parameters": _obj({"agent": "string", "prompt": "string"}, ["prompt"])},
 ]
+# tools added only when usable (keeps the idle prompt small)
+NOTIFY_TOOL = {"name": "notify", "description": "Send the user a message/file via their Telegram.",
+               "parameters": _obj({"text": "string", "file": "string"}, ["text"])}
+MCP_TOOL = {"name": "mcp", "description": "Use an MCP server: no tool → its tools; else call tool with args.",
+            "parameters": _obj({"server": "string", "tool": "string", "args": "object"}, ["server"])}
+READONLY_TOOLS = {"read", "ls", "grep", "web_search", "web_fetch"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", "dist", "build", ".next", ".idea"}
 
 
@@ -959,9 +991,22 @@ def walk_files(root, limit=20000):
                 return
 
 
-def run_shell(cmd, timeout, cancel):
+def shell_env(secrets):
+    """The user's secrets as env vars; with GITHUB_TOKEN, git can clone/push github.com without any setup."""
+    env = dict(os.environ, **{k: str(v) for k, v in (secrets or {}).items() if re.fullmatch(r"[A-Za-z_]\w*", k)})
+    tok = env.get("GITHUB_TOKEN") or env.get("GH_TOKEN")
+    if tok:
+        env.setdefault("GH_TOKEN", tok)
+        n = int(env.get("GIT_CONFIG_COUNT") or 0)
+        env.update({f"GIT_CONFIG_KEY_{n}": "credential.https://github.com.helper",
+                    f"GIT_CONFIG_VALUE_{n}": '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f',
+                    "GIT_CONFIG_COUNT": str(n + 1), "GIT_TERMINAL_PROMPT": "0"})
+    return env
+
+
+def run_shell(cmd, timeout, cancel, env=None):
     kw = {} if WIN else {"start_new_session": True}
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
     out = []
     threading.Thread(target=lambda: out.append(proc.stdout.read()), daemon=True).start()
     t0 = time.time()
@@ -1202,17 +1247,36 @@ class ToolBox:
             return a.get("query", "")
         if name == "web_fetch":
             return a.get("url", "")
+        if name == "task":
+            return f"{a.get('agent') or 'code'}: {a.get('prompt', '')[:80]}"
+        if name == "todo":
+            return f"{sum(1 for i in a.get('items') or [] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a.get('items') or [])} done"
+        if name == "mcp":
+            return a.get("server", "") + (f" · {a['tool']}" if a.get("tool") else "")
+        if name == "notify":
+            return a.get("text", "")[:80]
         if name in ("ls", "grep"):
             return a.get("pattern", "") + (f"  in {a['path']}" if a.get("path") else "")
         if name == "skill":
             return a.get("name", "") + (f" · {a['action']}" if a.get("action") else "")
         return json.dumps(a)[:80]
 
-    def needs_confirm(self, name, a):
-        if self.s.config["settings"].get("yolo"):
+    def needs_confirm(self, name, a, cwd=None):
+        """False = run, True = ask the user, str = refuse with this reason (read-only mode)."""
+        st = self.s.config["settings"]
+        mode = perm_mode(st)
+        if mode == "full":
             return False
-        if name in ("write", "edit", "bash"):
-            return True
+        if name == "bash":
+            if cmd_allowed(a.get("cmd", ""), st.get("allow") or DEFAULT_ALLOW):
+                return False
+            return "read-only mode: commands are off (only allow-listed ones run). Tell the user what to run." if mode == "read" else True
+        if name in ("write", "edit"):
+            if mode == "read":
+                return "read-only mode: file changes are off. Describe the change instead."
+            p = os.path.abspath(os.path.expanduser(a.get("path", "")))
+            root = os.path.abspath(cwd or os.getcwd())
+            return not (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
         if name in PLUGINS.tools:
             return PLUGINS.tools[name].get("confirm", False)
         if name == "skill" and a.get("action"):
@@ -1235,22 +1299,21 @@ class ToolBox:
         if name == "edit":
             p = Path(a["path"]).expanduser()
             if not p.exists():
-                return False, f"error: {p} not found", None
+                return False, f"error: {p} not found (use write to create it)", None
             text = p.read_text("utf-8")
-            n = text.count(a["old"])
-            if n == 0:
-                return False, "error: old text not found (read the file first, match exactly)", None
-            if n > 1 and not a.get("all"):
-                return False, f"error: old text matches {n} times; add context or set all=true", None
-            new = text.replace(a["old"], a["new"])
+            new, msg = apply_edits(text, a)
+            if new is None:
+                return False, msg, None
             p.write_text(new, "utf-8")
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
-            return True, f"edited {p} ({n} replacement{'s' if n > 1 else ''})", None
+            return True, f"edited {p} ({msg})", None
         if name == "bash":
-            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel)
+            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel, shell_env(self.s.config.get("secrets")))
             return "[exit " not in out[-12:], out or "(no output)", None
         if name == "ls":
             pat = a["pattern"]
+            if pat == "map" or pat.startswith("map "):
+                return True, repo_map(os.getcwd(), pat[4:].strip(), self.s.home), None
             hits = [h for h in glob.glob(pat, recursive=True) if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
             hits.sort(key=lambda h: -os.path.getmtime(h) if os.path.exists(h) else 0)
             return True, "\n".join(hits[:300]) + (f"\n… {len(hits) - 300} more" if len(hits) > 300 else "") or "no matches", None
@@ -1258,6 +1321,10 @@ class ToolBox:
             return True, self._grep(a["pattern"], a.get("path") or ".", a.get("glob")), None
         if name == "skill":
             return self._skill(a, emit, cancel, ask)
+        if name == "notify":
+            return self._notify(a)
+        if name == "mcp":
+            return self._mcp(a, emit)
         if name == "web_search":
             emit({"t": "status", "text": "searching"})
             return web_search(self.s.config, a["query"], cancel)
@@ -1268,6 +1335,40 @@ class ToolBox:
             r = tool["fn"](a, PluginCtx(emit, cancel, ask))
             return (True, r, None) if isinstance(r, str) else (bool(r[0]), r[1], None)
         return False, f"unknown tool {name}", None
+
+    def _notify(self, a):
+        cloud = Cloud(self.s)
+        if not cloud.online:
+            return False, "error: not logged in to the me cloud (/login), so Telegram is not available", None
+        body = {"text": a.get("text", "")}
+        if a.get("file"):
+            fp = Path(a["file"]).expanduser()
+            if not fp.is_file():
+                return False, f"error: {fp} not found", None
+            if fp.stat().st_size > 45_000_000:
+                return False, "error: file over 45 MB", None
+            body["file"] = {"name": fp.name, "b64": base64.b64encode(fp.read_bytes()).decode()}
+        try:
+            r = cloud.req("POST", "/api/notify", body, timeout=120)
+        except Exception as e:
+            return False, f"error: {e}", None
+        n = r.get("sent", 0)
+        return bool(n), f"sent to Telegram ({n} chat{'s' if n != 1 else ''})" if n else "error: " + (r.get("detail") or "no Telegram chat linked"), None
+
+    def _mcp(self, a, emit):
+        try:
+            c = mcp_client(self.s, a.get("server", ""))
+        except KeyError:
+            return False, f"no MCP server '{a.get('server')}'. configured: {', '.join(self.s.config.get('mcp') or {}) or 'none'}", None
+        try:
+            if not a.get("tool"):
+                emit({"t": "status", "text": "starting " + c.name})
+                return True, f"Tools of {c.name} (call: mcp server={c.name} tool=… args={{…}}):\n" + mcp_describe(c.list_tools()), None
+            emit({"t": "status", "text": a["tool"]})
+            ok, out = c.call(a["tool"], a.get("args") or {})
+            return ok, clip(out, 30000), None
+        except Exception as e:
+            return False, f"error: {e}", None
 
     @staticmethod
     def _diff(a, b, name):
@@ -1315,6 +1416,62 @@ class ToolBox:
         return ok, clip(out, 30000), None
 
 
+def _closest(text, old):
+    """Hint for a failed match: the most similar line in the file, with its number."""
+    first = next((l for l in old.splitlines() if l.strip()), old).strip()
+    stripped = [l.strip() for l in text.splitlines()]
+    best = difflib.get_close_matches(first, stripped, n=1, cutoff=0.5)
+    if not best:
+        return " Read the file again and copy the text exactly (or use lines='a-b')."
+    i = stripped.index(best[0])
+    return f" Closest is line {i + 1}: {text.splitlines()[i][:200]!r}. Read the file again and copy exactly (or use lines='a-b')."
+
+
+def _replace_one(text, old, new, all_):
+    if not old:
+        return None, "error: old is empty (to insert, include a nearby line in old, or use lines='a-b')"
+    n = text.count(old)
+    if n == 0:
+        norm = lambda s: "\n".join(l.rstrip() for l in s.replace("\r\n", "\n").split("\n"))
+        t2, o2 = norm(text), norm(old)  # tolerate trailing-whitespace / CRLF slips, common with weak models
+        if o2 and t2.count(o2) == 1:
+            return t2.replace(o2, norm(new)), "1 replacement, whitespace-normalized"
+        return None, "error: old text not found." + _closest(text, old)
+    if n > 1 and not all_:
+        return None, f"error: old text matches {n} times; add surrounding lines to make it unique, or set all=true"
+    return text.replace(old, new), f"{n} replacement{'s' if n > 1 else ''}"
+
+
+def apply_edits(text, a):
+    """edit tool: one old/new pair, several (edits=[…]), or lines a..b (1-based, inclusive) replaced by new.
+    All-or-nothing. Returns (new_text, summary) or (None, error)."""
+    if a.get("lines") not in (None, ""):
+        lines = text.split("\n")
+        m = re.fullmatch(r"\s*(\d+)\s*(?:[-:,.]+\s*(\d+))?\s*", str(a["lines"]))
+        if not m:
+            return None, "error: lines must look like '12-20' (or '12' for one line)"
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        if lo < 1 or hi < lo - 1 or lo > len(lines) + 1 or hi > len(lines):
+            return None, f"error: lines {lo}-{hi} are outside the file (1-{len(lines)}); 'a-(a-1)' inserts before line a"
+        repl = a.get("new") or ""
+        rl = [] if repl == "" else repl[:-1].split("\n") if repl.endswith("\n") else repl.split("\n")
+        return "\n".join(lines[:lo - 1] + rl + lines[hi:]), f"lines {lo}-{hi} → {len(rl)} line{'s' if len(rl) != 1 else ''}"
+    pairs = list(a.get("edits") or [])
+    if a.get("old") is not None:
+        pairs.insert(0, {"old": a["old"], "new": a.get("new", ""), "all": a.get("all")})
+    if not pairs:
+        return None, "error: give old+new, edits=[{old,new}], or lines='a-b' with new"
+    done = []
+    for i, e in enumerate(pairs, 1):
+        if not isinstance(e, dict) or "old" not in e:
+            return None, f"error: edit #{i} needs old and new"
+        text, msg = _replace_one(text, e["old"], e.get("new", ""), e.get("all") or a.get("all"))
+        if text is None:
+            return None, (f"edit #{i} of {len(pairs)}: {msg} (nothing was written)" if len(pairs) > 1 else msg)
+        done.append(msg)
+    return text, "; ".join(done)
+
+
 # ───────────────────────────── agent presets ─────────────────────────────
 # A preset = its own system prompt + its own tool catalog (+ optional write scope, model, effort). The model stays the same.
 # Built-ins below; ~/.me/agents/<name>.md (synced as agent/<name>.md, installable from the marketplace) override or add more:
@@ -1328,11 +1485,20 @@ class ToolBox:
 #   ---
 #   prompt…
 
-ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill"
-READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill"
+ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task, memory"
+READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill, todo"
 
 BUILTIN_PRESETS = {
     "code": {"label": "code", "description": "default engineer: build, fix, refactor", "tools": ALL_TOOLS, "writes": "*", "prompt": ""},
+    "me": {"label": "me", "description": "self-extending: builds skills, plugins, themes and agents for me itself", "tools": ALL_TOOLS, "writes": "*",
+           "prompt": """Mode: ME (self-extension). You extend this very agent for the user. Files go in the me home folder ({home}); they sync to every device by themselves.
+What you can create (always write the file, then say how to use it):
+- skill  {home}/skills/<name>.py (or .md = guide only). Header docstring: name, description (one line: when to use), icon, color, then --- and instructions. Actions: `@action def f(ctx, arg: str = ""): "doc"` with ctx.log/status/bar/progress/ask/choose/confirm/table/md/http/env; return text. `@action(confirm=True)` for risky ones. Usable immediately.
+- agent  {home}/agents/<name>.md. Front matter name, label, description, tools (comma list of read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task), writes (glob of writable paths, empty = read-only), then --- and the prompt. Selectable in /agent.
+- theme  {home}/themes/<name>.json: {"name","label","dark":true,"colors":{bg,bg2,bg3,line,fg,dim,faint,accent,accent2,ok,err,warn,user,code_bg,sel}} as #rrggbb. Keep contrast >= 4.5:1 for fg on bg; apply with /theme.
+- plugin {home}/plugins/<name>.py: `@plugin.command("name","desc") def f(tui, arg)`, `@plugin.tool("name","desc",{"arg":"string"}) def f(args, ctx)`, `@plugin.on("event")`. Plugins run with full access and load on restart: keep them small, tell the user to restart me.
+- prompt/settings: edit {home}/config.json (valid JSON, keep other keys).
+Rules: read an existing item before changing it; pick lowercase-hyphen names; test a skill by calling it (skill tool) and a theme by parsing the JSON; never put secrets in files (use env: / /secret). Ask before deleting or overwriting something the user made. Offer to publish good items to the marketplace."""},
     "design": {"label": "design", "description": "UI/UX designer: DESIGN.md first, then pixel-perfect UI", "tools": ALL_TOOLS, "writes": "*",
                "prompt": """Mode: DESIGN. You are a senior product designer who also ships front-end code.
 1. Before any UI code, create or update DESIGN.md: product goal and audience, design principles, tokens (palette: neutral + one accent + one semantic; type scale; spacing scale 4/8; radii; shadows), components and their states (default/hover/active/disabled/empty/loading/error), layout grid and breakpoints (mobile first), motion rules, accessibility (contrast >= 4.5:1, focus rings, hit areas >= 44px), and the folder structure (tokens/, components/, pages/, assets/icons/).
@@ -1342,14 +1508,15 @@ BUILTIN_PRESETS = {
 Keep DESIGN.md in sync with what you build."""},
     "plan": {"label": "plan", "description": "architect: explore, then write PLAN.md — no code changes", "tools": READ_TOOLS + ", write", "writes": "*.md",
              "prompt": """Mode: PLAN. You are a software architect. Do not change code.
-Explore the project, then write PLAN.md: goal, constraints, current architecture, proposed design (modules, data flow, interfaces), step-by-step tasks small enough to do one at a time, risks and how to verify each step. Prefer the simplest design that leaves room to grow."""},
+Explore the project, then write PLAN.md: goal, constraints, current architecture, proposed design (modules, data flow, interfaces), step-by-step tasks small enough to do one at a time, risks and how to verify each step. Prefer the simplest design that leaves room to grow.
+Finally put the same steps into the todo tool, so the plan can be executed and tracked."""},
     "review": {"label": "review", "description": "code reviewer: finds real bugs, read-only", "tools": READ_TOOLS + ", bash", "writes": "",
                "prompt": """Mode: REVIEW. Review the changes (git diff, or the files named). Report only real problems: bugs, security issues, data loss, race conditions, broken edge cases, missing tests for risky logic. For each: file:line, what breaks, a concrete fix. Skip style nitpicks. You may run tests and read-only commands; do not modify files."""},
     "debug": {"label": "debug", "description": "debugger: reproduce, find root cause, fix, prove", "tools": ALL_TOOLS, "writes": "*",
               "prompt": """Mode: DEBUG. 1) Reproduce the failure and show it. 2) Form hypotheses, test them with the cheapest experiment. 3) Fix the root cause, not the symptom. 4) Prove it: rerun the reproduction and the tests. Add a regression test when practical."""},
     "docs": {"label": "docs", "description": "technical writer: READMEs, guides, API docs", "tools": READ_TOOLS + ", write, edit, bash", "writes": "*.md",
              "prompt": """Mode: DOCS. Write clear, accurate documentation from the real code: short intro, quick start that actually works (verify commands), reference sections, examples. Plain words, no marketing."""},
-    "research": {"label": "research", "description": "researcher: web search + sources, writes notes", "tools": "web_search, web_fetch, read, write", "writes": "*.md",
+    "research": {"label": "research", "description": "researcher: web search + sources, writes notes", "tools": "web_search, web_fetch, read, write, todo", "writes": "*.md",
                  "prompt": """Mode: RESEARCH. Search broadly, open primary sources, cross-check facts, note dates and versions. Answer with a concise synthesis and a list of sources; save longer findings to a .md file when asked."""},
 }
 
@@ -1390,26 +1557,384 @@ def may_write(p, path):
 CONTEXT_FILES = ("AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md")
 
 
+# ───────────────────────────── repo map ─────────────────────────────
+# Compact index of files + top-level symbols, built lazily (map tool) and cached per workspace by file mtime.
+
+MAP_EXT = {".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".rb", ".php", ".c", ".h", ".cc",
+           ".cpp", ".hpp", ".cs", ".scala", ".lua", ".sh", ".vue", ".svelte", ".dart", ".ex", ".css", ".scss", ".html", ".md", ".sql"}
+SYM_RX = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:pub(?:\(\w+\))?\s+)?(?:async\s+)?(?:abstract\s+)?(?:static\s+)?"
+                    r"(?:def|class|function\*?|func|fn|struct|enum|trait|interface|type|impl|module|object|const|let|var)\s+"
+                    r"(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)")
+MD_RX = re.compile(r"^#{1,2}\s+(.+)")
+CSS_RX = re.compile(r"^([.#]?[A-Za-z][\w-]*)\s*[{,]")
+
+
+def file_symbols(path):
+    ext = os.path.splitext(path)[1].lower()
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 4000 or len(out) >= 40:
+                    break
+                if ext == ".md":
+                    m = MD_RX.match(line)
+                elif ext in (".css", ".scss"):
+                    m = CSS_RX.match(line)
+                else:
+                    m = SYM_RX.match(line)  # top level only: no leading indent
+                if m:
+                    out.append(m.group(1).strip()[:40])
+    except OSError:
+        pass
+    return out
+
+
+def repo_map(root, sub="", home=HOME, limit=12000):
+    root = os.path.abspath(root)
+    cache_p = Path(home) / "cache" / ("map-" + hashlib.sha1(root.encode()).hexdigest()[:12] + ".json")
+    cache = jload(cache_p, {}) or {}
+    fresh, lines = {}, []
+    base = os.path.join(root, sub) if sub else root
+    for f in sorted(walk_files(base, 5000)):
+        rel = os.path.relpath(f, root)
+        if os.path.splitext(f)[1].lower() not in MAP_EXT:
+            continue
+        try:
+            mt = os.path.getmtime(f)
+        except OSError:
+            continue
+        c = cache.get(rel)
+        syms = c[1] if c and c[0] == mt else file_symbols(f)
+        fresh[rel] = [mt, syms]
+        lines.append(rel + (": " + ", ".join(syms) if syms else ""))
+    if not sub:
+        jsave(cache_p, fresh)
+    else:
+        cache.update(fresh)
+        jsave(cache_p, cache)
+    text = "\n".join(lines) or "no source files"
+    return text if len(text) <= limit else text[:limit] + f"\n… cut; use map with path=<subdir> ({len(lines)} files)"
+
+
+# ───────────────────────────── global memory ─────────────────────────────
+# Notes the agent keeps across every chat and device: one JSON file per note (synced as memory/<id>.json, so two devices never overwrite
+# each other). Newest notes go into the system prompt; the account page lists them all with their time.
+
+def mem_dir(home):
+    d = Path(home) / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def mem_list(home):
+    out = []
+    for p in mem_dir(home).glob("*.json"):
+        d = jload(p)
+        if d and d.get("text"):
+            out.append(dict(d, id=p.stem))
+    return sorted(out, key=lambda m: m.get("ts", 0), reverse=True)
+
+
+def mem_add(home, text, source=""):
+    text = " ".join(str(text).split())[:800]
+    if not text:
+        raise ValueError("empty note")
+    mid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    jsave(mem_dir(home) / f"{mid}.json", {"text": text, "ts": time.time(), "source": source[:80]})
+    return mid
+
+
+def mem_forget(home, mid):
+    p = mem_dir(home) / f"{re.sub(r'[^\w-]', '', mid)}.json"
+    if not p.exists():
+        raise ValueError(f"no memory note {mid}")
+    p.unlink()
+
+
+def mem_prompt(home, limit=30, cap=3000):
+    """Newest notes, for the system prompt. Bounded so memory never crowds the context."""
+    lines, used = [], 0
+    for m in mem_list(home)[:limit]:
+        line = f"- [{time.strftime('%Y-%m-%d', time.localtime(m['ts']))} {m['id']}] {m['text']}"
+        if used + len(line) > cap:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines)
+
+
+# ───────────────────────────── checkpoints ─────────────────────────────
+# Before a turn first touches a file, its old content is kept; /undo restores the files and drops the turn from history.
+
+class Checkpoints:
+    KEEP = 30
+
+    def __init__(self, store, sid):
+        self.p = store.home / "checkpoints" / f"{sid}.json"
+
+    def load(self):
+        return jload(self.p, []) or []
+
+    def push(self, cp):
+        cps = self.load()[-(self.KEEP - 1):] + [cp]
+        jsave(self.p, cps)
+
+    def pop(self):
+        cps = self.load()
+        if not cps:
+            return None
+        cp = cps.pop()
+        jsave(self.p, cps)
+        return cp
+
+
+def restore_files(files):
+    for path, old in files.items():
+        p = Path(path)
+        if old is None:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(old, "utf-8")
+
+
+def file_diff(path, old):
+    try:
+        new = Path(path).read_text("utf-8", "replace")
+    except OSError:
+        new = ""
+    d = list(difflib.unified_diff((old or "").splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
+    return "\n".join(d[:400]) + ("\n…" if len(d) > 400 else "")
+
+
+# ───────────────────────────── cost ─────────────────────────────
+# $ per 1M tokens: (input, output, cached input). First substring match of the model id wins; a model's own "price" overrides.
+
+PRICES = [
+    ("gpt-5-nano", (0.05, 0.4, 0.005)), ("gpt-5-mini", (0.25, 2, 0.025)), ("gpt-5", (1.25, 10, 0.125)), ("gpt-4.1-nano", (0.1, 0.4, 0.025)),
+    ("gpt-4.1-mini", (0.4, 1.6, 0.1)), ("gpt-4.1", (2, 8, 0.5)), ("gpt-4o-mini", (0.15, 0.6, 0.075)), ("gpt-4o", (2.5, 10, 1.25)),
+    ("o4-mini", (1.1, 4.4, 0.275)), ("o3", (2, 8, 0.5)), ("haiku", (1, 5, 0.1)), ("sonnet", (3, 15, 0.3)), ("opus", (5, 25, 0.5)),
+    ("deepseek", (0.28, 0.42, 0.028)), ("gemini-2.5-pro", (1.25, 10, 0.31)), ("gemini-2.5-flash-lite", (0.1, 0.4, 0.025)),
+    ("flash-lite", (0.1, 0.4, 0.025)), ("flash", (0.3, 2.5, 0.075)), ("gemini", (1.25, 10, 0.31)), ("grok-4-fast", (0.2, 0.5, 0.05)),
+    ("grok", (3, 15, 0.75)), ("kimi", (0.6, 2.5, 0.15)), ("qwen", (0.4, 1.2, 0.08)), ("glm", (0.6, 2.2, 0.11)), ("mistral", (0.4, 2, 0.04)),
+]
+
+
+def model_price(m):
+    p = m.get("price")
+    if isinstance(p, (list, tuple)) and len(p) >= 2:
+        return float(p[0]), float(p[1]), float(p[2] if len(p) > 2 else p[0])
+    mid = str(m.get("id", "")).lower()
+    for k, v in PRICES:
+        if k in mid:
+            return v
+    return 0.0, 0.0, 0.0
+
+
+def usage_cost(m, u):
+    pin, pout, pc = model_price(m)
+    cached = min(u.get("cached", 0), u.get("in", 0))
+    return ((u.get("in", 0) - cached) * pin + cached * pc + u.get("out", 0) * pout) / 1e6
+
+
+def add_day_cost(home, cost):
+    p = Path(home) / "usage.json"
+    d = jload(p, {}) or {}
+    day = time.strftime("%Y-%m-%d")
+    d[day] = round(d.get(day, 0) + cost, 6)
+    jsave(p, dict(sorted(d.items())[-90:]))
+    return d[day]
+
+
+def day_cost(home):
+    return (jload(Path(home) / "usage.json", {}) or {}).get(time.strftime("%Y-%m-%d"), 0)
+
+
+def money(x):
+    return "$0" if not x else f"${x:.4f}" if x < 0.01 else f"${x:.3f}" if x < 1 else f"${x:.2f}"
+
+
+# ───────────────────────────── permissions ─────────────────────────────
+# settings.perm: "read" (no writes/commands unless allow-listed) · "ask" (writes inside the project are free, commands ask) · "full".
+# settings.allow: command patterns that never ask, e.g. "git status*", "npm test*". Legacy settings.yolo = full.
+
+PERMS = {"read": "read-only", "ask": "workspace-write (ask for commands)", "full": "full access"}
+DEFAULT_ALLOW = ["git status*", "git diff*", "git log*", "git show*", "ls*", "pwd", "cat *", "head *", "tail *", "wc *", "which *",
+                 "python3 -m pytest*", "pytest*", "npm test*", "npm run test*", "npm run build*", "npm run lint*", "go test*", "cargo test*",
+                 "node --check *", "python3 -m py_compile *"]
+
+
+def perm_mode(settings):
+    return "full" if settings.get("yolo") else settings.get("perm") or "ask"
+
+
+def cmd_allowed(cmd, patterns):
+    cmd = cmd.strip()
+    if not cmd or re.search(r"[;&|`<>\n]|\$\(", cmd):  # chained / redirected commands always ask
+        return False
+    return any(fnmatch.fnmatchcase(cmd, p) for p in patterns)
+
+
+def allow_pattern(cmd):
+    """'npm run build --prod' → 'npm run build*' (first two words)."""
+    words = cmd.strip().split()
+    return " ".join(words[:2 if len(words) > 1 else 1]) + "*"
+
+
+# ───────────────────────────── MCP (lazy) ─────────────────────────────
+# config.mcp = {name: {"command": "npx", "args": [...], "env": {...}, "description": ""} | {"url": "https://…/mcp", "headers": {…}}}
+# Idle cost: one line per server in the prompt. Servers start on first use; tool schemas are fetched only when asked.
+
+class MCPClient:
+    def __init__(self, name, spec):
+        self.name, self.spec = name, spec
+        self.proc, self.lock, self.n, self.sid = None, threading.Lock(), 0, None
+        self.tools = None
+
+    def _rpc_stdio(self, msg):
+        if not self.proc or self.proc.poll() is not None:
+            env = dict(os.environ, **{k: str(v) for k, v in (self.spec.get("env") or {}).items()})
+            self.proc = subprocess.Popen([self.spec["command"], *self.spec.get("args", [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", bufsize=1)
+            self._init()
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+        if "id" not in msg:
+            return None
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"mcp {self.name}: server exited")
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("id") == msg["id"]:
+                return r
+
+    def _rpc_http(self, msg):
+        h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **(self.spec.get("headers") or {})}
+        if self.sid:
+            h["Mcp-Session-Id"] = self.sid
+        req = urllib.request.Request(self.spec["url"], data=json.dumps(msg).encode(), headers=h, method="POST")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            self.sid = resp.headers.get("Mcp-Session-Id") or self.sid
+            body = resp.read().decode("utf-8", "replace")
+        if "id" not in msg:
+            return None
+        if resp.headers.get("Content-Type", "").startswith("text/event-stream"):
+            for line in body.splitlines():
+                if line.startswith("data:"):
+                    try:
+                        r = json.loads(line[5:])
+                    except ValueError:
+                        continue
+                    if r.get("id") == msg["id"]:
+                        return r
+            raise RuntimeError("mcp: no response in stream")
+        return json.loads(body)
+
+    def _send(self, method, params=None, notify=False):
+        msg = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        if not notify:
+            self.n += 1
+            msg["id"] = self.n
+        r = (self._rpc_http if self.spec.get("url") else self._rpc_stdio)(msg)
+        if r and r.get("error"):
+            raise RuntimeError(f"mcp {self.name}: {r['error'].get('message', r['error'])}")
+        return (r or {}).get("result")
+
+    def _init(self):
+        self._send("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "me", "version": VERSION}})
+        self._send("notifications/initialized", notify=True)
+
+    def list_tools(self):
+        with self.lock:
+            if self.spec.get("url") and not self.sid and self.tools is None:
+                self._init()
+            if self.tools is None:
+                self.tools = (self._send("tools/list") or {}).get("tools", [])
+            return self.tools
+
+    def call(self, tool, args):
+        with self.lock:
+            if self.spec.get("url") and not self.sid:
+                self._init()
+            r = self._send("tools/call", {"name": tool, "arguments": args or {}}) or {}
+        parts = []
+        for c in r.get("content", []):
+            parts.append(c.get("text") if c.get("type") == "text" else f"[{c.get('type')}]")
+        return not r.get("isError"), "\n".join(p for p in parts if p) or json.dumps(r)[:4000]
+
+    def close(self):
+        if self.proc:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
+
+
+MCP_CLIENTS = {}
+
+
+def mcp_client(store, name):
+    spec = (store.config.get("mcp") or {}).get(name)
+    if not spec:
+        raise KeyError(name)
+    c = MCP_CLIENTS.get(name)
+    if not c or c.spec != spec:
+        if c:
+            c.close()
+        c = MCP_CLIENTS[name] = MCPClient(name, spec)
+    return c
+
+
+def mcp_describe(tools):
+    out = []
+    for t in tools:
+        props = (t.get("inputSchema") or {}).get("properties", {})
+        req = set((t.get("inputSchema") or {}).get("required", []))
+        args = ", ".join(f"{k}{'' if k in req else '?'}: {v.get('type', 'any')}" for k, v in props.items())
+        out.append(f"- {t['name']}({args}): {(t.get('description') or '').strip().splitlines()[0][:160] if t.get('description') else ''}")
+    return "\n".join(out) or "(no tools)"
+
+
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | date: {date}
 
 Work:
-- Understand first: read the relevant code before changing it. Ask only when truly ambiguous.
-- Split work into small steps. For 3+ steps state a short plan, then execute it step by step.
-- Build what is needed now, but keep it open for the future: clear modules, small functions, no hardcoded hacks.
-- Match the project's style, naming and libraries. No new dependencies without reason.
-- Verify: run tests, build, or the code itself. Fix what you broke. Never claim untested success.
-- Prefer edit over rewrite; use paths relative to cwd. Read several files at once when independent.
-- web_search for current facts/APIs, web_fetch for docs and URLs.
-- Confirm before destructive or irreversible actions (deleting data, force-push, production).
-Design (UI work):
-- No emoji unless asked. Icons: custom inline SVG with one consistent stroke style.
-- Restrained palette: neutral + one accent + one semantic color; consistent spacing scale; clear type hierarchy; light and dark.
-- Handle empty, loading and error states; make it responsive.
-Reply: concise, no filler. Say what changed and how you verified it.{skills}{project}{user}"""
+- Read the relevant code before changing it. Ask only when truly ambiguous.
+- Small steps; for 3+ steps keep a todo list current.
+- Build what is needed now, open for later: clear modules, small functions, no hacks. Match the project's style; no needless deps.
+- Before saying done, verify: run tests, build, lint or the code. Never claim untested success.
+- Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- web_search for current facts, web_fetch for docs/URLs.
+- Confirm before destructive or irreversible actions.
+UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
+Reply: concise. Say what changed and how you verified it.{extra}{skills}{project}{user}"""
 
+
+
+class LimitHit(Exception):
+    pass
+
+
+VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
+                "or the code itself, and fix any failure. If nothing can be run, say so and why.")
+GOAL_PROMPT = """GOAL: {objective}
+
+Work autonomously until this is done. First write verifiable success criteria and a todo list. Then do one step at a time,
+keep the todo current, and verify with real checks (tests, build, running the code). Do not ask the user unless truly blocked.
+End your final message with exactly one line:
+GOAL: DONE <the evidence that every criterion passes>
+or
+GOAL: BLOCKED <the precise reason and what is needed>"""
 
 
 class Agent:
@@ -1432,6 +1957,9 @@ class Agent:
         self.cancel = threading.Event()
         self.busy = False
         self.ctx_used = 0
+        self.depth = 0  # subagent nesting
+        self.persist = True  # subagents don't save their own sessions
+        self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -1448,11 +1976,23 @@ class Agent:
                         "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
         pr = self.preset()
         if pr.get("prompt"):
-            project += "\n\n" + pr["prompt"]
+            project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
+        extra = ""
+        mem = mem_prompt(self.s.home)
+        if mem:
+            extra += "\nGlobal memory (notes you kept earlier, newest first; use memory tool to add or forget):\n" + mem
+        if "task" in {t["name"] for t in self.tool_schemas()}:
+            extra += "\ntask agents: " + ", ".join(presets(self.s)) + "."
+        mcp = self.s.config.get("mcp") or {}
+        if mcp:
+            extra += "\nMCP servers (mcp tool): " + "; ".join(f"{k}{': ' + v['description'] if v.get('description') else ''}" for k, v in mcp.items())
+        if os.environ.get("ME_PREVIEW"):
+            extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
+                      f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
-                             skills=skills, project=project, user=user)
+                             extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
@@ -1463,7 +2003,14 @@ class Agent:
 
     def tool_schemas(self):
         allowed = preset_tools(self.preset())
-        return [t for t in TOOLS if t["name"] in allowed] + PLUGINS.tool_schemas()
+        if self.depth:
+            allowed.discard("task")
+        out = [t for t in TOOLS if t["name"] in allowed]
+        if self.s.auth.get("token"):
+            out.append(NOTIFY_TOOL)
+        if self.s.config.get("mcp"):
+            out.append(MCP_TOOL)
+        return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion."""
@@ -1476,69 +2023,60 @@ class Agent:
             return
         self.busy = True
         self.cancel.clear()
+        self.snap = {}
+        start_idx = len(self.session["messages"])
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
-        t0, tin, tout = time.time(), 0, 0
+        t0, tin, tout, cost = time.time(), 0, 0, 0.0
+        wrote, ran, nudged = False, False, False
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
+        st = self.s.config["settings"]
         try:
             while True:
                 limit = self.compact_threshold(m)
                 if limit and self.ctx_used > limit:
                     self.compact(reason="auto")
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel)
+                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel,
+                                         cache_key=self.session["id"])
+                c = usage_cost(m, usage)
                 tin += usage["in"]
                 tout += usage["out"]
+                cost += c
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
                 self.session["ctx"] = self.ctx_used
-                self.session["usage"]["in"] = self.session["usage"].get("in", 0) + usage["in"]
-                self.session["usage"]["out"] = self.session["usage"].get("out", 0) + usage["out"]
-                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout})
+                u = self.session["usage"]
+                u["in"] = u.get("in", 0) + usage["in"]
+                u["out"] = u.get("out", 0) + usage["out"]
+                u["cached"] = u.get("cached", 0) + usage.get("cached", 0)
+                u["cost"] = round(u.get("cost", 0) + c, 6)
+                today = add_day_cost(self.s.home, c) if c and self.persist else day_cost(self.s.home)
+                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": usage.get("cached", 0),
+                           "cost": cost, "session_cost": u["cost"], "day_cost": today})
                 self.session["messages"].append(msg)
                 self.checkpoint()
                 if not msg.get("tool_calls"):
+                    if wrote and not ran and not nudged and "bash" in {t["name"] for t in self.tool_schemas()} and not st.get("no_verify"):
+                        nudged = True  # self-check before "done": changes were made but nothing was run since
+                        self.emit({"type": "verify"})
+                        self.session["messages"].append({"role": "user", "content": VERIFY_NUDGE})
+                        continue
                     break
+                self._limits(cost, st)
+                results = self._run_calls(msg["tool_calls"], pr)
                 imgs = []
-                for tc in msg["tool_calls"]:
+                for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"] or "{}")
-                    except ValueError:
-                        args = None
-                    tid = tc["id"]
-                    ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
-                    if name == "skill" and args:
-                        sk = self.skills.all().get(args.get("name"), {})
-                        ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
-                    self.emit(ev)
-                    t1 = time.time()
-                    if args is None:
-                        ok, out, img = False, "error: arguments were not valid JSON", None
-                    elif name not in {t["name"] for t in self.tool_schemas()}:
-                        ok, out, img = False, f"error: tool {name} is not available in the {pr['name']} agent", None
-                    elif name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
-                        ok, out, img = False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
-                    elif isinstance(PLUGINS.emit("before_tool", name, args), str):
-                        ok, out, img = False, PLUGINS.emit("before_tool", name, args), None
-                    elif self.tools.needs_confirm(name, args) and not self.confirm(name, args):
-                        ok, out, img = False, "user denied this action. ask what to do instead.", None
-                    else:
-                        try:
-                            ok, out, img = self.tools.run(name, self.remap(args), lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e}),
-                                                          self.cancel, self.ask)
-                        except Cancelled:
-                            raise
-                        except Exception as e:
-                            ok, out, img = False, f"error: {type(e).__name__}: {e}", None
+                    if ok and name in ("write", "edit"):
+                        wrote, ran = True, False
+                    elif name == "bash" or name == "task":
+                        ran = ran or wrote
                     if img:
                         imgs.append(img)
-                    self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": out})
-                    self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": out, "time": time.time() - t1})
-                    self.checkpoint()
-                    if self.cancel.is_set():
-                        raise Cancelled()
+                if self.cancel.is_set():
+                    raise Cancelled()
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
@@ -1546,13 +2084,244 @@ class Agent:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
             self.emit({"type": "error", "text": "interrupted"})
+        except LimitHit as e:
+            self._fix_dangling()
+            self.emit({"type": "error", "text": str(e)})
         except Exception as e:
             self._fix_dangling()
             self.emit({"type": "error", "text": str(e)})
         finally:
             self.busy = False
+            self._finish_checkpoint(start_idx)
+            if pr.get("name") == "me" and self.persist:
+                self.s.save()  # new skills/themes/agents written to the home folder reach every device
+            if self.persist:
+                self.s.save_session(self.session)
+            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,
+                       "session_cost": self.session["usage"].get("cost", 0)})
+
+    def _limits(self, cost, st):
+        mt, md = float(st.get("max_turn_cost") or 0), float(st.get("max_day_cost") or 0)
+        if mt and cost >= mt:
+            raise LimitHit(f"stopped: this task reached the {money(mt)} per-task limit (/config to change)")
+        if md and day_cost(self.s.home) >= md:
+            raise LimitHit(f"stopped: today's spending reached the {money(md)} daily limit (/config to change)")
+
+    def _run_calls(self, calls, pr):
+        """Independent read-only calls run in parallel; anything that changes state runs in order."""
+        prepared = []
+        for tc in calls:
+            name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"]["arguments"] or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError
+            except ValueError:
+                args = None
+            tid = tc["id"]
+            ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+            if name == "skill" and args:
+                sk = self.skills.all().get(args.get("name"), {})
+                ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
+            prepared.append((tc, name, args, tid, ev))
+        results = {}
+        par = len(prepared) > 1 and all(n in READONLY_TOOLS and a is not None for _, n, a, _, _ in prepared)
+        if par:
+            for p in prepared:
+                self.emit(p[4])
+            ths = []
+            for tc, name, args, tid, _ in prepared:
+                def work(tc=tc, name=name, args=args, tid=tid):
+                    t1 = time.time()
+                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                th = threading.Thread(target=work, daemon=True)
+                th.start()
+                ths.append(th)
+            for th in ths:
+                th.join()
+        out = []
+        for tc, name, args, tid, ev in prepared:
+            if not par:
+                if self.cancel.is_set():
+                    results[tid] = (False, "cancelled", None, 0)
+                else:
+                    self.emit(ev)
+                    t1 = time.time()
+                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+            ok, res, img, dt = results[tid]
+            self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": res})
+            self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": res, "time": dt})
+            self.checkpoint()
+            out.append((tc, (ok, res, img)))
+        return out
+
+    def _exec(self, name, args, tid, pr):
+        """Checks + runs one tool. Returns (ok, output, image)."""
+        temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
+        if args is None:
+            return False, "error: arguments were not valid JSON — send a JSON object", None
+        if name not in {t["name"] for t in self.tool_schemas()}:
+            return False, f"error: tool {name} is not available in the {pr['name']} agent", None
+        if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+            return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
+        veto = PLUGINS.emit("before_tool", name, args)
+        if isinstance(veto, str):
+            return False, veto, None
+        if name == "todo":
+            return self._todo(args)
+        if name == "memory":
+            return self._memory(args)
+        if name == "task":
+            return self._task(args, temit)
+        need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
+        if isinstance(need, str):
+            return False, need, None
+        if need:
+            ans = self.confirm(name, args)
+            if not ans:
+                return False, "user denied this action. ask what to do instead.", None
+            if ans == "always" and name == "bash":
+                st = self.s.config["settings"]
+                st["allow"] = list(st.get("allow") or DEFAULT_ALLOW) + [allow_pattern(args.get("cmd", ""))]
+                self.s.save()
+        args = self.remap(args)
+        if name in ("write", "edit"):
+            self._snapshot(args.get("path", ""))
+        try:
+            return self.tools.run(name, args, temit, self.cancel, self.ask)
+        except Cancelled:
+            raise
+        except Exception as e:
+            return False, f"error: {type(e).__name__}: {e}", None
+
+    def _memory(self, a):
+        try:
+            if a.get("forget"):
+                mem_forget(self.s.home, a["forget"])
+                self.s.save()
+                return True, f"forgot note {a['forget']}", None
+            if not str(a.get("text", "")).strip():
+                return False, "error: give text (to add) or forget (an id)", None
+            mid = mem_add(self.s.home, a["text"], source=self.session.get("title", ""))
+            self.s.save()
+            return True, f"remembered ({mid}) — it will be in every future chat", None
+        except ValueError as e:
+            return False, f"error: {e}", None
+
+    # ─── todo / goal ───
+    def _todo(self, a):
+        items = []
+        for i in a.get("items") or []:
+            if isinstance(i, dict):  # tolerate {t, s} / {text, done}
+                t, st = str(i.get("t") or i.get("text") or ""), i.get("s") or ("done" if i.get("done") else "todo")
+            else:
+                t = str(i).strip()
+                m = re.match(r"^(?:\[(x|X|>| )\]|(x|X|>|✓|-))\s+", t)
+                mark = (m.group(1) or m.group(2)) if m else ""
+                t, st = (t[m.end():] if m else t), {"x": "done", "X": "done", "✓": "done", ">": "doing"}.get(mark, "todo")
+            if t.strip():
+                items.append({"t": t.strip()[:200], "s": st if st in ("todo", "doing", "done") else "todo"})
+        self.session["todo"] = items[:50]
+        self.emit({"type": "todo", "items": self.session["todo"]})
+        n = sum(1 for i in items if i["s"] == "done")
+        nxt = next((i["t"] for i in items if i["s"] != "done"), None)
+        return True, f"todo: {n}/{len(items)} done" + (f"; next: {nxt}" if nxt else "; all done — verify, then report"), None
+
+    def goal(self, objective, max_rounds=None):
+        """/goal: work autonomously until the objective is verifiably met or blocked. Binary result."""
+        max_rounds = int(max_rounds or self.s.config["settings"].get("goal_rounds") or 12)
+        g = self.session["goal"] = {"text": objective, "status": "working", "reason": "", "round": 0}
+        self.emit({"type": "goal", **g})
+        prompt = GOAL_PROMPT.format(objective=objective)
+        for r in range(1, max_rounds + 1):
+            g["round"] = r
+            self.run(prompt)
+            last = next((m for m in reversed(self.session["messages"]) if m["role"] == "assistant"), {})
+            verdict = re.search(r"GOAL:\s*(DONE|BLOCKED)\b[:\s-]*(.*)", last.get("content") or "", re.S | re.I)
+            if self.cancel.is_set() or (self.session["messages"] and self.session["messages"][-1].get("content") == "[interrupted by user]"):
+                g.update(status="blocked", reason="interrupted by user")
+                break
+            if verdict:
+                g.update(status=verdict.group(1).lower(), reason=verdict.group(2).strip()[:600])
+                break
+            prompt = ("Continue toward the goal. Check your todo list, do the next step, verify. When the success criteria pass, "
+                      "reply GOAL: DONE <evidence>; if you cannot proceed, GOAL: BLOCKED <reason>.")
+        else:
+            g.update(status="blocked", reason=f"no verified result after {max_rounds} rounds")
+        self.emit({"type": "goal", **g})
+        if self.persist:
             self.s.save_session(self.session)
-            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used})
+        return g
+
+    # ─── subagents ───
+    def _task(self, a, temit):
+        name = a.get("agent") or "code"
+        if name not in presets(self.s):
+            return False, f"error: no agent '{name}'. agents: {', '.join(presets(self.s))}", None
+        report = {"text": ""}
+
+        def sub_emit(e):
+            t = e["type"]
+            if t == "tool_start":
+                temit({"t": "status", "text": f"{name} › {e['name']} {e.get('label', '')[:60]}"})
+                temit({"t": "log", "text": f"{e['name']} {e.get('label', '')[:80]}"})
+            elif t == "text":
+                report["text"] += e["text"]
+            elif t == "tool_end":
+                report["text"] = ""
+            elif t == "todo":
+                done = sum(1 for i in e["items"] if i["s"] == "done")
+                temit({"t": "progress", "v": done / max(1, len(e["items"])), "label": f"{done}/{len(e['items'])}"})
+            elif t == "error":
+                temit({"t": "log", "text": "✗ " + e["text"]})
+        sub = Agent(self.s, sub_emit, self.confirm, self.ask)
+        sub.depth, sub.persist = self.depth + 1, False
+        sub.cancel = self.cancel
+        sub.session = new_session(self.session.get("cwd"))
+        sub.session["agent"] = name
+        sub.session["roots"] = list(self.session.get("roots") or [])
+        temit({"t": "status", "text": f"{name} agent started"})
+        sub.run(a.get("prompt", "") + "\n\nYou are a subagent: do the job, verify it, then reply with a short report "
+                                      "(what you did, files touched, results). The report is all the caller sees.")
+        for k in ("in", "out", "cost"):
+            self.session["usage"][k] = self.session["usage"].get(k, 0) + sub.session["usage"].get(k, 0)
+        self.snap.update({k: v for k, v in sub.snap.items() if k not in self.snap})
+        last = next((m.get("content") for m in reversed(sub.session["messages"]) if m["role"] == "assistant" and m.get("content")), "")
+        return bool(last), clip(last or report["text"] or "(subagent returned nothing)", 6000), None
+
+    # ─── checkpoints / undo ───
+    def _snapshot(self, path):
+        p = os.path.abspath(os.path.expanduser(path))
+        if p not in self.snap:
+            try:
+                self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    def _finish_checkpoint(self, start_idx):
+        if not self.snap or not self.persist:
+            return
+        files = dict(self.snap)
+        Checkpoints(self.s, self.session["id"]).push({"msgs": start_idx, "files": files, "t": time.time()})
+        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+                 for p, old in files.items()]
+        self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
+
+    def undo(self):
+        """Restore the files the last turn changed and drop that turn from history."""
+        if self.busy:
+            return {"ok": False, "text": "busy"}
+        cp = Checkpoints(self.s, self.session["id"]).pop()
+        if not cp:
+            return {"ok": False, "text": "nothing to undo"}
+        restore_files(cp["files"])
+        if 0 <= cp["msgs"] <= len(self.session["messages"]):
+            self.session["messages"] = self.session["messages"][:cp["msgs"]]
+        self.s.save_session(self.session)
+        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
+        self.emit(ev)
+        return dict(ev, ok=True)
 
     def _fix_dangling(self):
         """Every tool_call must have a tool result, or APIs reject the history."""
@@ -1616,7 +2385,7 @@ class Agent:
 
     def checkpoint(self, every=1.0):
         """Save mid-turn (throttled) so other devices see each step live."""
-        if time.time() - getattr(self, "_saved", 0) >= every:
+        if self.persist and time.time() - getattr(self, "_saved", 0) >= every:
             self._saved = time.time()
             self.s.save_session(self.session)
 
@@ -1690,14 +2459,20 @@ def run_headless(store, prompt, yolo):
             return True
         if not sys.stdin.isatty():
             return False
-        sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N] ")
-        return input().strip().lower().startswith("y")
+        sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N/a=always] ")
+        r = input().strip().lower()
+        return "always" if r.startswith("a") else r.startswith("y")
 
     def ask(q, options=None):
         if not sys.stdin.isatty():
             return ""
         return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
     ag = Agent(store, emit, confirm, ask)
+    if prompt.startswith("/goal "):
+        g = ag.goal(prompt[6:].strip().strip('"'))
+        sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
+        print()
+        return 0 if g["status"] == "done" else 2
     ag.run(prompt)
     print()
 
@@ -1729,7 +2504,7 @@ def run_rpc(store):
         if e["type"] == "turn_end" and cloud.online:
             threading.Thread(target=cloud.sync, daemon=True).start()
 
-    ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: bool(wait("confirm", name=n, args=a))),
+    ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: (lambda r: "always" if r == "always" else bool(r))(wait("confirm", name=n, args=a))),
                lambda q, options=None: wait("ask", text=q, options=options) or "")
     if os.environ.get("ME_WS_ID"):
         ag.session["ws"] = os.environ["ME_WS_ID"]
@@ -1753,6 +2528,12 @@ def run_rpc(store):
         t = cmd.get("type")
         if t == "prompt" and not ag.busy:
             threading.Thread(target=ag.run, args=(cmd["text"], cmd.get("images", ())), daemon=True).start()
+        elif t == "goal" and not ag.busy:
+            threading.Thread(target=ag.goal, args=(cmd["text"],), daemon=True).start()
+        elif t == "undo":
+            r = ag.undo()
+            if not r["ok"]:
+                emit({"type": "error", "text": r["text"]})
         elif t == "cancel":
             ag.cancel.set()
         elif t in ("confirm", "answer") and cmd.get("id") in waits:
@@ -1781,7 +2562,28 @@ def run_rpc(store):
 
 # ───────────────────────────── web ui server ─────────────────────────────
 
-WEBUI = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"theme-color\" content=\"#0b0c10\">\n<title>me</title>\n<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E\">\n<style>:root{--on-a:#fff;--bg:#0b0c10;--bg2:#111319;--bg3:#171a23;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--warn:#ffb454;--user:#e7c66b;\n  --mono:ui-monospace,\"JetBrains Mono\",SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif}\n:root[data-theme=\"light\"]{--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}\n@media (prefers-color-scheme: light){:root:not([data-theme=\"dark\"]){--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}}\n*{box-sizing:border-box;margin:0;padding:0}\nhtml,body{height:100%;background:var(--bg);color:var(--fg);font:14.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}\nbutton{font:inherit;color:inherit;background:none;border:none;cursor:pointer}\nsvg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}\n.app{display:grid;grid-template-columns:260px 1fr;height:100%}\naside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n.brand{display:flex;align-items:center;gap:10px;padding:16px;font:700 17px var(--mono)}\n.brand i{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}\n.brand small{font:500 11px var(--mono);color:var(--dim);margin-left:auto;padding:2px 7px;border:1px solid var(--line);border-radius:6px}\n.newbtn{margin:0 12px 10px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--fg)}\n.newbtn:hover{background:var(--bg2)}\n.slist{flex:1;overflow:auto;padding:0 8px 12px}\n.slist .lbl{font:11px var(--mono);color:var(--dim);padding:10px 8px 6px;text-transform:uppercase;letter-spacing:.5px}\n.si{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}\n.si:hover{background:var(--bg2);color:var(--fg)}.si.on{background:var(--bg3);color:var(--fg)}\n.side-foot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}\n.side-foot a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px}\nmain{display:flex;flex-direction:column;min-width:0;min-height:0}\nheader{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);min-height:52px}\nheader .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}\n.ib.menu{display:none}\n.pill{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:5px 9px;white-space:nowrap}\n.pill:hover{color:var(--fg)}\n#chat{flex:1;overflow:auto;scroll-behavior:smooth}\n.inner{max-width:820px;margin:0 auto;padding:22px 18px 30px}\n.empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--dim)}\n.empty h2{font:700 34px var(--mono);letter-spacing:-1.5px;color:var(--fg);margin-bottom:6px}\n.empty h2 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}\n.msg{margin:18px 0}\n.msg.user{display:flex;justify-content:flex-end}\n.msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}\n.md{word-break:break-word}\n.md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}\n.md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}\n.md code{font:12.5px var(--mono);background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--b)}\n.md pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.md pre .bar{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line)}\n.md pre code{display:block;background:none;border:none;padding:12px;overflow-x:auto;color:var(--fg);white-space:pre}\n.md a{color:var(--a)}.md blockquote{border-left:3px solid var(--faint);padding-left:12px;color:var(--dim)}\n.md table{border-collapse:collapse;margin:8px 0;font-size:13.5px}.md td,.md th{border:1px solid var(--line);padding:5px 9px}\n.think{font-size:13px;color:var(--dim);margin:6px 0}\n.think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;font-style:italic}\n.think pre{white-space:pre-wrap;font:12.5px/1.55 var(--sans);font-style:italic;margin:6px 0 0 22px;max-height:240px;overflow:auto}\n.tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}\n.tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}\n.tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}\n.tool .h .t{color:var(--faint)}\n.tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}\n.tool.closed .body,.tool .body:empty{display:none}\n.tool .st{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.tool .log{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.add{color:var(--ok)}.del{color:var(--err)}\n.pbar{height:6px;border-radius:4px;background:var(--line);margin:0 12px 10px;overflow:hidden}\n.pbar i{display:block;height:100%;background:var(--sk,var(--a));transition:width .2s}\n.pbar.ind i{width:30%!important;animation:ind 1.1s ease-in-out infinite}\n@keyframes ind{0%{margin-left:-30%}100%{margin-left:100%}}\n.skill{border-color:color-mix(in srgb,var(--sk) 45%,var(--line))}\n.skill .h b{color:var(--sk)}\n.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--a);border-radius:50%;animation:sp .8s linear infinite;flex-shrink:0}\n@keyframes sp{to{transform:rotate(360deg)}}\n.stats{font:12px var(--mono);color:var(--dim);display:flex;align-items:center;gap:6px;margin:4px 0 22px}\n.stats svg{color:var(--ok)}\n.info{font:12.5px var(--mono);color:var(--dim);margin:8px 0}.info.err{color:var(--err)}.info.warn{color:var(--warn)}\n.confirm{border:1px solid var(--warn);border-radius:10px;padding:12px;margin:10px 0}\n.confirm pre{font:12px var(--mono);white-space:pre-wrap;color:var(--dim);margin:8px 0;max-height:200px;overflow:auto}\n.confirm .btns{display:flex;gap:8px}\n.btn{padding:7px 13px;border-radius:8px;font:500 12.5px var(--mono);background:var(--a);color:var(--on-a)}\n.btn.ghost{background:none;color:var(--dim);border:1px solid var(--line)}\n.working{display:flex;align-items:center;gap:8px;font:12.5px var(--mono);color:var(--dim);margin:10px 0}\n.shimmer{background:linear-gradient(90deg,var(--dim) 30%,var(--fg) 50%,var(--dim) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}\n@keyframes sh{from{background-position:150% 0}to{background-position:-50% 0}}\n.composer{padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}\n.box{max-width:820px;margin:0 auto;border:1px solid var(--line);border-radius:14px;background:var(--bg2);transition:border-color .15s}\n.box:focus-within{border-color:var(--a)}\ntextarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--fg);font:15px/1.5 var(--sans);padding:12px 14px 4px;max-height:220px}\n.row{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}\n.ib{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--dim)}\n.ib:hover{background:var(--bg3);color:var(--fg)}\n.ib.rec{background:var(--err);color:#fff;animation:pulse 1s infinite}\n@keyframes pulse{50%{opacity:.6}}\n.send{background:var(--a);color:var(--on-a)}.send:hover{background:var(--a);filter:brightness(1.1);color:var(--on-a)}\n.send:disabled{background:var(--bg3);color:var(--dim);opacity:1}\n.send:disabled{opacity:.35;cursor:default}\n.spacer{flex:1}\n.status{max-width:820px;margin:8px auto 0;display:flex;gap:14px;align-items:center;font:11.5px var(--mono);color:var(--dim);flex-wrap:wrap}\n.ctx{display:flex;align-items:center;gap:6px}.ctx .bar{width:70px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}.ctx .bar i{display:block;height:100%;background:var(--ok)}\n.popup{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;padding:16px;z-index:20}\n.popup>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:8px;width:min(420px,100%);max-height:70vh;overflow:auto}\n.popup button{display:flex;width:100%;text-align:left;padding:9px 12px;border-radius:8px;gap:10px;align-items:center}\n.popup button:hover{background:var(--bg2)}.popup .d{color:var(--dim);font-size:12px;margin-left:auto}\n.hidden{display:none!important}\n@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:fixed;inset:0 25% 0 0;z-index:15;transform:translateX(-102%);transition:transform .2s;box-shadow:0 0 60px rgba(0,0,0,.5)}\n  aside.open{transform:none}.ib.menu{display:grid}.inner{padding:16px 14px}.composer{padding:0 10px 10px}}\n.sw{width:30px;height:20px;border-radius:6px;border:1px solid;display:flex;gap:3px;align-items:center;justify-content:center;flex-shrink:0}\n.sw i{width:7px;height:7px;border-radius:50%}\n.popup .more{display:block;padding:10px 12px;font-size:12.5px;color:var(--a);text-decoration:none}\n.panel{padding:4px 12px 10px;font-size:13px;overflow-x:auto}\n.panel table{border-collapse:collapse;font:12px var(--mono);margin-top:6px}\n.panel td,.panel th{border:1px solid var(--line);padding:4px 8px;text-align:left;white-space:nowrap}\n.panel th{color:var(--dim);font-weight:500}\n.tool.closed .panel{display:block}\n.askin{flex:1;min-width:160px;background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font:inherit;outline:none}\n.pill.mode{color:var(--a);border-color:color-mix(in srgb,var(--a) 40%,var(--line))}\n.cf{color:var(--faint)}.cf.on{color:var(--ok)}\n.popup button b{font-weight:600;white-space:nowrap}.popup .d{text-align:right}\n.row .pill{min-width:0}\n#modelBtn{flex:0 1 auto;overflow:hidden}#modelBtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n#agentBtn,.ib{flex-shrink:0}\n@media (max-width:760px){.status{gap:8px;font-size:10.5px}.ctx .bar{width:44px}header{padding:8px 10px}}\n.scrim{display:none}\n.side-close{display:none}\n@media (max-width:760px){\n  .scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:14;opacity:0;pointer-events:none;transition:opacity .2s}\n  aside.open+.scrim,.scrim.on{opacity:1;pointer-events:auto}\n  .side-close{display:grid;margin-left:6px}\n  .brand small{margin-left:auto}\n  .status .tok{display:none}\n}\n.tool .h .lab{direction:ltr}\n</style>\n</head>\n<body>\n<div class=\"app\">\n<aside id=\"side\">\n  <div class=\"brand\"><i></i>me<small id=\"mode\"></small><button class=\"ib side-close\" onclick=\"closeSide()\" aria-label=\"close menu\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></button></div>\n  <button class=\"newbtn\" onclick=\"newChat()\"><svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>New chat</button>\n  <div class=\"slist\" id=\"slist\"></div>\n  <div class=\"side-foot\"><a id=\"acct\" href=\"/account\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg><span id=\"who\">account</span></a>\n    <span class=\"spacer\"></span><button class=\"ib\" onclick=\"pickTheme()\" title=\"theme\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 3a9 9 0 0 0 0 18z\" fill=\"currentColor\"/></svg></button></div>\n</aside>\n<div class=\"scrim\" id=\"scrim\" onclick=\"closeSide()\"></div>\n<main>\n  <header>\n    <button class=\"ib menu\" onclick=\"openSide()\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 12h16M4 17h16\"/></svg></button>\n    <div class=\"title\" id=\"title\">New chat</div>\n    <button class=\"pill\" id=\"wsPill\" title=\"workspace\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg><span id=\"ws\">\u2014</span></button>\n  </header>\n  <div id=\"chat\"><div class=\"inner\" id=\"log\"></div></div>\n  <div class=\"composer\">\n    <div class=\"box\">\n      <textarea id=\"input\" rows=\"1\" placeholder=\"Ask anything\u2026\"></textarea>\n      <div class=\"row\">\n        <button class=\"pill\" id=\"modelBtn\" onclick=\"pickModel()\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2\"/></svg><span id=\"model\">model</span></button>\n        <button class=\"pill mode\" id=\"agentBtn\" onclick=\"pickAgent()\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h10M4 12h16M4 17h7\"/><circle cx=\"18\" cy=\"7\" r=\"2\"/><circle cx=\"15\" cy=\"17\" r=\"2\"/></svg><span id=\"agentName\">code</span></button>\n        <span class=\"spacer\"></span>\n        <button class=\"ib\" id=\"mic\" title=\"hold to talk\"><svg viewBox=\"0 0 24 24\"><rect x=\"9\" y=\"3\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5 11a7 7 0 0 0 14 0M12 18v3\"/></svg></button>\n        <button class=\"ib send\" id=\"send\" onclick=\"sendOrStop()\" disabled><svg viewBox=\"0 0 24 24\" id=\"sendIcon\"><path d=\"M12 19V5M5 12l7-7 7 7\"/></svg></button>\n      </div>\n    </div>\n    <div class=\"status\"><span id=\"ctxfiles\"></span><span class=\"ctx\" id=\"ctx\"></span><span id=\"tok\" class=\"tok\"></span><span id=\"sync\"></span></div>\n  </div>\n</main>\n</div>\n<div class=\"popup hidden\" id=\"popup\" onclick=\"if(event.target===this)this.classList.add('hidden')\"><div id=\"pbody\"></div></div>\n<script>const MODE = \"__MODE__\";\nconst $ = id => document.getElementById(id);\nconst side = $(\"side\");\nconst esc = s => String(s ?? \"\").replace(/[&<>\"]/g, c => ({\"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\"})[c]);\nconst human = n => !n ? \"0\" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(\".0\", \"\") + \"k\" : (n / 1e6).toFixed(1).replace(\".0\", \"\") + \"M\";\nconst dur = s => s < 60 ? s.toFixed(1) + \"s\" : Math.floor(s / 60) + \"m\" + String(Math.floor(s % 60)).padStart(2, \"0\") + \"s\";\nconst COLORS = {red:\"#ff6b7a\",green:\"#5ad18a\",blue:\"#6ba6ff\",magenta:\"#d27cff\",cyan:\"#4fd1c5\",yellow:\"#e7c66b\",orange:\"#ffb454\",purple:\"#8b7cff\",pink:\"#ff8fc7\"};\nconst I = {\n  check: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--ok)\"><path d=\"M5 12l5 5 9-11\"/></svg>',\n  x: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--err)\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg>',\n  stop: '<path d=\"M7 7h10v10H7z\" fill=\"currentColor\"/>', up: '<path d=\"M12 19V5M5 12l7-7 7 7\"/>',\n  think: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z\"/></svg>',\n};\nlet token = localStorage.getItem(\"me_token\") || \"\", base = \"\", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;\n\n// \u2500\u2500\u2500 transport: identical endpoints for local (`me web`) and cloud (/app) \u2500\u2500\u2500\nasync function api(path, body, method) {\n  const h = {\"Content-Type\": \"application/json\"};\n  if (token) h.Authorization = \"Bearer \" + token;\n  const r = await fetch(path, {method: method || (body !== undefined ? \"POST\" : \"GET\"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});\n  const j = await r.json().catch(() => ({}));\n  if (r.status === 401 && MODE === \"cloud\") { location.href = \"/account#cloud\"; throw new Error(\"login\"); }\n  if (!r.ok) throw new Error(j.detail || r.statusText);\n  return j;\n}\nconst A = {\n  async boot() {\n    if (MODE === \"local\") {\n      const k = new URLSearchParams(location.search).get(\"k\"); if (k) { token = k; localStorage.setItem(\"me_token\", k); }\n      base = \"/api/agent\"; return api(base + \"/state\");\n    }\n    if (!token) { location.href = \"/account#cloud\"; return; }\n    const q = new URLSearchParams(location.search);\n    let w;\n    if (q.get(\"s\") || q.get(\"ws\")) w = await api(\"/api/cloud\", {session: q.get(\"s\"), ws: q.get(\"ws\")});\n    else w = (await api(\"/api/cloud\"))[0] || await api(\"/api/cloud\", {});\n    return A.attach(w);\n  },\n  async attach(w) { base = \"/api/cloud/\" + w.id; const st = await A.state(w); st.after = w.seq || 0; return st; },\n  async state(w) {\n    if (MODE === \"local\") return api(base + \"/state\");\n    const [cfg, sessions, me] = await Promise.all([api(\"/api/doc?key=config\").then(d => JSON.parse(d.content)).catch(() => ({})), api(\"/api/sessions\"), api(\"/api/me\")]);\n    let session = null;\n    if (w && w.session) session = await api(\"/api/doc?key=\" + encodeURIComponent(\"session/\" + w.session)).then(d => JSON.parse(d.content)).catch(() => null);\n    const [ag, man] = await Promise.all([api(\"/api/agents\").catch(() => ({agents: [], current: \"code\"})),\n      w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);\n    const context = [\"AGENTS.md\", \"ME.md\", \"CLAUDE.md\", \"DESIGN.md\", \"PLAN.md\"].filter(f => f in man.files);\n    return {mode: \"cloud\", user: me.username, ctx: session?.ctx || 0, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,\n            agent: session?.agent || ag.current, agents: ag.agents, context};\n  },\n  async load(id) {\n    if (MODE === \"local\") { await api(base + \"/load\", {id}); return api(base + \"/state\"); }\n    const w = await api(\"/api/cloud\", {session: id}); return A.attach(w);\n  },\n  async newChat() { await api(base + \"/new\", {}); return A.state(state.worker); },\n  async setAgent(name) {\n    if (MODE === \"local\") return api(base + \"/agent\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.agent = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  async setModel(name) {\n    if (MODE === \"local\") return api(base + \"/model\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.model = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  voice: (blob) => fetch(MODE === \"local\" ? \"/api/agent/voice\" : \"/api/voice\", {method: \"POST\", headers: {\"Content-Type\": blob.type, ...(token ? {Authorization: \"Bearer \" + token} : {})}, body: blob}).then(r => r.json()),\n};\n\n// \u2500\u2500\u2500 markdown \u2500\u2500\u2500\nfunction md(src) {\n  const blocks = [];\n  src = src.replace(/```(\\w*)\\n?([\\s\\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\\u0000${blocks.length - 1}\\u0000`; });\n  let h = esc(src)\n    .replace(/^### (.*)$/gm, \"<h3>$1</h3>\").replace(/^## (.*)$/gm, \"<h2>$1</h2>\").replace(/^# (.*)$/gm, \"<h1>$1</h1>\")\n    .replace(/^&gt; (.*)$/gm, \"<blockquote>$1</blockquote>\")\n    .replace(/`([^`\\n]+)`/g, \"<code>$1</code>\").replace(/\\*\\*([^*]+)\\*\\*/g, \"<b>$1</b>\").replace(/(^|\\W)\\*([^*\\n]+)\\*/g, \"$1<i>$2</i>\")\n    .replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  h = h.replace(/(?:^|\\n)((?:[-*] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ul>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.slice(2) + \"</li>\").join(\"\") + \"</ul>\\n\");\n  h = h.replace(/(?:^|\\n)((?:\\d+[.)] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ol>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.replace(/^\\d+[.)] /, \"\") + \"</li>\").join(\"\") + \"</ol>\\n\");\n  h = h.split(/\\n{2,}/).map(p => /^\\s*<(h\\d|ul|ol|blockquote|\\u0000)/.test(p) || p.startsWith(\"\\u0000\") ? p : \"<p>\" + p.replace(/\\n/g, \"<br>\") + \"</p>\").join(\"\");\n  return h.replace(/\\u0000(\\d+)\\u0000/g, (_, i) => `<pre><div class=\"bar\"><span>${esc(blocks[i][0] || \"code\")}</span><button onclick=\"navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)\">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);\n}\n\n// \u2500\u2500\u2500 rendering \u2500\u2500\u2500\nconst log = $(\"log\"), chat = $(\"chat\");\nlet stick = true;\nchat.addEventListener(\"scroll\", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);\nfunction scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }\nlet workEl = null;\nfunction el(html) { const d = document.createElement(\"div\"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }\nfunction clearLog() { log.innerHTML = \"\"; live = {}; cur = {}; workEl = null; }\nfunction emptyState() {\n  log.innerHTML = `<div class=\"empty\" style=\"min-height:60vh\"><div><h2>what are we <span>building?</span></h2><p>${MODE === \"cloud\" ? \"Runs in your cloud sandbox \u00b7 files sync to all your machines\" : \"Running locally on this machine\"}</p></div></div>`;\n}\nfunction userMsg(t) { if (log.querySelector(\".empty\")) log.innerHTML = \"\"; el(`<div class=\"msg user\"><div class=\"bub\">${esc(t)}</div></div>`); }\nfunction shortPath(s) {\n  s = String(s ?? \"\");\n  const roots = [state.session?.cwd, ...(state.session?.roots || []), state.cwd, \"/work\"].filter(Boolean);\n  for (const r of roots) s = s.split(r.replace(/\\/$/, \"\") + \"/\").join(\"\");\n  const max = innerWidth < 500 ? 34 : 70;\n  return s.length > max ? \"\u2026\" + s.slice(-(max - 1)) : s;\n}\nfunction toolCard(name, label, args, skill) {\n  label = shortPath(label);\n  const isSkill = name === \"skill\" && args && args.action;\n  const color = isSkill ? (COLORS[skill?.color] || \"var(--a)\") : \"var(--a)\";\n  const title = isSkill ? `${esc(args.name)} \u00b7 ${esc(args.action)}` : esc(name);\n  return el(`<div class=\"tool ${isSkill ? \"skill\" : \"\"} closed\" style=\"--sk:${color}\"><div class=\"h\" onclick=\"this.parentNode.classList.toggle('closed')\"><span class=\"ic\"><span class=\"spin\"></span></span><b>${title}</b><span class=\"lab\">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class=\"t\"></span></div><div class=\"st hidden\"></div><div class=\"pbar hidden\"><i></i></div><div class=\"log hidden\"></div><div class=\"body\"></div></div>`);\n}\nfunction diffHtml(t) { return t.split(\"\\n\").map(l => `<span class=\"${l[0] === \"+\" ? \"add\" : l[0] === \"-\" ? \"del\" : \"\"}\">${esc(l)}</span>`).join(\"\\n\"); }\nfunction onEvent(e) {\n  const t = e.type;\n  if (t === \"user\") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }\n  if (t === \"turn_start\") { if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }\n  if (t === \"reasoning\") {\n    if (!cur.think) { cur.think = el(`<details class=\"think\"><summary>${I.think}<span class=\"shimmer\">thinking\u2026</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }\n    cur.think.querySelector(\"pre\").textContent += e.text; scroll(); return;\n  }\n  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector(\"summary span\").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };\n  if (t === \"text\") {\n    endThink();\n    if (!cur.text) { cur.text = el(`<div class=\"msg md\"></div>`); cur.raw = \"\"; }\n    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;\n  }\n  if (t === \"tool_start\") {\n    endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;\n    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;\n  }\n  if (t === \"tool_event\") {\n    const c = live[e.id]; if (!c) return;\n    if (e.t === \"status\") { const s = c.querySelector(\".st\"); s.classList.remove(\"hidden\"); s.textContent = e.text; }\n    else if (e.t === \"progress\") { const p = c.querySelector(\".pbar\"); p.classList.remove(\"hidden\"); p.classList.toggle(\"ind\", e.v == null); if (e.v != null) p.firstChild.style.width = Math.round(e.v * 100) + \"%\"; }\n    else if (e.t === \"table\") {\n      const rows = e.rows || []; if (!rows.length) return;\n      const cols = Array.isArray(rows[0]) ? null : Object.keys(rows[0]);\n      const tr = r => \"<tr>\" + (cols ? cols.map(k => `<td>${esc(r[k])}</td>`) : r.map(x => `<td>${esc(x)}</td>`)).join(\"\") + \"</tr>\";\n      const p = document.createElement(\"div\"); p.className = \"panel\";\n      p.innerHTML = (e.title ? `<b>${esc(e.title)}</b>` : \"\") + `<table>${cols ? \"<tr>\" + cols.map(k => `<th>${esc(k)}</th>`).join(\"\") + \"</tr>\" : \"\"}${rows.map(tr).join(\"\")}</table>`;\n      c.insertBefore(p, c.querySelector(\".body\"));\n    }\n    else if (e.t === \"md\") { const p = document.createElement(\"div\"); p.className = \"panel md\"; p.innerHTML = md(e.text); c.insertBefore(p, c.querySelector(\".body\")); }\n    else if (e.t === \"diff\" && e.text.trim()) { c.querySelector(\".body\").innerHTML = diffHtml(e.text); c.classList.remove(\"closed\"); }\n    else { const l = c.querySelector(\".log\"); l.classList.remove(\"hidden\"); l.textContent = (\"\u203a \" + e.text + \"\\n\" + l.textContent).split(\"\\n\").slice(0, 3).join(\"\\n\"); }\n    scroll(); return;\n  }\n  if (t === \"tool_end\") {\n    const c = live[e.id]; if (!c) return; delete live[e.id];\n    c.querySelector(\".ic\").innerHTML = e.ok ? I.check : I.x; c.querySelector(\".t\").textContent = dur(e.time);\n    c.querySelectorAll(\".st,.pbar,.log\").forEach(x => x.classList.add(\"hidden\"));\n    if (c.querySelector(\".panel\")) c.classList.add(\"haspanel\");\n    const b = c.querySelector(\".body\"); if (!b.innerHTML) b.textContent = (e.output || \"\").slice(0, 20000);\n    if (!e.ok) c.classList.remove(\"closed\");\n    return;\n  }\n  if (t === \"ask\") {\n    const opts = e.options || [];\n    const c = el(`<div class=\"confirm ask\"><b>${esc(e.text)}</b><div class=\"btns\" style=\"margin-top:10px;flex-wrap:wrap\">${opts.length\n      ? opts.map((o, i) => `<button class=\"btn ${i ? \"ghost\" : \"\"}\" data-v=\"${esc(o)}\">${esc(o)}</button>`).join(\"\")\n      : `<input class=\"askin\" placeholder=\"answer\u2026\"><button class=\"btn\" data-in=\"1\">send</button>`}</div></div>`);\n    const send = v => { api(base + \"/answer\", {id: e.id, text: v}); c.innerHTML = `<span class=\"dim\">${esc(e.text)} \u2192 <b>${esc(v || \"\u2014\")}</b></span>`; c.className = \"info\"; };\n    c.querySelectorAll(\"button\").forEach(b => b.onclick = () => send(b.dataset.in ? c.querySelector(\"input\").value : b.dataset.v));\n    c.querySelector(\"input\")?.addEventListener(\"keydown\", ev => ev.key === \"Enter\" && send(ev.target.value));\n    return;\n  }\n  if (t === \"confirm\") {\n    const c = el(`<div class=\"confirm\"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class=\"btns\"><button class=\"btn\">allow</button><button class=\"btn ghost\">deny</button></div></div>`);\n    const [y, n] = c.querySelectorAll(\"button\");\n    y.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: true}); c.remove(); };\n    n.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: false}); c.remove(); };\n    return;\n  }\n  if (t === \"compacting\") { el(`<div class=\"info\">compacting history\u2026</div>`); return; }\n  if (t === \"compacted\") { state.ctx = e.ctx; renderStatus(); el(`<div class=\"info\">compacted ${e.before} \u2192 ${e.after} messages \u00b7 ~${human(e.ctx)} tokens</div>`); return; }\n  if (t === \"usage\") { state.ctx = e.ctx; renderStatus(e.in, e.out); return; }\n  if (t === \"error\") { cur.failed = true; el(`<div class=\"info ${e.text === \"interrupted\" ? \"warn\" : \"err\"}\">${esc(e.text)}</div>`); return; }\n  if (t === \"turn_end\") {\n    const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();\n    el(`<div class=\"stats\">${failed ? I.x : I.check}${dur(e.time)} \u00b7 \u2191 ${human(e.in)} \u2193 ${human(e.out)} \u00b7 ${human(e.in + e.out)} tokens</div>`);\n    state.ctx = e.ctx; renderStatus(); refreshSessions(); return;\n  }\n  if (t === \"loaded\" && e.title) $(\"title\").textContent = e.title;\n  if (t === \"reload\") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }\n  if (t === \"exit\") { busy = false; setBusy(); restartSandbox(); }\n}\nfunction renderHistory(s) {\n  clearLog();\n  if (!s || !s.messages || !s.messages.length) return emptyState();\n  const txt = c => Array.isArray(c) ? c.filter(x => x.type === \"text\").map(x => x.text).join(\" \") : (c || \"\");\n  const outs = {};\n  s.messages.forEach(m => { if (m.role === \"tool\") outs[m.tool_call_id] = m.content; });\n  s.messages.forEach(m => {\n    if (m.role === \"user\" && txt(m.content) !== \"(images from read)\") userMsg(txt(m.content));\n    else if (m.role === \"assistant\") {\n      if (m.content) el(`<div class=\"msg md\">${md(m.content)}</div>`);\n      (m.tool_calls || []).forEach(tc => {\n        let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}\n        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || \"\", a);\n        c.querySelector(\".ic\").innerHTML = I.check; c.querySelector(\".body\").textContent = String(outs[tc.id] || \"\").slice(0, 8000);\n      });\n    }\n  });\n  $(\"title\").textContent = s.title || \"Chat\";\n  setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);\n}\nfunction renderStatus(tin, tout) {\n  const m = (state.config?.models || []).find(x => x.name === state.config?.model);\n  $(\"model\").textContent = m ? m.name + (m.effort ? \" \u00b7 \" + m.effort : \"\") : \"no model\";\n  const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;\n  const col = f < .6 ? \"var(--ok)\" : f < .85 ? \"var(--warn)\" : \"var(--err)\";\n  $(\"ctx\").innerHTML = ctx ? `ctx <span class=\"bar\"><i style=\"width:${(f * 100).toFixed(1)}%;background:${col}\"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;\n  const u = state.session?.usage || {};\n  $(\"tok\").textContent = tin !== undefined ? `this task \u2191${human(tin)} \u2193${human(tout)}` : `session \u2191${human(u.in)} \u2193${human(u.out)}`;\n  const ag = (state.agents || []).find(a => a.name === state.agent);\n  $(\"agentName\").textContent = ag ? ag.label : (state.agent || \"code\");\n  const cf = state.context || [];\n  $(\"ctxfiles\").innerHTML = cf.length ? `<span class=\"cf on\" title=\"loaded into every turn\">\u25c6 ${cf.map(esc).join(\" \u00b7 \")}</span>` : `<span class=\"cf\" title=\"ask the agent to create it, or /init in the terminal\">\u25c7 no AGENTS.md</span>`;\n  $(\"ws\").textContent = state.ws || (MODE === \"local\" ? (state.cwd || \"local\").split(/[\\\\/]/).pop() : \"cloud\");\n}\nfunction renderSessions() {\n  const ss = state.sessions || [], sid = state.session?.id;\n  const groups = {};\n  ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;\n    const g = age < 1 ? \"Today\" : age < 7 ? \"This week\" : \"Older\"; (groups[g] ??= []).push(s); });\n  $(\"slist\").innerHTML = Object.entries(groups).map(([g, l]) => `<div class=\"lbl\">${g}</div>` + l.map(s =>\n    `<button class=\"si ${s.id === sid ? \"on\" : \"\"}\" onclick=\"loadSession('${esc(s.id)}')\" title=\"${esc(s.cwd || \"\")}\">${esc(s.title || \"(untitled)\")}</button>`).join(\"\")).join(\"\") || '<div class=\"lbl\">no chats yet</div>';\n}\nasync function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }\nfunction setBusy() {\n  $(\"sendIcon\").innerHTML = busy ? I.stop : I.up;\n  $(\"send\").disabled = !busy && !$(\"input\").value.trim();\n  if (busy && (!workEl || workEl.parentNode !== log)) {\n    workEl = document.createElement(\"div\"); workEl.className = \"working\";\n    workEl.innerHTML = '<span class=\"spin\"></span><span class=\"shimmer\">working\u2026</span><span class=\"el\"></span>'; log.appendChild(workEl); scroll();\n  }\n  if (!busy && workEl) { workEl.remove(); workEl = null; }\n}\nsetInterval(() => { const w = document.querySelector(\".working .el\"); if (w && busy) w.textContent = dur((Date.now() - turnT0) / 1000); }, 200);\n\n// \u2500\u2500\u2500 actions \u2500\u2500\u2500\nasync function poll() {\n  const my = ++polling;\n  while (my === polling) {\n    try {\n      const r = await api(`${base}/events?after=${after}`);\n      if (my !== polling) return;\n      for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }\n      if (r.state) { busy = r.state.busy; setBusy(); }\n    } catch (e) {\n      if (MODE === \"cloud\" && /no such cloud session/.test(e.message)) { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); state.worker = w; base = \"/api/cloud/\" + w.id; after = w.seq || 0; continue; }\n      await new Promise(r => setTimeout(r, 2000));\n    }\n  }\n}\nasync function restartSandbox() {\n  if (MODE !== \"cloud\") return;\n  el(`<div class=\"info warn\">sandbox restarted \u2014 your session and files are safe</div>`);\n  try { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); polling++; apply(await A.attach(w), false); } catch (e) {}\n}\nasync function apply(s, history = true) {\n  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();\n  $(\"mode\").textContent = MODE === \"cloud\" ? \"cloud\" : \"local\";\n  $(\"who\").textContent = s.user || (MODE === \"local\" ? \"local\" : \"account\");\n  after = s.after ?? after;\n  if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }\n  (s.pending || []).forEach(onEvent);\n  poll();\n}\nasync function send() {\n  const t = $(\"input\").value.trim(); if (!t || busy) return;\n  if (t === \"/compact\") { $(\"input\").value = \"\"; grow(); return api(base + \"/compact\", {}).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`)); }\n  $(\"input\").value = \"\"; grow(); userMsg(t);\n  if ($(\"title\").textContent === \"New chat\") $(\"title\").textContent = t.split(\"\\n\")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;\n  try { await api(base + \"/prompt\", {text: t}); } catch (e) { el(`<div class=\"info err\">${esc(e.message)}</div>`); busy = false; setBusy(); }\n}\nfunction sendOrStop() { busy ? api(base + \"/cancel\", {}) : send(); }\nfunction openSide() { side.classList.add(\"open\"); $(\"scrim\").classList.add(\"on\"); }\nfunction closeSide() { side.classList.remove(\"open\"); $(\"scrim\").classList.remove(\"on\"); }\ndocument.addEventListener(\"keydown\", e => { if (e.key === \"Escape\") { closeSide(); $(\"popup\").classList.add(\"hidden\"); } });\nlet touchX = null;  // swipe left on the drawer to close it\nside.addEventListener(\"touchstart\", e => touchX = e.touches[0].clientX, {passive: true});\nside.addEventListener(\"touchend\", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });\nasync function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, \"\", location.pathname); $(\"title\").textContent = \"New chat\"; }\nasync function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === \"cloud\") history.replaceState(null, \"\", \"?s=\" + id); }\nfunction pickModel() {\n  const ms = state.config?.models || [];\n  $(\"pbody\").innerHTML = ms.map(m => `<button onclick=\"setModel('${esc(m.name)}')\"><span>${m.name === state.config.model ? \"\u25cf\" : \"\u25cb\"}</span>${esc(m.name)}<span class=\"d\">${esc(m.id)}</span></button>`).join(\"\") || '<p style=\"padding:12px;color:var(--dim)\">No models \u2014 add one in your account or with /models.</p>';\n  $(\"popup\").classList.remove(\"hidden\");\n}\nfunction pickAgent() {\n  $(\"pbody\").innerHTML = (state.agents || []).map(a => `<button onclick=\"setAgent('${esc(a.name)}')\"><span>${a.name === state.agent ? \"\u25cf\" : \"\u25cb\"}</span><b>${esc(a.label)}</b><span class=\"d\">${esc(a.description)}</span></button>`).join(\"\")\n    + (MODE === \"cloud\" ? `<a class=\"more\" href=\"/account#market\">more agents in the marketplace \u2192</a>` : \"\");\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setAgent(n) { $(\"popup\").classList.add(\"hidden\"); state.agent = n; renderStatus(); await A.setAgent(n); }\nasync function setModel(n) { $(\"popup\").classList.add(\"hidden\"); await A.setModel(n); state.config.model = n; renderStatus(); }\nconst inp = $(\"input\");\nfunction grow() { inp.style.height = \"auto\"; inp.style.height = Math.min(220, inp.scrollHeight) + \"px\"; setBusy(); }\ninp.addEventListener(\"input\", grow);\ninp.addEventListener(\"keydown\", e => { if (e.key === \"Enter\" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === \"Escape\" && busy) api(base + \"/cancel\", {}); });\n// voice: hold the mic button (or hold space in an empty input)\nlet rec = null, chunks = [];\nasync function recStart() {\n  if (rec) return;\n  try {\n    const stream = await navigator.mediaDevices.getUserMedia({audio: true});\n    rec = new MediaRecorder(stream); chunks = [];\n    rec.ondataavailable = e => chunks.push(e.data);\n    rec.onstop = async () => {\n      stream.getTracks().forEach(t => t.stop()); $(\"mic\").classList.remove(\"rec\");\n      const blob = new Blob(chunks, {type: rec.mimeType || \"audio/webm\"}); rec = null;\n      if (blob.size < 2000) return;\n      inp.placeholder = \"transcribing\u2026\";\n      try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(\" \") ? \" \" : \"\") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }\n      finally { inp.placeholder = \"Ask anything\u2026\"; }\n    };\n    rec.start(); $(\"mic\").classList.add(\"rec\");\n  } catch (e) { alert(\"microphone: \" + e.message); }\n}\nfunction recStop() { if (rec && rec.state === \"recording\") rec.stop(); }\nconst mic = $(\"mic\");\nmic.addEventListener(\"pointerdown\", e => { e.preventDefault(); recStart(); });\n[\"pointerup\", \"pointerleave\", \"pointercancel\"].forEach(ev => mic.addEventListener(ev, recStop));\nlet spaceT = 0;\ninp.addEventListener(\"keydown\", e => { if (e.code === \"Space\" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });\ninp.addEventListener(\"keyup\", e => { if (e.code === \"Space\") recStop(); });\n$(\"wsPill\").onclick = async () => {\n  if (MODE === \"cloud\") return location.href = \"/account#workspaces\";\n  const p = prompt(\"Project folder for the local agent\", state.cwd || \"\");\n  if (!p) return;\n  try { await apply(await api(base + \"/cwd\", {path: p})); $(\"title\").textContent = \"New chat\"; } catch (e) { alert(e.message); }\n};\nA.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`));\n\n// \u2500\u2500\u2500 themes: same tokens as the terminal (see 14a_themes.py) \u2500\u2500\u2500\nconst THEME_VARS = {bg: \"--bg\", bg2: \"--bg2\", bg3: \"--bg3\", line: \"--line\", fg: \"--fg\", dim: \"--dim\", faint: \"--faint\", accent: \"--a\", accent2: \"--b\", ok: \"--ok\", err: \"--err\", warn: \"--warn\", user: \"--user\"};\nlet themeList = [];\nfunction onAccent(hex) {  // black or white text, whichever reads better on the accent color\n  const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });\n  return .2126 * r + .7152 * g + .0722 * b > .35 ? \"#0a0a0a\" : \"#ffffff\";\n}\nfunction applyTheme(t) {\n  if (!t) return;\n  const r = document.documentElement;\n  for (const [k, v] of Object.entries(THEME_VARS)) if (t.colors[k]) r.style.setProperty(v, t.colors[k]);\n  r.style.colorScheme = t.dark === false ? \"light\" : \"dark\";\n  r.style.setProperty(\"--on-a\", onAccent(t.colors.accent));\n  document.querySelector('meta[name=\"theme-color\"]')?.setAttribute(\"content\", t.colors.bg);\n  try { localStorage.setItem(\"me_theme_cache\", JSON.stringify(t)); } catch (e) {}\n}\ntry { applyTheme(JSON.parse(localStorage.getItem(\"me_theme_cache\"))); } catch (e) {}\nasync function loadThemes() {\n  const r = await api(MODE === \"local\" ? \"/api/agent/themes\" : \"/api/themes\");\n  themeList = r.themes; applyTheme(themeList.find(t => t.name === r.current));\n}\nfunction pickTheme() {\n  $(\"pbody\").innerHTML = themeList.map(t => `<button onclick=\"setTheme('${esc(t.name)}')\"><span class=\"sw\" style=\"background:${t.colors.bg};border-color:${t.colors.line}\"><i style=\"background:${t.colors.accent}\"></i><i style=\"background:${t.colors.accent2}\"></i></span>${esc(t.label || t.name)}<span class=\"d\">${t.dark === false ? \"light\" : \"dark\"}</span></button>`).join(\"\")\n    + `<a class=\"more\" href=\"${MODE === \"cloud\" ? \"/account#market\" : \"#\"}\" onclick=\"${MODE === \"local\" ? \"alert('Install more with /theme in the terminal or the marketplace on the site');return false\" : \"\"}\">more themes in the marketplace \u2192</a>`;\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setTheme(name) {\n  applyTheme(themeList.find(t => t.name === name)); $(\"popup\").classList.add(\"hidden\");\n  if (MODE === \"local\") return api(\"/api/agent/theme\", {name});\n  const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.theme = name;\n  await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\");\n}\n</script>\n</body>\n</html>\n"
+WEBUI = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"theme-color\" content=\"#0b0c10\">\n<title>me</title>\n<link rel=\"manifest\" href=\"/manifest.webmanifest\">\n<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\n<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E\">\n<style>:root{--on-a:#fff;--bg:#0b0c10;--bg2:#111319;--bg3:#171a23;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--warn:#ffb454;--user:#e7c66b;\n  --mono:ui-monospace,\"JetBrains Mono\",SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif}\n:root[data-theme=\"light\"]{--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}\n@media (prefers-color-scheme: light){:root:not([data-theme=\"dark\"]){--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}}\n*{box-sizing:border-box;margin:0;padding:0}\nhtml,body{height:100%;background:var(--bg);color:var(--fg);font:14.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}\nbutton{font:inherit;color:inherit;background:none;border:none;cursor:pointer}\nsvg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}\n.app{display:grid;grid-template-columns:260px 1fr;height:100%}\naside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n.brand{display:flex;align-items:center;gap:10px;padding:16px;font:700 17px var(--mono)}\n.brand i{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}\n.brand small{font:500 11px var(--mono);color:var(--dim);margin-left:auto;padding:2px 7px;border:1px solid var(--line);border-radius:6px}\n.newbtn{margin:0 12px 10px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--fg)}\n.newbtn:hover{background:var(--bg2)}\n.slist{flex:1;overflow:auto;padding:0 8px 12px}\n.slist .lbl{font:11px var(--mono);color:var(--dim);padding:10px 8px 6px;text-transform:uppercase;letter-spacing:.5px}\n.si{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}\n.si:hover{background:var(--bg2);color:var(--fg)}.si.on{background:var(--bg3);color:var(--fg)}\n.side-foot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}\n.side-foot a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px}\nmain{display:flex;flex-direction:column;min-width:0;min-height:0}\nheader{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);min-height:52px}\nheader .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}\n.ib.menu{display:none}\n.pill{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:5px 9px;white-space:nowrap}\n.pill:hover{color:var(--fg)}\n#chat{flex:1;overflow:auto;scroll-behavior:smooth}\n.inner{max-width:820px;margin:0 auto;padding:22px 18px 30px}\n.empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--dim)}\n.empty h2{font:700 34px var(--mono);letter-spacing:-1.5px;color:var(--fg);margin-bottom:6px}\n.empty h2 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}\n.msg{margin:18px 0}\n.msg.user{display:flex;justify-content:flex-end}\n.msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}\n.md{word-break:break-word}\n.md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}\n.md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}\n.md code{font:12.5px var(--mono);background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--b)}\n.md pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.md pre .bar{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line)}\n.md pre code{display:block;background:none;border:none;padding:12px;overflow-x:auto;color:var(--fg);white-space:pre}\n.md a{color:var(--a)}.md blockquote{border-left:3px solid var(--faint);padding-left:12px;color:var(--dim)}\n.md table{border-collapse:collapse;margin:8px 0;font-size:13.5px}.md td,.md th{border:1px solid var(--line);padding:5px 9px}\n.think{font-size:13px;color:var(--dim);margin:6px 0}\n.think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;font-style:italic}\n.think pre{white-space:pre-wrap;font:12.5px/1.55 var(--sans);font-style:italic;margin:6px 0 0 22px;max-height:240px;overflow:auto}\n.tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}\n.tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}\n.tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}\n.tool .h .t{color:var(--faint)}\n.tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}\n.tool.closed .body,.tool .body:empty{display:none}\n.tool .st{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.tool .log{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.add{color:var(--ok)}.del{color:var(--err)}\n.pbar{height:6px;border-radius:4px;background:var(--line);margin:0 12px 10px;overflow:hidden}\n.pbar i{display:block;height:100%;background:var(--sk,var(--a));transition:width .2s}\n.pbar.ind i{width:30%!important;animation:ind 1.1s ease-in-out infinite}\n@keyframes ind{0%{margin-left:-30%}100%{margin-left:100%}}\n.skill{border-color:color-mix(in srgb,var(--sk) 45%,var(--line))}\n.skill .h b{color:var(--sk)}\n.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--a);border-radius:50%;animation:sp .8s linear infinite;flex-shrink:0}\n@keyframes sp{to{transform:rotate(360deg)}}\n.stats{font:12px var(--mono);color:var(--dim);display:flex;align-items:center;gap:6px;margin:4px 0 22px}\n.stats svg{color:var(--ok)}\n.info{font:12.5px var(--mono);color:var(--dim);margin:8px 0}.info.err{color:var(--err)}.info.warn{color:var(--warn)}\n.confirm{border:1px solid var(--warn);border-radius:10px;padding:12px;margin:10px 0}\n.confirm pre{font:12px var(--mono);white-space:pre-wrap;color:var(--dim);margin:8px 0;max-height:200px;overflow:auto}\n.confirm .btns{display:flex;gap:8px}\n.btn{padding:7px 13px;border-radius:8px;font:500 12.5px var(--mono);background:var(--a);color:var(--on-a)}\n.btn.ghost{background:none;color:var(--dim);border:1px solid var(--line)}\n.working{display:flex;align-items:center;gap:8px;font:12.5px var(--mono);color:var(--dim);margin:10px 0}\n.shimmer{background:linear-gradient(90deg,var(--dim) 30%,var(--fg) 50%,var(--dim) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}\n@keyframes sh{from{background-position:150% 0}to{background-position:-50% 0}}\n.composer{padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}\n.box{max-width:820px;margin:0 auto;border:1px solid var(--line);border-radius:14px;background:var(--bg2);transition:border-color .15s}\n.box:focus-within{border-color:var(--a)}\ntextarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--fg);font:15px/1.5 var(--sans);padding:12px 14px 4px;max-height:220px}\n.row{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}\n.ib{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--dim)}\n.ib:hover{background:var(--bg3);color:var(--fg)}\n.ib.rec{background:var(--err);color:#fff;animation:pulse 1s infinite}\n@keyframes pulse{50%{opacity:.6}}\n.send{background:var(--a);color:var(--on-a)}.send:hover{background:var(--a);filter:brightness(1.1);color:var(--on-a)}\n.send:disabled{background:var(--bg3);color:var(--dim);opacity:1}\n.send:disabled{opacity:.35;cursor:default}\n.spacer{flex:1}\n.status{max-width:820px;margin:8px auto 0;display:flex;gap:14px;align-items:center;font:11.5px var(--mono);color:var(--dim);flex-wrap:wrap}\n.ctx{display:flex;align-items:center;gap:6px}.ctx .bar{width:70px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}.ctx .bar i{display:block;height:100%;background:var(--ok)}\n.popup{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;padding:16px;z-index:20}\n.popup>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:8px;width:min(420px,100%);max-height:70vh;overflow:auto}\n.popup button{display:flex;width:100%;text-align:left;padding:9px 12px;border-radius:8px;gap:10px;align-items:center}\n.popup button:hover{background:var(--bg2)}.popup .d{color:var(--dim);font-size:12px;margin-left:auto}\n.hidden{display:none!important}\n@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:fixed;inset:0 25% 0 0;z-index:15;transform:translateX(-102%);transition:transform .2s;box-shadow:0 0 60px rgba(0,0,0,.5)}\n  aside.open{transform:none}.ib.menu{display:grid}.inner{padding:16px 14px}.composer{padding:0 10px 10px}}\n.sw{width:30px;height:20px;border-radius:6px;border:1px solid;display:flex;gap:3px;align-items:center;justify-content:center;flex-shrink:0}\n.sw i{width:7px;height:7px;border-radius:50%}\n.popup .more{display:block;padding:10px 12px;font-size:12.5px;color:var(--a);text-decoration:none}\n.panel{padding:4px 12px 10px;font-size:13px;overflow-x:auto}\n.panel table{border-collapse:collapse;font:12px var(--mono);margin-top:6px}\n.panel td,.panel th{border:1px solid var(--line);padding:4px 8px;text-align:left;white-space:nowrap}\n.panel th{color:var(--dim);font-weight:500}\n.tool.closed .panel{display:block}\n.askin{flex:1;min-width:160px;background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font:inherit;outline:none}\n.pill.mode{color:var(--a);border-color:color-mix(in srgb,var(--a) 40%,var(--line))}\n.cf{color:var(--faint)}.cf.on{color:var(--ok)}\n.popup button b{font-weight:600;white-space:nowrap}.popup .d{text-align:right}\n.row .pill{min-width:0}\n#modelBtn{flex:0 1 auto;overflow:hidden}#modelBtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n#agentBtn,.ib{flex-shrink:0}\n@media (max-width:760px){.status{gap:8px;font-size:10.5px}.ctx .bar{width:44px}header{padding:8px 10px}}\n.scrim{display:none}\n.side-close{display:none}\n@media (max-width:760px){\n  .scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:14;opacity:0;pointer-events:none;transition:opacity .2s}\n  aside.open+.scrim,.scrim.on{opacity:1;pointer-events:auto}\n  .side-close{display:grid;margin-left:6px}\n  .brand small{margin-left:auto}\n  .status .tok{display:none}\n}\n.tool .h .lab{direction:ltr}\n.todo-card{margin:0 12px 10px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px;max-height:38vh;overflow:auto}\n.tc-h{display:flex;justify-content:space-between;align-items:center;font:12px var(--mono);color:var(--dim)}.tc-h b{color:var(--fg);font-weight:600}\n.tc-bar{height:4px;border-radius:3px;background:var(--line);margin:8px 0;overflow:hidden}.tc-bar i{display:block;height:100%;background:var(--ok)}\n.tc-i{display:flex;gap:8px;align-items:flex-start;padding:3px 0;line-height:1.4}.tc-i.done{color:var(--dim);text-decoration:line-through;text-decoration-color:var(--faint)}\n.tc-i.doing{color:var(--fg);font-weight:500}\n.tc-b{width:15px;height:15px;border:1.5px solid var(--faint);border-radius:4px;flex-shrink:0;display:grid;place-items:center;margin-top:1px}\n.tc-i.done .tc-b{border-color:var(--ok);color:var(--ok)}.tc-i.doing .tc-b{border:none}.tc-b svg{width:11px;height:11px;stroke-width:2.6}.tc-b .spin{width:13px;height:13px}\n.goal{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;font-size:13.5px}\n.goal.working{border-color:color-mix(in srgb,var(--a) 50%,var(--line))}.goal.done{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}.goal.blocked{border-color:color-mix(in srgb,var(--err) 55%,var(--line))}\n.review{border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.rv-h{display:flex;justify-content:space-between;padding:9px 12px;font-size:13px;border-bottom:1px solid var(--line)}.rv-h .d{color:var(--dim);font:12px var(--mono)}\n.review details{border-bottom:1px solid var(--line)}.review summary{display:flex;gap:8px;align-items:center;padding:7px 12px;font:12.5px var(--mono);cursor:pointer;list-style:none}\n.review summary .rv-p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.review pre{font:12px/1.5 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre;color:var(--dim);background:var(--bg2)}\n.review .btns{display:flex;gap:8px;padding:10px 12px;font:12px var(--mono)}.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--line))}\n.tag{font:10.5px var(--mono);color:var(--b);border:1px solid var(--line);border-radius:5px;padding:0 5px}\n.dim{color:var(--dim)}.err{color:var(--err)}\n.perm{font:11.5px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:1px 7px}\n.perm.full{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}.perm.read{color:var(--b)}\n.atts{display:flex;gap:6px;flex-wrap:wrap;padding:10px 10px 0}\n.att{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:3px 4px 3px 4px;font:12px var(--mono);max-width:100%;background:var(--bg)}\n.att img{width:28px;height:28px;object-fit:cover;border-radius:5px}.att .an{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.att button{width:22px;height:22px;display:grid;place-items:center;color:var(--dim);border-radius:6px}.att button:hover{background:var(--bg3)}\nheader .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}\n@media (max-width:760px){#previewBtn span{display:none}.status .cost{order:5}}\n@media (max-width:420px){#wsPill span{max-width:70px;overflow:hidden;text-overflow:ellipsis}}\n</style>\n</head>\n<body>\n<div class=\"app\">\n<aside id=\"side\">\n  <div class=\"brand\"><i></i>me<small id=\"mode\"></small><button class=\"ib side-close\" onclick=\"closeSide()\" aria-label=\"close menu\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></button></div>\n  <button class=\"newbtn\" onclick=\"newChat()\"><svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>New chat</button>\n  <div class=\"todo-card hidden\" id=\"todoCard\"></div>\n  <div class=\"slist\" id=\"slist\"></div>\n  <div class=\"side-foot\"><a id=\"acct\" href=\"/account\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg><span id=\"who\">account</span></a>\n    <span class=\"spacer\"></span><button class=\"ib hidden\" id=\"bell\" onclick=\"enablePush()\" title=\"notify me when a task is done\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z\"/><path d=\"M10 20.5a2 2 0 0 0 4 0\"/></svg></button><button class=\"ib\" onclick=\"pickTheme()\" title=\"theme\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 3a9 9 0 0 0 0 18z\" fill=\"currentColor\"/></svg></button></div>\n</aside>\n<div class=\"scrim\" id=\"scrim\" onclick=\"closeSide()\"></div>\n<main>\n  <header>\n    <button class=\"ib menu\" onclick=\"openSide()\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 12h16M4 17h16\"/></svg></button>\n    <div class=\"title\" id=\"title\">New chat</div>\n    <button class=\"pill hidden\" id=\"todoChip\" onclick=\"openSide()\" title=\"checklist\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7l2 2 4-4M4 17l2 2 4-4M13 7h7M13 17h7\"/></svg><span></span></button>\n    <a class=\"pill hidden\" id=\"previewBtn\" target=\"_blank\" rel=\"noopener\" title=\"open the site the agent built\"><svg viewBox=\"0 0 24 24\"><path d=\"M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5\"/></svg><span>preview</span></a>\n    <button class=\"pill\" id=\"wsPill\" title=\"workspace\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg><span id=\"ws\">\u2014</span></button>\n  </header>\n  <div id=\"chat\"><div class=\"inner\" id=\"log\"></div></div>\n  <div class=\"composer\">\n    <div class=\"box\">\n      <div class=\"atts hidden\" id=\"atts\"></div>\n      <textarea id=\"input\" rows=\"1\" placeholder=\"Ask anything\u2026\"></textarea>\n      <div class=\"row\">\n        <button class=\"pill\" id=\"modelBtn\" onclick=\"pickModel()\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2\"/></svg><span id=\"model\">model</span></button>\n        <button class=\"pill mode\" id=\"agentBtn\" onclick=\"pickAgent()\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h10M4 12h16M4 17h7\"/><circle cx=\"18\" cy=\"7\" r=\"2\"/><circle cx=\"15\" cy=\"17\" r=\"2\"/></svg><span id=\"agentName\">code</span></button>\n        <span class=\"spacer\"></span>\n        <input type=\"file\" id=\"file\" multiple hidden>\n        <button class=\"ib\" id=\"attach\" title=\"attach images or files\" onclick=\"$('file').click()\"><svg viewBox=\"0 0 24 24\"><path d=\"M20 11.5l-8.4 8.4a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8\"/></svg></button>\n        <button class=\"ib\" id=\"mic\" title=\"hold to talk\"><svg viewBox=\"0 0 24 24\"><rect x=\"9\" y=\"3\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5 11a7 7 0 0 0 14 0M12 18v3\"/></svg></button>\n        <button class=\"ib send\" id=\"send\" onclick=\"sendOrStop()\" disabled><svg viewBox=\"0 0 24 24\" id=\"sendIcon\"><path d=\"M12 19V5M5 12l7-7 7 7\"/></svg></button>\n      </div>\n    </div>\n    <div class=\"status\"><button class=\"perm\" id=\"perm\" onclick=\"pickPerm()\" title=\"permissions\"></button><span id=\"ctxfiles\"></span><span class=\"ctx\" id=\"ctx\"></span><span id=\"cost\" class=\"cost\"></span><span id=\"tok\" class=\"tok\"></span><span id=\"sync\"></span></div>\n  </div>\n</main>\n</div>\n<div class=\"popup hidden\" id=\"popup\" onclick=\"if(event.target===this)this.classList.add('hidden')\"><div id=\"pbody\"></div></div>\n<script>const MODE = \"__MODE__\";\nconst $ = id => document.getElementById(id);\nconst side = $(\"side\");\nconst esc = s => String(s ?? \"\").replace(/[&<>\"]/g, c => ({\"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\"})[c]);\nconst human = n => !n ? \"0\" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(\".0\", \"\") + \"k\" : (n / 1e6).toFixed(1).replace(\".0\", \"\") + \"M\";\nconst money = x => !x ? \"$0\" : x < 0.01 ? \"$\" + x.toFixed(4) : x < 1 ? \"$\" + x.toFixed(3) : \"$\" + x.toFixed(2);\nconst dur = s => s < 60 ? s.toFixed(1) + \"s\" : Math.floor(s / 60) + \"m\" + String(Math.floor(s % 60)).padStart(2, \"0\") + \"s\";\nconst COLORS = {red:\"#ff6b7a\",green:\"#5ad18a\",blue:\"#6ba6ff\",magenta:\"#d27cff\",cyan:\"#4fd1c5\",yellow:\"#e7c66b\",orange:\"#ffb454\",purple:\"#8b7cff\",pink:\"#ff8fc7\"};\nconst I = {\n  check: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--ok)\"><path d=\"M5 12l5 5 9-11\"/></svg>',\n  x: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--err)\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg>',\n  stop: '<path d=\"M7 7h10v10H7z\" fill=\"currentColor\"/>', up: '<path d=\"M12 19V5M5 12l7-7 7 7\"/>',\n  think: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z\"/></svg>',\n};\nvar atts = [];  // pending attachments: {name, image, url | b64}\nlet token = localStorage.getItem(\"me_token\") || \"\", base = \"\", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;\n\n// \u2500\u2500\u2500 transport: identical endpoints for local (`me web`) and cloud (/app) \u2500\u2500\u2500\nasync function api(path, body, method) {\n  const h = {\"Content-Type\": \"application/json\"};\n  if (token) h.Authorization = \"Bearer \" + token;\n  const r = await fetch(path, {method: method || (body !== undefined ? \"POST\" : \"GET\"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});\n  const j = await r.json().catch(() => ({}));\n  if (r.status === 401 && MODE === \"cloud\") { location.href = \"/account#cloud\"; throw new Error(\"login\"); }\n  if (!r.ok) throw new Error(j.detail || r.statusText);\n  return j;\n}\nconst A = {\n  async boot() {\n    if (MODE === \"local\") {\n      const k = new URLSearchParams(location.search).get(\"k\"); if (k) { token = k; localStorage.setItem(\"me_token\", k); }\n      base = \"/api/agent\"; return api(base + \"/state\");\n    }\n    if (!token) { location.href = \"/account#cloud\"; return; }\n    const q = new URLSearchParams(location.search);\n    let w;\n    if (q.get(\"s\") || q.get(\"ws\")) w = await api(\"/api/cloud\", {session: q.get(\"s\"), ws: q.get(\"ws\")});\n    else w = (await api(\"/api/cloud\"))[0] || await api(\"/api/cloud\", {});\n    return A.attach(w);\n  },\n  async attach(w) { base = \"/api/cloud/\" + w.id; const st = await A.state(w); st.after = w.seq || 0; return st; },\n  async state(w) {\n    if (MODE === \"local\") return api(base + \"/state\");\n    const [cfg, sessions, me] = await Promise.all([api(\"/api/doc?key=config\").then(d => JSON.parse(d.content)).catch(() => ({})), api(\"/api/sessions\"), api(\"/api/me\")]);\n    let session = null;\n    if (w && w.session) session = await api(\"/api/doc?key=\" + encodeURIComponent(\"session/\" + w.session)).then(d => JSON.parse(d.content)).catch(() => null);\n    const [ag, man] = await Promise.all([api(\"/api/agents\").catch(() => ({agents: [], current: \"code\"})),\n      w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);\n    const context = [\"AGENTS.md\", \"ME.md\", \"CLAUDE.md\", \"DESIGN.md\", \"PLAN.md\"].filter(f => f in man.files);\n    return {mode: \"cloud\", user: me.username, ctx: session?.ctx || 0, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,\n            agent: session?.agent || ag.current, agents: ag.agents, context, perm: \"sandbox\", preview: w && w.preview, push: me.push};\n  },\n  async load(id) {\n    if (MODE === \"local\") { await api(base + \"/load\", {id}); return api(base + \"/state\"); }\n    const w = await api(\"/api/cloud\", {session: id}); return A.attach(w);\n  },\n  async newChat() { await api(base + \"/new\", {}); return A.state(state.worker); },\n  async setAgent(name) {\n    if (MODE === \"local\") return api(base + \"/agent\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.agent = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  async setModel(name) {\n    if (MODE === \"local\") return api(base + \"/model\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.model = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  prompt: (text, images) => api(base + \"/prompt\", {text, images: images || []}),\n  goal: (text) => api(base + \"/goal\", {text}),\n  undo: () => api(base + \"/undo\", {}),\n  async upload(name, b64) {  // non-image attachments go into the project so the agent can read them\n    if (MODE === \"local\") return (await api(base + \"/upload\", {name, b64})).path;\n    const path = \"uploads/\" + name.replace(/[^\\w.-]+/g, \"_\").slice(0, 80);\n    await api(`/api/ws/${state.ws}/files`, {put: [{path, b64, mtime: Date.now() / 1000}]});\n    await api(base + \"/sync\", {}).catch(() => {});\n    return path;\n  },\n  async setPerm(mode) {\n    if (MODE === \"local\") return api(base + \"/perm\", {mode});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.settings = {...(cfg.settings || {}), perm: mode, yolo: false};\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  voice: (blob) => fetch(MODE === \"local\" ? \"/api/agent/voice\" : \"/api/voice\", {method: \"POST\", headers: {\"Content-Type\": blob.type, ...(token ? {Authorization: \"Bearer \" + token} : {})}, body: blob}).then(r => r.json()),\n};\n\n// \u2500\u2500\u2500 markdown \u2500\u2500\u2500\nfunction md(src) {\n  const blocks = [];\n  src = src.replace(/```(\\w*)\\n?([\\s\\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\\u0000${blocks.length - 1}\\u0000`; });\n  let h = esc(src)\n    .replace(/^### (.*)$/gm, \"<h3>$1</h3>\").replace(/^## (.*)$/gm, \"<h2>$1</h2>\").replace(/^# (.*)$/gm, \"<h1>$1</h1>\")\n    .replace(/^&gt; (.*)$/gm, \"<blockquote>$1</blockquote>\")\n    .replace(/`([^`\\n]+)`/g, \"<code>$1</code>\").replace(/\\*\\*([^*]+)\\*\\*/g, \"<b>$1</b>\").replace(/(^|\\W)\\*([^*\\n]+)\\*/g, \"$1<i>$2</i>\")\n    .replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  h = h.replace(/(?:^|\\n)((?:[-*] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ul>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.slice(2) + \"</li>\").join(\"\") + \"</ul>\\n\");\n  h = h.replace(/(?:^|\\n)((?:\\d+[.)] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ol>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.replace(/^\\d+[.)] /, \"\") + \"</li>\").join(\"\") + \"</ol>\\n\");\n  h = h.split(/\\n{2,}/).map(p => /^\\s*<(h\\d|ul|ol|blockquote|\\u0000)/.test(p) || p.startsWith(\"\\u0000\") ? p : \"<p>\" + p.replace(/\\n/g, \"<br>\") + \"</p>\").join(\"\");\n  return h.replace(/\\u0000(\\d+)\\u0000/g, (_, i) => `<pre><div class=\"bar\"><span>${esc(blocks[i][0] || \"code\")}</span><button onclick=\"navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)\">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);\n}\n\n// \u2500\u2500\u2500 rendering \u2500\u2500\u2500\nconst log = $(\"log\"), chat = $(\"chat\");\nlet stick = true;\nchat.addEventListener(\"scroll\", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);\nfunction scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }\nlet workEl = null;\nfunction el(html) { const d = document.createElement(\"div\"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }\nfunction clearLog() { log.innerHTML = \"\"; live = {}; cur = {}; workEl = null; }\nfunction emptyState() {\n  log.innerHTML = `<div class=\"empty\" style=\"min-height:60vh\"><div><h2>what are we <span>building?</span></h2><p>${MODE === \"cloud\" ? \"Runs in your cloud sandbox \u00b7 files sync to all your machines\" : \"Running locally on this machine\"}</p></div></div>`;\n}\nfunction userMsg(t) { if (log.querySelector(\".empty\")) log.innerHTML = \"\"; el(`<div class=\"msg user\"><div class=\"bub\">${esc(t)}</div></div>`); }\nfunction shortPath(s) {\n  s = String(s ?? \"\");\n  const roots = [state.session?.cwd, ...(state.session?.roots || []), state.cwd, \"/work\"].filter(Boolean);\n  for (const r of roots) s = s.split(r.replace(/\\/$/, \"\") + \"/\").join(\"\");\n  const max = innerWidth < 500 ? 34 : 70;\n  return s.length > max ? \"\u2026\" + s.slice(-(max - 1)) : s;\n}\nfunction toolCard(name, label, args, skill) {\n  label = shortPath(label);\n  const isSkill = name === \"skill\" && args && args.action;\n  const color = isSkill ? (COLORS[skill?.color] || \"var(--a)\") : \"var(--a)\";\n  const title = isSkill ? `${esc(args.name)} \u00b7 ${esc(args.action)}` : esc(name);\n  return el(`<div class=\"tool ${isSkill ? \"skill\" : \"\"} closed\" style=\"--sk:${color}\"><div class=\"h\" onclick=\"this.parentNode.classList.toggle('closed')\"><span class=\"ic\"><span class=\"spin\"></span></span><b>${title}</b><span class=\"lab\">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class=\"t\"></span></div><div class=\"st hidden\"></div><div class=\"pbar hidden\"><i></i></div><div class=\"log hidden\"></div><div class=\"body\"></div></div>`);\n}\nfunction diffHtml(t) { return t.split(\"\\n\").map(l => `<span class=\"${l[0] === \"+\" ? \"add\" : l[0] === \"-\" ? \"del\" : \"\"}\">${esc(l)}</span>`).join(\"\\n\"); }\nfunction onEvent(e) {\n  const t = e.type;\n  if (t === \"user\") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }\n  if (t === \"turn_start\") { if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }\n  if (t === \"reasoning\") {\n    if (!cur.think) { cur.think = el(`<details class=\"think\"><summary>${I.think}<span class=\"shimmer\">thinking\u2026</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }\n    cur.think.querySelector(\"pre\").textContent += e.text; scroll(); return;\n  }\n  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector(\"summary span\").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };\n  if (t === \"text\") {\n    endThink();\n    if (!cur.text) { cur.text = el(`<div class=\"msg md\"></div>`); cur.raw = \"\"; }\n    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;\n  }\n  if (t === \"tool_start\") {\n    endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;\n    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;\n  }\n  if (t === \"tool_event\") {\n    const c = live[e.id]; if (!c) return;\n    if (e.t === \"status\") { const s = c.querySelector(\".st\"); s.classList.remove(\"hidden\"); s.textContent = e.text; }\n    else if (e.t === \"progress\") { const p = c.querySelector(\".pbar\"); p.classList.remove(\"hidden\"); p.classList.toggle(\"ind\", e.v == null); if (e.v != null) p.firstChild.style.width = Math.round(e.v * 100) + \"%\"; }\n    else if (e.t === \"table\") {\n      const rows = e.rows || []; if (!rows.length) return;\n      const cols = Array.isArray(rows[0]) ? null : Object.keys(rows[0]);\n      const tr = r => \"<tr>\" + (cols ? cols.map(k => `<td>${esc(r[k])}</td>`) : r.map(x => `<td>${esc(x)}</td>`)).join(\"\") + \"</tr>\";\n      const p = document.createElement(\"div\"); p.className = \"panel\";\n      p.innerHTML = (e.title ? `<b>${esc(e.title)}</b>` : \"\") + `<table>${cols ? \"<tr>\" + cols.map(k => `<th>${esc(k)}</th>`).join(\"\") + \"</tr>\" : \"\"}${rows.map(tr).join(\"\")}</table>`;\n      c.insertBefore(p, c.querySelector(\".body\"));\n    }\n    else if (e.t === \"md\") { const p = document.createElement(\"div\"); p.className = \"panel md\"; p.innerHTML = md(e.text); c.insertBefore(p, c.querySelector(\".body\")); }\n    else if (e.t === \"diff\" && e.text.trim()) { c.querySelector(\".body\").innerHTML = diffHtml(e.text); c.classList.remove(\"closed\"); }\n    else { const l = c.querySelector(\".log\"); l.classList.remove(\"hidden\"); l.textContent = (\"\u203a \" + e.text + \"\\n\" + l.textContent).split(\"\\n\").slice(0, 3).join(\"\\n\"); }\n    scroll(); return;\n  }\n  if (t === \"tool_end\") {\n    const c = live[e.id]; if (!c) return; delete live[e.id];\n    c.querySelector(\".ic\").innerHTML = e.ok ? I.check : I.x; c.querySelector(\".t\").textContent = dur(e.time);\n    c.querySelectorAll(\".st,.pbar,.log\").forEach(x => x.classList.add(\"hidden\"));\n    if (c.querySelector(\".panel\")) c.classList.add(\"haspanel\");\n    const b = c.querySelector(\".body\"); if (!b.innerHTML) b.textContent = (e.output || \"\").slice(0, 20000);\n    if (!e.ok) c.classList.remove(\"closed\");\n    return;\n  }\n  if (t === \"ask\") {\n    const opts = e.options || [];\n    const c = el(`<div class=\"confirm ask\"><b>${esc(e.text)}</b><div class=\"btns\" style=\"margin-top:10px;flex-wrap:wrap\">${opts.length\n      ? opts.map((o, i) => `<button class=\"btn ${i ? \"ghost\" : \"\"}\" data-v=\"${esc(o)}\">${esc(o)}</button>`).join(\"\")\n      : `<input class=\"askin\" placeholder=\"answer\u2026\"><button class=\"btn\" data-in=\"1\">send</button>`}</div></div>`);\n    const send = v => { api(base + \"/answer\", {id: e.id, text: v}); c.innerHTML = `<span class=\"dim\">${esc(e.text)} \u2192 <b>${esc(v || \"\u2014\")}</b></span>`; c.className = \"info\"; };\n    c.querySelectorAll(\"button\").forEach(b => b.onclick = () => send(b.dataset.in ? c.querySelector(\"input\").value : b.dataset.v));\n    c.querySelector(\"input\")?.addEventListener(\"keydown\", ev => ev.key === \"Enter\" && send(ev.target.value));\n    return;\n  }\n  if (t === \"confirm\") {\n    const c = el(`<div class=\"confirm\"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class=\"btns\"><button class=\"btn\">allow</button><button class=\"btn ghost\">${e.name === \"bash\" ? \"always allow\" : \"allow all (full)\"}</button><button class=\"btn ghost\">deny</button></div></div>`);\n    const [y, al, n] = c.querySelectorAll(\"button\");\n    y.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: true}); c.remove(); };\n    al.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: \"always\"}); if (e.name !== \"bash\") { state.perm = \"full\"; A.setPerm(\"full\"); renderStatus(); } c.remove(); };\n    n.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: false}); c.remove(); };\n    return;\n  }\n  if (t === \"compacting\") { el(`<div class=\"info\">compacting history\u2026</div>`); return; }\n  if (t === \"compacted\") { state.ctx = e.ctx; renderStatus(); el(`<div class=\"info\">compacted ${e.before} \u2192 ${e.after} messages \u00b7 ~${human(e.ctx)} tokens</div>`); return; }\n  if (t === \"usage\") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }\n  if (t === \"error\") { cur.failed = true; el(`<div class=\"info ${e.text === \"interrupted\" ? \"warn\" : \"err\"}\">${esc(e.text)}</div>`); return; }\n  if (t === \"turn_end\") {\n    const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();\n    el(`<div class=\"stats\">${failed ? I.x : I.check}${dur(e.time)} \u00b7 \u2191 ${human(e.in)} \u2193 ${human(e.out)} \u00b7 ${human(e.in + e.out)} tokens${e.cost ? \" \u00b7 \" + money(e.cost) : \"\"}</div>`);\n    state.ctx = e.ctx; renderStatus(); refreshSessions(); return;\n  }\n  if (t === \"todo\") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }\n  if (t === \"goal\") { goalEvent(e); return; }\n  if (t === \"verify\") { el(`<div class=\"info\">self-check: running checks before finishing</div>`); return; }\n  if (t === \"turn_diff\") { diffCard(e.files || []); return; }\n  if (t === \"undone\") { el(`<div class=\"info warn\">\u21b6 ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }\n  if (t === \"loaded\" && e.title) $(\"title\").textContent = e.title;\n  if (t === \"reload\") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }\n  if (t === \"exit\") { busy = false; setBusy(); restartSandbox(); }\n}\nfunction renderHistory(s) {\n  clearLog();\n  if (!s || !s.messages || !s.messages.length) renderTodo([]);\n  if (!s || !s.messages || !s.messages.length) return emptyState();\n  const txt = c => Array.isArray(c) ? c.filter(x => x.type === \"text\").map(x => x.text).join(\" \") : (c || \"\");\n  const outs = {};\n  s.messages.forEach(m => { if (m.role === \"tool\") outs[m.tool_call_id] = m.content; });\n  s.messages.forEach(m => {\n    if (m.role === \"user\" && txt(m.content) !== \"(images from read)\") userMsg(txt(m.content));\n    else if (m.role === \"assistant\") {\n      if (m.content) el(`<div class=\"msg md\">${md(m.content)}</div>`);\n      (m.tool_calls || []).forEach(tc => {\n        let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}\n        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || \"\", a);\n        c.querySelector(\".ic\").innerHTML = I.check; c.querySelector(\".body\").textContent = String(outs[tc.id] || \"\").slice(0, 8000);\n      });\n    }\n  });\n  $(\"title\").textContent = s.title || \"Chat\";\n  renderTodo(s.todo || []);\n  if (s.goal && s.goal.status !== \"working\") goalEvent(s.goal, true);\n  setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);\n}\nfunction renderStatus(tin, tout) {\n  const m = (state.config?.models || []).find(x => x.name === state.config?.model);\n  $(\"model\").textContent = m ? m.name + (m.effort ? \" \u00b7 \" + m.effort : \"\") : \"no model\";\n  const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;\n  const col = f < .6 ? \"var(--ok)\" : f < .85 ? \"var(--warn)\" : \"var(--err)\";\n  $(\"ctx\").innerHTML = ctx ? `ctx <span class=\"bar\"><i style=\"width:${(f * 100).toFixed(1)}%;background:${col}\"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;\n  const u = state.session?.usage || {};\n  $(\"tok\").textContent = tin !== undefined ? `this task \u2191${human(tin)} \u2193${human(tout)}` : `session \u2191${human(u.in)} \u2193${human(u.out)}`;\n  const ag = (state.agents || []).find(a => a.name === state.agent);\n  $(\"agentName\").textContent = ag ? ag.label : (state.agent || \"code\");\n  const cf = state.context || [];\n  $(\"ctxfiles\").innerHTML = cf.length ? `<span class=\"cf on\" title=\"loaded into every turn\">\u25c6 ${cf.map(esc).join(\" \u00b7 \")}</span>` : `<span class=\"cf\" title=\"ask the agent to create it, or /init in the terminal\">\u25c7 no AGENTS.md</span>`;\n  const cost = state.session?.usage?.cost || 0;\n  $(\"cost\").textContent = cost || state.day_cost ? money(cost) + (state.day_cost ? \" \u00b7 today \" + money(state.day_cost) : \"\") : \"\";\n  const pm = state.perm || \"ask\";\n  $(\"perm\").textContent = {read: \"read-only\", ask: \"ask\", full: \"full access\", sandbox: \"sandbox\"}[pm] || pm;\n  $(\"perm\").className = \"perm \" + pm;\n  if (state.preview) { $(\"previewBtn\").href = state.preview + \"/\"; $(\"previewBtn\").classList.remove(\"hidden\"); } else $(\"previewBtn\").classList.add(\"hidden\");\n  $(\"ws\").textContent = state.ws || (MODE === \"local\" ? (state.cwd || \"local\").split(/[\\\\/]/).pop() : \"cloud\");\n}\nfunction renderSessions() {\n  const ss = state.sessions || [], sid = state.session?.id;\n  const groups = {};\n  ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;\n    const g = age < 1 ? \"Today\" : age < 7 ? \"This week\" : \"Older\"; (groups[g] ??= []).push(s); });\n  $(\"slist\").innerHTML = Object.entries(groups).map(([g, l]) => `<div class=\"lbl\">${g}</div>` + l.map(s =>\n    `<button class=\"si ${s.id === sid ? \"on\" : \"\"}\" onclick=\"loadSession('${esc(s.id)}')\" title=\"${esc(s.cwd || \"\")}\">${esc(s.title || \"(untitled)\")}</button>`).join(\"\")).join(\"\") || '<div class=\"lbl\">no chats yet</div>';\n}\nasync function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }\nfunction setBusy() {\n  $(\"sendIcon\").innerHTML = busy ? I.stop : I.up;\n  $(\"send\").disabled = !busy && !$(\"input\").value.trim() && !atts.length;\n  if (busy && (!workEl || workEl.parentNode !== log)) {\n    workEl = document.createElement(\"div\"); workEl.className = \"working\";\n    workEl.innerHTML = '<span class=\"spin\"></span><span class=\"shimmer\">working\u2026</span><span class=\"el\"></span>'; log.appendChild(workEl); scroll();\n  }\n  if (!busy && workEl) { workEl.remove(); workEl = null; }\n}\nsetInterval(() => { const w = document.querySelector(\".working .el\"); if (w && busy) w.textContent = dur((Date.now() - turnT0) / 1000); }, 200);\n\n// \u2500\u2500\u2500 actions \u2500\u2500\u2500\nasync function poll() {\n  const my = ++polling;\n  while (my === polling) {\n    try {\n      const r = await api(`${base}/events?after=${after}`);\n      if (my !== polling) return;\n      for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }\n      if (r.state) { busy = r.state.busy; setBusy(); }\n    } catch (e) {\n      if (MODE === \"cloud\" && /no such cloud session/.test(e.message)) { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); state.worker = w; base = \"/api/cloud/\" + w.id; after = w.seq || 0; continue; }\n      await new Promise(r => setTimeout(r, 2000));\n    }\n  }\n}\nasync function restartSandbox() {\n  if (MODE !== \"cloud\") return;\n  el(`<div class=\"info warn\">sandbox restarted \u2014 your session and files are safe</div>`);\n  try { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); polling++; apply(await A.attach(w), false); } catch (e) {}\n}\nasync function apply(s, history = true) {\n  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();\n  $(\"mode\").textContent = MODE === \"cloud\" ? \"cloud\" : \"local\";\n  $(\"who\").textContent = s.user || (MODE === \"local\" ? \"local\" : \"account\");\n  after = s.after ?? after;\n  if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }\n  (s.pending || []).forEach(onEvent);\n  poll();\n}\nasync function send() {\n  let t = $(\"input\").value.trim(); if ((!t && !atts.length) || busy) return;\n  const fail = e => el(`<div class=\"info err\">${esc(e.message)}</div>`);\n  if (t === \"/compact\") { $(\"input\").value = \"\"; grow(); return api(base + \"/compact\", {}).catch(fail); }\n  if (t === \"/undo\") { $(\"input\").value = \"\"; grow(); return A.undo().catch(fail); }\n  const goal = /^\\/goal\\s+/.test(t);\n  if (goal) t = t.replace(/^\\/goal\\s+/, \"\").replace(/^\"|\"$/g, \"\");\n  const images = atts.filter(a => a.image).map(a => a.url);\n  const files = [];\n  for (const a of atts.filter(a => !a.image)) { try { files.push(await A.upload(a.name, a.b64)); } catch (e) { fail(e); } }\n  if (files.length) t += (t ? \"\\n\\n\" : \"\") + \"Attached: \" + files.join(\", \");\n  if (!t && images.length) t = \"(see the attached image\" + (images.length > 1 ? \"s\" : \"\") + \")\";\n  atts = []; renderAtts();\n  $(\"input\").value = \"\"; grow(); userMsg((goal ? \"/goal \" : \"\") + t + (images.length ? `  [${images.length} image${images.length > 1 ? \"s\" : \"\"}]` : \"\"));\n  if ($(\"title\").textContent === \"New chat\") $(\"title\").textContent = t.split(\"\\n\")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;\n  try { await (goal ? A.goal(t) : A.prompt(t, images)); } catch (e) { fail(e); busy = false; setBusy(); }\n}\nfunction sendOrStop() { busy ? api(base + \"/cancel\", {}) : send(); }\nfunction openSide() { side.classList.add(\"open\"); $(\"scrim\").classList.add(\"on\"); }\nfunction closeSide() { side.classList.remove(\"open\"); $(\"scrim\").classList.remove(\"on\"); }\ndocument.addEventListener(\"keydown\", e => { if (e.key === \"Escape\") { closeSide(); $(\"popup\").classList.add(\"hidden\"); } });\nlet touchX = null;  // swipe left on the drawer to close it\nside.addEventListener(\"touchstart\", e => touchX = e.touches[0].clientX, {passive: true});\nside.addEventListener(\"touchend\", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });\nasync function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, \"\", location.pathname); $(\"title\").textContent = \"New chat\"; }\nasync function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === \"cloud\") history.replaceState(null, \"\", \"?s=\" + id); }\nfunction pickModel() {\n  const ms = state.config?.models || [];\n  $(\"pbody\").innerHTML = ms.map(m => `<button onclick=\"setModel('${esc(m.name)}')\"><span>${m.name === state.config.model ? \"\u25cf\" : \"\u25cb\"}</span>${esc(m.name)}<span class=\"d\">${esc(m.id)}</span></button>`).join(\"\") || '<p style=\"padding:12px;color:var(--dim)\">No models \u2014 add one in your account or with /models.</p>';\n  $(\"popup\").classList.remove(\"hidden\");\n}\nfunction pickAgent() {\n  $(\"pbody\").innerHTML = (state.agents || []).map(a => `<button onclick=\"setAgent('${esc(a.name)}')\"><span>${a.name === state.agent ? \"\u25cf\" : \"\u25cb\"}</span><b>${esc(a.label)}</b><span class=\"d\">${esc(a.description)}</span></button>`).join(\"\")\n    + (MODE === \"cloud\" ? `<a class=\"more\" href=\"/account#market\">more agents in the marketplace \u2192</a>` : \"\");\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setAgent(n) { $(\"popup\").classList.add(\"hidden\"); state.agent = n; renderStatus(); await A.setAgent(n); }\nasync function setModel(n) { $(\"popup\").classList.add(\"hidden\"); await A.setModel(n); state.config.model = n; renderStatus(); }\nconst inp = $(\"input\");\nfunction grow() { inp.style.height = \"auto\"; inp.style.height = Math.min(220, inp.scrollHeight) + \"px\"; setBusy(); }\ninp.addEventListener(\"input\", grow);\ninp.addEventListener(\"keydown\", e => { if (e.key === \"Enter\" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === \"Escape\" && busy) api(base + \"/cancel\", {}); });\n// voice: hold the mic button (or hold space in an empty input)\nlet rec = null, chunks = [];\nasync function recStart() {\n  if (rec) return;\n  try {\n    const stream = await navigator.mediaDevices.getUserMedia({audio: true});\n    rec = new MediaRecorder(stream); chunks = [];\n    rec.ondataavailable = e => chunks.push(e.data);\n    rec.onstop = async () => {\n      stream.getTracks().forEach(t => t.stop()); $(\"mic\").classList.remove(\"rec\");\n      const blob = new Blob(chunks, {type: rec.mimeType || \"audio/webm\"}); rec = null;\n      if (blob.size < 2000) return;\n      inp.placeholder = \"transcribing\u2026\";\n      try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(\" \") ? \" \" : \"\") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }\n      finally { inp.placeholder = \"Ask anything\u2026\"; }\n    };\n    rec.start(); $(\"mic\").classList.add(\"rec\");\n  } catch (e) { alert(\"microphone: \" + e.message); }\n}\nfunction recStop() { if (rec && rec.state === \"recording\") rec.stop(); }\nconst mic = $(\"mic\");\nmic.addEventListener(\"pointerdown\", e => { e.preventDefault(); recStart(); });\n[\"pointerup\", \"pointerleave\", \"pointercancel\"].forEach(ev => mic.addEventListener(ev, recStop));\nlet spaceT = 0;\ninp.addEventListener(\"keydown\", e => { if (e.code === \"Space\" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });\ninp.addEventListener(\"keyup\", e => { if (e.code === \"Space\") recStop(); });\n$(\"wsPill\").onclick = async () => {\n  if (MODE === \"cloud\") return location.href = \"/account#workspaces\";\n  const p = prompt(\"Project folder for the local agent\", state.cwd || \"\");\n  if (!p) return;\n  try { await apply(await api(base + \"/cwd\", {path: p})); $(\"title\").textContent = \"New chat\"; } catch (e) { alert(e.message); }\n};\nA.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`));\n\n// \u2500\u2500\u2500 themes: same tokens as the terminal (see 14a_themes.py) \u2500\u2500\u2500\nconst THEME_VARS = {bg: \"--bg\", bg2: \"--bg2\", bg3: \"--bg3\", line: \"--line\", fg: \"--fg\", dim: \"--dim\", faint: \"--faint\", accent: \"--a\", accent2: \"--b\", ok: \"--ok\", err: \"--err\", warn: \"--warn\", user: \"--user\"};\nlet themeList = [];\nfunction onAccent(hex) {  // black or white text, whichever reads better on the accent color\n  const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });\n  return .2126 * r + .7152 * g + .0722 * b > .35 ? \"#0a0a0a\" : \"#ffffff\";\n}\nfunction applyTheme(t) {\n  if (!t) return;\n  const r = document.documentElement;\n  for (const [k, v] of Object.entries(THEME_VARS)) if (t.colors[k]) r.style.setProperty(v, t.colors[k]);\n  r.style.colorScheme = t.dark === false ? \"light\" : \"dark\";\n  r.style.setProperty(\"--on-a\", onAccent(t.colors.accent));\n  document.querySelector('meta[name=\"theme-color\"]')?.setAttribute(\"content\", t.colors.bg);\n  try { localStorage.setItem(\"me_theme_cache\", JSON.stringify(t)); } catch (e) {}\n}\ntry { applyTheme(JSON.parse(localStorage.getItem(\"me_theme_cache\"))); } catch (e) {}\nasync function loadThemes() {\n  const r = await api(MODE === \"local\" ? \"/api/agent/themes\" : \"/api/themes\");\n  themeList = r.themes; applyTheme(themeList.find(t => t.name === r.current));\n}\nfunction pickTheme() {\n  $(\"pbody\").innerHTML = themeList.map(t => `<button onclick=\"setTheme('${esc(t.name)}')\"><span class=\"sw\" style=\"background:${t.colors.bg};border-color:${t.colors.line}\"><i style=\"background:${t.colors.accent}\"></i><i style=\"background:${t.colors.accent2}\"></i></span>${esc(t.label || t.name)}<span class=\"d\">${t.dark === false ? \"light\" : \"dark\"}</span></button>`).join(\"\")\n    + `<a class=\"more\" href=\"${MODE === \"cloud\" ? \"/account#market\" : \"#\"}\" onclick=\"${MODE === \"local\" ? \"alert('Install more with /theme in the terminal or the marketplace on the site');return false\" : \"\"}\">more themes in the marketplace \u2192</a>`;\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setTheme(name) {\n  applyTheme(themeList.find(t => t.name === name)); $(\"popup\").classList.add(\"hidden\");\n  if (MODE === \"local\") return api(\"/api/agent/theme\", {name});\n  const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.theme = name;\n  await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\");\n}\n\n// \u2500\u2500\u2500 todo checklist (sidebar card + header chip), goals, turn diff review \u2500\u2500\u2500\nfunction renderTodo(items) {\n  items = items || [];\n  const card = $(\"todoCard\"), chip = $(\"todoChip\");\n  const done = items.filter(i => i.s === \"done\").length;\n  if (!items.length) { card.classList.add(\"hidden\"); chip.classList.add(\"hidden\"); return; }\n  card.classList.remove(\"hidden\");\n  card.innerHTML = `<div class=\"tc-h\"><b>Checklist</b><span>${done}/${items.length}</span></div><div class=\"tc-bar\"><i style=\"width:${(done / items.length * 100).toFixed(0)}%\"></i></div>`\n    + items.map(i => `<div class=\"tc-i ${i.s}\"><span class=\"tc-b\">${i.s === \"done\" ? '<svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5 9-11\"/></svg>' : i.s === \"doing\" ? '<span class=\"spin\"></span>' : \"\"}</span><span>${esc(i.t)}</span></div>`).join(\"\");\n  chip.querySelector(\"span\").textContent = `${done}/${items.length}`;\n  chip.classList.toggle(\"hidden\", done === items.length && !busy);\n}\nfunction goalEvent(g, history) {\n  if (g.status === \"working\") { if (!history) el(`<div class=\"goal working\"><span class=\"spin\"></span><span><b>Goal</b> ${esc(g.text)}</span></div>`); return; }\n  const ok = g.status === \"done\";\n  el(`<div class=\"goal ${ok ? \"done\" : \"blocked\"}\">${ok ? I.check : I.x}<span><b>${ok ? \"Goal done\" : \"Goal blocked\"}</b>${g.reason ? \" \u2014 \" + esc(g.reason) : \"\"}</span></div>`);\n}\nfunction diffCard(files) {\n  if (!files.length) return;\n  const stat = d => { let a = 0, r = 0; d.split(\"\\n\").forEach(l => { if (l[0] === \"+\" && !l.startsWith(\"+++\")) a++; else if (l[0] === \"-\" && !l.startsWith(\"---\")) r++; }); return `<span class=\"add\">+${a}</span> <span class=\"del\">\u2212${r}</span>`; };\n  const c = el(`<div class=\"review\"><div class=\"rv-h\"><b>Changes in this turn</b><span class=\"d\">${files.length} file${files.length > 1 ? \"s\" : \"\"}</span></div>${files.map(f =>\n    `<details><summary><span class=\"rv-p\">${esc(shortPath(f.path))}</span>${f.new ? '<span class=\"tag\">new</span>' : \"\"}${stat(f.diff)}</summary><pre>${diffHtml(f.diff)}</pre></details>`).join(\"\")}\n    <div class=\"btns\"><button class=\"btn ghost\" data-a=\"keep\">keep</button><button class=\"btn ghost danger\" data-a=\"revert\">revert</button></div></div>`);\n  c.querySelector('[data-a=\"keep\"]').onclick = () => { c.querySelector(\".btns\").innerHTML = '<span class=\"dim\">kept</span>'; };\n  c.querySelector('[data-a=\"revert\"]').onclick = async () => {\n    if (busy) return;\n    c.querySelector(\".btns\").innerHTML = '<span class=\"dim\">reverting\u2026</span>';\n    try { await A.undo(); c.querySelector(\".btns\").innerHTML = '<span class=\"dim\">reverted</span>'; } catch (e) { c.querySelector(\".btns\").innerHTML = `<span class=\"err\">${esc(e.message)}</span>`; }\n  };\n}\n// \u2500\u2500\u2500 permissions \u2500\u2500\u2500\nfunction pickPerm() {\n  if (state.perm === \"sandbox\") { $(\"pbody\").innerHTML = '<p style=\"padding:12px;color:var(--dim)\">Cloud sessions run in an isolated sandbox, so tools run without asking. Permissions apply to the local agent (<code>me web</code> / terminal).</p>'; return $(\"popup\").classList.remove(\"hidden\"); }\n  const P = {read: [\"read-only\", \"no file changes; only allow-listed commands\"], ask: [\"ask\", \"edits inside the project are free; commands ask\"], full: [\"full access\", \"everything runs without asking\"]};\n  $(\"pbody\").innerHTML = Object.entries(P).map(([k, [l, d]]) => `<button onclick=\"setPerm('${k}')\"><span>${state.perm === k ? \"\u25cf\" : \"\u25cb\"}</span><b>${l}</b><span class=\"d\">${d}</span></button>`).join(\"\");\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setPerm(m) { $(\"popup\").classList.add(\"hidden\"); state.perm = m; renderStatus(); try { await A.setPerm(m); } catch (e) { alert(e.message); } }\n// \u2500\u2500\u2500 attachments: images go to the model, other files into the project \u2500\u2500\u2500\nfunction renderAtts() {\n  const box = $(\"atts\");\n  box.classList.toggle(\"hidden\", !atts.length);\n  box.innerHTML = atts.map((a, i) => `<span class=\"att\">${a.image ? `<img src=\"${a.url}\" alt=\"\">` : '<svg viewBox=\"0 0 24 24\"><path d=\"M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z\"/><path d=\"M14 3v5h5\"/></svg>'}<span class=\"an\">${esc(a.name)}</span><button onclick=\"atts.splice(${i},1);renderAtts();setBusy()\" aria-label=\"remove\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></button></span>`).join(\"\");\n}\nfunction shrink(dataUrl, max = 1600) {  // phone photos are huge; models need ~1.5k px at most\n  return new Promise(res => { const img = new Image(); img.onload = () => {\n    const k = Math.min(1, max / Math.max(img.width, img.height)); if (k === 1 && dataUrl.length < 1.5e6) return res(dataUrl);\n    const c = document.createElement(\"canvas\"); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);\n    c.getContext(\"2d\").drawImage(img, 0, 0, c.width, c.height); res(c.toDataURL(\"image/jpeg\", .85)); }; img.onerror = () => res(dataUrl); img.src = dataUrl; });\n}\nasync function addFiles(list) {\n  for (const f of list) {\n    if (f.size > 20e6) { alert(f.name + \": over 20 MB\"); continue; }\n    const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });\n    if (f.type.startsWith(\"image/\")) atts.push({name: f.name || \"image.png\", image: true, url: await shrink(url)});\n    else atts.push({name: f.name, b64: url.split(\",\")[1]});\n  }\n  renderAtts(); setBusy();\n}\n$(\"file\").addEventListener(\"change\", e => { addFiles([...e.target.files]); e.target.value = \"\"; });\n$(\"input\").addEventListener(\"paste\", e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });\ndocument.addEventListener(\"dragover\", e => e.preventDefault());\ndocument.addEventListener(\"drop\", e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles([...e.dataTransfer.files]); } });\n// \u2500\u2500\u2500 PWA + push (\"done\", \"waiting for you\") \u2500\u2500\u2500\nif (\"serviceWorker\" in navigator && location.protocol !== \"file:\") navigator.serviceWorker.register(\"/sw.js\").then(() => {\n  if (MODE === \"cloud\" && \"PushManager\" in window && Notification.permission !== \"granted\") $(\"bell\").classList.remove(\"hidden\");\n}).catch(() => {});\nasync function enablePush() {\n  try {\n    if (await Notification.requestPermission() !== \"granted\") return alert(\"Notifications are blocked for this site \u2014 allow them in the browser settings.\");\n    const {key} = await api(\"/api/push/key\");\n    const reg = await navigator.serviceWorker.ready;\n    const b = atob(key.replace(/-/g, \"+\").replace(/_/g, \"/\") + \"=\".repeat((4 - key.length % 4) % 4));\n    const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: Uint8Array.from(b, c => c.charCodeAt(0))});\n    await api(\"/api/push/subscribe\", sub.toJSON());\n    $(\"bell\").classList.add(\"hidden\");\n    el(`<div class=\"info\">notifications on \u2014 you will hear when a task is done or needs you</div>`);\n  } catch (e) { alert(\"notifications: \" + e.message); }\n}\n</script>\n</body>\n</html>\n"
+ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0b0c10"/>'
+            '<rect x="146" y="146" width="220" height="220" rx="56" fill="#8b7cff"/></svg>')
+PWA_MANIFEST = {"name": "me", "short_name": "me", "description": "Your coding agent, everywhere", "start_url": "/app", "scope": "/",
+                "display": "standalone", "background_color": "#0b0c10", "theme_color": "#0b0c10",
+                "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]}
+SW_JS = """self.addEventListener('install', e => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', () => {});
+self.addEventListener('push', e => {
+  let d = {}; try { d = e.data.json(); } catch (x) { d = {title: 'me', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'me', {body: d.body || '', tag: d.tag || 'me', data: {url: d.url || '/app'},
+    icon: '/icon.svg', badge: '/icon.svg', renotify: true}));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = e.notification.data && e.notification.data.url || '/app';
+  e.waitUntil(clients.matchAll({type: 'window', includeUncontrolled: true}).then(ws => {
+    for (const w of ws) if (w.url.includes('/app') || w.url.endsWith('/')) { w.focus(); return w.navigate(url); }
+    return clients.openWindow(url);
+  }));
+});"""
 
 
 class WebSession:
@@ -1824,7 +2626,8 @@ class WebSession:
         return self.waits.pop(rid)[1]
 
     def confirm(self, name, args):
-        return bool(self._wait("confirm", name=name, args=args))
+        r = self._wait("confirm", name=name, args=args)
+        return "always" if r == "always" else bool(r)
 
     def ask(self, q, options=None):
         return self._wait("ask", text=q, options=options) or ""
@@ -1834,7 +2637,8 @@ class WebSession:
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
-                "pending": [w[2] for w in list(self.waits.values())],
+                "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
+                "day_cost": day_cost(self.s.home), "preview": "",
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
@@ -1851,13 +2655,32 @@ class WebSession:
                     self.cond.wait(25)
                 evs = [e for e in self.events if e["seq"] > after]
             return {"events": evs, "state": {"busy": a.busy}}
-        if path == "/prompt":
+        if path in ("/prompt", "/goal"):
             if a.busy:
                 raise ValueError("still working")
-            self.push({"type": "user", "text": body["text"]})
+            self.push({"type": "user", "text": ("/goal " if path == "/goal" else "") + body["text"]})
             if not a.session.get("ws") and self.cloud.online:
                 a.session["ws"] = self.ws.for_dir(os.getcwd())
-            threading.Thread(target=a.run, args=(body["text"],), daemon=True).start()
+            if path == "/goal":
+                threading.Thread(target=a.goal, args=(body["text"],), daemon=True).start()
+            else:
+                threading.Thread(target=a.run, args=(body["text"], body.get("images") or ()), daemon=True).start()
+            return {"ok": True}
+        if path == "/undo":
+            r = a.undo()
+            if not r["ok"]:
+                raise ValueError(r["text"])
+            return r
+        if path == "/upload":  # attachments from the browser land in the project folder
+            d = Path(os.getcwd()) / "uploads"
+            d.mkdir(exist_ok=True)
+            name = re.sub(r"[^\w.-]+", "_", body["name"])[:80] or "file"
+            (d / name).write_bytes(base64.b64decode(body["b64"]))
+            return {"path": f"uploads/{name}"}
+        if path == "/perm":
+            st = self.s.config["settings"]
+            st["perm"], st["yolo"] = body["mode"], False
+            self.s.save()
             return {"ok": True}
         if path == "/cancel":
             a.cancel.set()
@@ -1961,6 +2784,12 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
             path = self.path
             if method == "GET" and (path == "/" or path.startswith("/?")):
                 return self._send(200, WEBUI.replace("__MODE__", "local").encode(), "text/html; charset=utf-8")
+            if path == "/manifest.webmanifest":
+                return self._send(200, json.dumps(dict(PWA_MANIFEST, start_url="/")).encode(), "application/manifest+json")
+            if path == "/sw.js":
+                return self._send(200, SW_JS.encode(), "text/javascript")
+            if path == "/icon.svg":
+                return self._send(200, ICON_SVG.encode(), "image/svg+xml")
             if not path.startswith("/api/agent"):
                 return self._send(404, {"detail": "not found"})
             if not self._authed():
@@ -2456,7 +3285,9 @@ COMMANDS = [
     ("provider", "add / edit API providers"), ("effort", "reasoning effort: none…xhigh"), ("prompt", "edit your system prompt"),
     ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
     ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("autocompact", "auto-compact at N% of context (off)"),
-    ("yolo", "toggle auto-approve tools"), ("sync", "sync with cloud now"), ("login", "log in / register"),
+    ("goal", "work autonomously until done+verified or blocked"), ("undo", "revert the files of the last turn"),
+    ("perm", "permissions: read-only / ask / full + allow-list"), ("cost", "spending: turn, session, today, limits"), ("mcp", "MCP servers (lazy)"),
+    ("todo", "show the agent's checklist"), ("yolo", "toggle full access"), ("sync", "sync with cloud now"), ("login", "log in / register"),
     ("2fa", "authenticator (TOTP) on/off"), ("logout", "log out of cloud"), ("config", "settings"), ("update", "update me"),
     ("theme", "color theme (installable)"), ("exit", "quit"), ("quit", "quit"),
 ]
@@ -2710,7 +3541,30 @@ class TUIRender:
             col += w
         return ["".join(r) for r in rows], cur_rc
 
+    def todo_lines(self, W, H):
+        """Live checklist above the input while there is open work (the agent's todo tool)."""
+        items = self.agent.session.get("todo") or []
+        if not items or (all(i["s"] == "done" for i in items) and not self.agent.busy):
+            return []
+        done = sum(1 for i in items if i["s"] == "done")
+        head = Line().add(" ").add("todo ", rgb(TH["accent"]) + CSI + "1m").add(f"{done}/{len(items)}", rgb(TH["dim"]))
+        g = self.agent.session.get("goal") or {}
+        if g.get("status") == "working":
+            head.add("  ◎ goal: " + g["text"][: max(10, W - 30)], rgb(TH["accent2"]))
+        cap = max(2, min(7, H // 4))
+        cur = next((k for k, i in enumerate(items) if i["s"] != "done"), len(items))
+        lo = max(0, min(cur - 1, len(items) - cap))
+        out = [head]
+        for i in items[lo:lo + cap]:
+            sym, col = {"done": ("✓", TH["ok"]), "doing": ("▸", TH["accent"])}.get(i["s"], ("○", TH["faint"]))
+            out.append(Line().add("  " + sym + " ", rgb(col)).add(i["t"][: W - 6], rgb(TH["dim"] if i["s"] == "done" else TH["fg"])))
+        if len(items) > lo + cap:
+            out.append(Line().add(f"    … {len(items) - lo - cap} more", rgb(TH["faint"])))
+        return out
+
     def status_line(self, W):
+        if W < 90:
+            return self.status_compact(W)
         m = self.s.model()
         dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
         L = Line().add(" ")
@@ -2733,6 +3587,8 @@ class TUIRender:
             L.add(f"ctx {human(used)}", dim)
         u = self.agent.session.get("usage", {})
         L.add("   ↑", faint).add(human(u.get("in", 0)), dim).add(" ↓", faint).add(human(u.get("out", 0)), dim)
+        if u.get("cost"):
+            L.add("  " + money(u["cost"]), dim)
         right = Line()
         ctxf = self.agent.context_files()
         if ctxf:
@@ -2743,8 +3599,9 @@ class TUIRender:
             for t, c in segs:
                 right.add(t, rgb(TH.get(c, c) if not str(c).startswith("#") else c))
             right.add("  ")
-        if self.s.config["settings"].get("yolo"):
-            right.add("yolo ", rgb(TH["warn"]))
+        pm = perm_mode(self.s.config["settings"])
+        if pm != "ask":
+            right.add(("full " if pm == "full" else "read-only "), rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         cs = self.cloud.status
         if self.cloud.online:
             sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]),
@@ -2754,6 +3611,42 @@ class TUIRender:
             right.add("☁ offline", faint)
         if self.update_avail:
             right.add(f"  ↑ v{self.update_avail} /update", rgb(TH["accent"]))
+        right.add(" ")
+        gap = W - L.width() - right.width()
+        if gap > 0:
+            L.add(" " * gap)
+            L.segs.extend(right.segs)
+        return L
+
+    def status_compact(self, W):
+        """Narrow terminals (Termux on a phone): model · ctx% · cost · cloud, nothing that wraps."""
+        m = self.s.model()
+        dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
+        L = Line().add(" ")
+        if m:
+            L.add("● ", rgb(TH["accent2"])).add(m["name"][: max(6, W // 3)], rgb(TH["fg"]))
+        else:
+            L.add("no model", rgb(TH["warn"]))
+        ctx = int(m.get("context") or 0) if m else 0
+        used = self.agent.ctx_used
+        if ctx:
+            frac = min(1, used / ctx)
+            L.add(f" {int(frac * 100)}%", rgb(TH["ok"] if frac < 0.6 else TH["warn"] if frac < 0.85 else TH["err"]))
+        cost = self.agent.session.get("usage", {}).get("cost", 0)
+        if cost and W >= 44:
+            L.add(" " + money(cost), dim)
+        right = Line()
+        pm = perm_mode(self.s.config["settings"])
+        if pm != "ask":
+            right.add("full " if pm == "full" else "ro ", rgb(TH["warn"] if pm == "full" else TH["accent2"]))
+        if self.cloud.online:
+            sym = {"synced": ("☁✓", TH["ok"]), "syncing": ("☁" + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁!", TH["err"])}.get(
+                self.cloud.status, ("☁", TH["dim"]))
+            right.add(sym[0], rgb(sym[1]))
+        else:
+            right.add("☁–", faint)
+        if self.update_avail:
+            right.add(" ↑", rgb(TH["accent"]))
         right.add(" ")
         gap = W - L.width() - right.width()
         if gap > 0:
@@ -2805,7 +3698,7 @@ class TUIRender:
                 if msg[0] and time.time() - msg[1] < 4:
                     act.add(msg[0], rgb(TH.get(msg[2], TH["dim"])))
             status = self.status_line(W)
-            bottom = [act] + box + [status]
+            bottom = self.todo_lines(W, H) + [act] + box + [status]
             # suggestions popup
             pop = []
             if self.sugg and not self.modal:
@@ -3492,9 +4385,110 @@ class TUICommands:
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
-        st["yolo"] = not st.get("yolo")
+        st["yolo"] = False
+        st["perm"] = "ask" if perm_mode(st) == "full" else "full"
         self.s.save()
-        self.toast(f"yolo {'ON — tools run without asking' if st['yolo'] else 'off — will ask before write/edit/bash'}", "warn" if st["yolo"] else "ok")
+        self.toast(f"{'full access — tools run without asking' if st['perm'] == 'full' else 'ask — commands and writes outside the project ask'}",
+                   "warn" if st["perm"] == "full" else "ok")
+
+    def cmd_perm(self, arg):
+        st = self.s.config["settings"]
+        cur = perm_mode(st)
+        v = arg or self.pick("Permissions", [(k, ("● " if k == cur else "  ") + PERMS[k], {
+            "read": "no file changes; only allow-listed commands", "ask": "edits inside the project are free; commands ask",
+            "full": "everything runs without asking"}[k]) for k in PERMS] + [("allow", "  allow-list…", "commands that never ask")])
+        if v in PERMS:
+            st["perm"], st["yolo"] = v, False
+            self.s.save()
+            return self.toast("permissions: " + PERMS[v], "ok")
+        if v == "allow":
+            cur_list = st.get("allow") or list(DEFAULT_ALLOW)
+            text = self.prompt("Allowed commands, one pattern per line (* = anything; chained/redirected commands always ask)",
+                               "\n".join(cur_list), multiline=True)
+            if text is not None:
+                st["allow"] = [l.strip() for l in text.splitlines() if l.strip()]
+                self.s.save()
+                self.toast(f"{len(st['allow'])} allowed patterns", "ok")
+
+    def cmd_goal(self, arg):
+        if self.agent.busy:
+            return self.toast("busy", "warn")
+        arg = (arg or "").strip().strip('"')
+        if not arg:
+            arg = self.prompt("Goal — the agent works until it is done and verified, or blocked", multiline=True)
+            if not arg:
+                return
+        self.add("user", text="/goal " + arg)
+        self.agent.goal(arg)
+
+    def cmd_undo(self, arg):
+        r = self.agent.undo()
+        if not r["ok"]:
+            self.toast(r["text"], "warn")
+        else:
+            self.render_history()
+            self.info("↶ " + r["text"], "warn")
+
+    def cmd_todo(self, arg):
+        items = self.agent.session.get("todo") or []
+        if not items:
+            return self.toast("no todo list in this session")
+        self.add("assistant", text="\n".join(("- [x] " if i["s"] == "done" else "- [ ] " if i["s"] == "todo" else "- [>] ") + i["t"] for i in items)).done = True
+
+    def cmd_cost(self, arg):
+        st = self.s.config["settings"]
+        u = self.agent.session.get("usage", {})
+        m = self.s.model() or {}
+        pin, pout, pc = model_price(m)
+        if arg:
+            k, _, v = arg.partition(" ")
+            if k in ("turn", "day"):
+                st["max_turn_cost" if k == "turn" else "max_day_cost"] = float(v or 0)
+                self.s.save()
+                return self.toast(f"{k} limit {money(float(v or 0)) if float(v or 0) else 'off'}", "ok")
+        days = jload(self.s.home / "usage.json", {}) or {}
+        txt = (f"## Spending\n- session: **{money(u.get('cost', 0))}** · ↑{human(u.get('in', 0))} ↓{human(u.get('out', 0))}"
+               f" · cached {human(u.get('cached', 0))}\n- today: **{money(day_cost(self.s.home))}** · last 7 days: "
+               f"{money(sum(v for k, v in sorted(days.items())[-7:]))}\n- {m.get('name', 'model')}: ${pin}/M in · ${pout}/M out · ${pc}/M cached"
+               f"{'' if any((pin, pout)) else ' (unknown — set price in /models)'}\n- limits: per task {money(st.get('max_turn_cost') or 0) if st.get('max_turn_cost') else 'off'}"
+               f" · per day {money(st.get('max_day_cost') or 0) if st.get('max_day_cost') else 'off'}  (`/cost turn 0.5`, `/cost day 5`)")
+        self.add("assistant", text=txt).done = True
+
+    def cmd_mcp(self, arg):
+        mc = self.s.config.setdefault("mcp", {})
+        items = [(k, k, v.get("url") or " ".join([v.get("command", "")] + v.get("args", []))[:60]) for k, v in mc.items()]
+        k = self.pick("MCP servers — loaded lazily: one prompt line idle, tools fetched on use", items + [("+", "+ add server", "stdio command or http url")])
+        if k is None:
+            return
+        if k == "+":
+            name = self.prompt("Name (e.g. github)")
+            if not name:
+                return
+            target = self.prompt("Command (npx -y @modelcontextprotocol/server-github) or URL (https://…/mcp)")
+            if not target:
+                return
+            desc = self.prompt("One-line description for the agent", "")
+            if target.startswith(("http://", "https://")):
+                spec = {"url": target}
+            else:
+                import shlex
+                parts = shlex.split(target)
+                spec = {"command": parts[0], "args": parts[1:]}
+            if desc:
+                spec["description"] = desc
+            mc[re.sub(r"[^\w-]", "", name)] = spec
+            self.s.save()
+            return self.toast(f"MCP {name} added", "ok")
+        act = self.pick(k, [("test", "test: list tools", ""), ("del", "remove", "")])
+        if act == "del":
+            mc.pop(k, None)
+            self.s.save()
+            MCP_CLIENTS.pop(k, None)
+        elif act == "test":
+            try:
+                self.add("assistant", text=f"## {k}\n" + mcp_describe(mcp_client(self.s, k).list_tools())).done = True
+            except Exception as e:
+                self.info(f"✗ {e}", "err")
 
     def cmd_model(self, arg):
         ms = self.s.config["models"]
@@ -3631,7 +4625,8 @@ class TUICommands:
         fields = [("name", "display name"), ("id", "API model id"), ("provider", "provider"), ("api", "chat | responses"),
                   ("context", "context window, tokens"), ("max_out", "max output tokens (blank = default)"),
                   ("effort", "reasoning effort: none/minimal/low/medium/high/xhigh"), ("temperature", "blank = default"),
-                  ("vision", "send images: true/false")]
+                  ("vision", "send images: true/false"), ("price", "$ per 1M tokens: in out [cached] (blank = built-in table)"),
+                  ("cache", "prompt caching: auto / anthropic / openai / off")]
         while True:
             items = [(f, f"{f:<12} {m.get(f, '')}", d) for f, d in fields] + [("use", "✓ use this model", ""), ("del", "✗ delete", "")]
             f = self.pick(f"Model · {m['name']}", items)
@@ -3656,6 +4651,17 @@ class TUICommands:
                 v = "" if v == "none" else v
             elif f == "provider":
                 v = self.pick("Provider", list(self.s.config["providers"]), current=m.get("provider"))
+            elif f == "cache":
+                v = self.pick("Prompt caching", [("", "auto", "detect from model/provider"), ("anthropic", "anthropic", "cache_control marker"),
+                                                 ("openai", "openai", "prompt_cache_key"), ("off", "off", "")], current=m.get("cache", ""))
+            elif f == "price":
+                v = self.prompt("in out [cached], $ per 1M tokens", " ".join(map(str, m.get("price") or [])))
+                if v is not None:
+                    try:
+                        v = [float(x) for x in v.replace(",", " ").split()][:3] or ""
+                    except ValueError:
+                        self.toast("numbers, e.g. 3 15 0.3", "err")
+                        continue
             elif f == "vision":
                 v = self.pick("Vision", [(True, "true", ""), (False, "false", "")], current=m.get("vision", True))
             else:
@@ -4114,12 +5120,36 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("info", text=f"✓ compacted {e['before']} → {e['after']} messages · context now ~{human(e['ctx'])} tokens", color="ok")
             elif t == "usage":
                 self.turn_tokens = (e["in"], e["out"])
+            elif t == "todo":
+                pass  # drawn live from the session by todo_lines()
+            elif t == "verify":
+                self.add("info", text="◌ self-check: changes were made but not run yet — verifying before finishing", color="accent")
+            elif t == "goal":
+                if e["status"] == "working":
+                    self.add("info", text=f"◎ goal: {e['text']}", color="accent")
+                else:
+                    ok = e["status"] == "done"
+                    self.add("info", text=("✓ goal done" if ok else "✗ goal blocked") + (f" — {e['reason']}" if e.get("reason") else ""),
+                             color="ok" if ok else "err")
+            elif t == "turn_diff":
+                files = e.get("files") or []
+                if files:
+                    stats = []
+                    for f in files:
+                        add = sum(1 for l in f["diff"].splitlines() if l.startswith("+") and not l.startswith("+++"))
+                        rem = sum(1 for l in f["diff"].splitlines() if l.startswith("-") and not l.startswith("---"))
+                        stats.append(f"{f['path']} +{add} −{rem}")
+                    self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6} more" if len(stats) > 6 else "") + "   /undo reverts",
+                             color="dim")
+            elif t == "undone":
+                self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
                 self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens")
+                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
+                                       + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
             self.redraw()
@@ -4160,12 +5190,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
             detail = "\n".join(a.get("content", "").splitlines()[:12])
         elif name == "skill":
             detail = json.dumps(a.get("args", {}), ensure_ascii=False)
+        always = (f"Yes, always allow `{allow_pattern(a.get('cmd', ''))}`" if name == "bash" else "Yes, and switch to full access (/perm)")
         v = self._modal({"kind": "confirm", "title": f"{name}  {label}", "detail": detail, "sel": 0,
-                         "items": [("y", "Yes"), ("a", "Yes, don't ask again (yolo)"), ("n", "No, tell me what to do")]})
-        if v == "a":
-            self.s.config["settings"]["yolo"] = True
+                         "items": [("y", "Yes"), ("a", always), ("n", "No, tell me what to do")]})
+        if v == "a" and name != "bash":
+            self.s.config["settings"]["perm"] = "full"
             self.s.save()
-        return v in ("y", "a")
+        return "always" if v == "a" else v == "y"
 
     def ask_text(self, q, options=None):
         if options:

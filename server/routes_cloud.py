@@ -1,5 +1,5 @@
 """Workspaces, cloud sandbox sessions, voice, Telegram and admin routes."""
-import json, os, shutil, urllib.request, uuid
+import json, os, shutil, time, urllib.request, uuid
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -91,6 +91,7 @@ class Start(BaseModel):
 
 class Prompt(BaseModel):
     text: str
+    images: list[str] = []
 
 
 def _worker(u, wid):
@@ -125,6 +126,7 @@ def cloud_start(s: Start, u=Depends(user)):
 @app.get("/api/cloud/{wid}/events")
 def cloud_events(wid: str, after: int = 0, u=Depends(user)):
     w = _worker(u, wid)
+    w.watched = time.time()  # someone is looking: no push needed for this worker's events
     return {"events": w.wait_events(after, timeout=25), "state": w.info()}
 
 
@@ -133,7 +135,17 @@ def cloud_prompt(wid: str, p: Prompt, u=Depends(user)):
     w = _worker(u, wid)
     if w.busy:
         raise HTTPException(409, "still working")
-    w.prompt(p.text)
+    w.prompt(p.text, p.images[:8])
+    return {"ok": True}
+
+
+@app.post("/api/cloud/{wid}/goal")
+def cloud_goal(wid: str, p: Prompt, u=Depends(user)):
+    w = _worker(u, wid)
+    if w.busy:
+        raise HTTPException(409, "still working")
+    w._push({"type": "user", "text": "/goal " + p.text})
+    w.send({"type": "goal", "text": p.text})
     return {"ok": True}
 
 
@@ -151,7 +163,7 @@ def cloud_answer(wid: str, a: Answer, u=Depends(user)):
 
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
-    if action not in ("cancel", "new", "sync", "compact"):
+    if action not in ("cancel", "new", "sync", "compact", "undo"):
         raise HTTPException(404)
     _worker(u, wid).send({"type": action})
     return {"ok": True}
@@ -211,26 +223,6 @@ try:
     bot.configure(setting("tg_token"))
 except Exception:
     pass
-
-
-@app.get("/api/tg")
-def tg_state(u=Depends(user)):
-    linked = conn.execute("SELECT COUNT(*) FROM tg_links WHERE user_id=?", (u["id"],)).fetchone()[0]
-    return {"bot": bot.username, "linked": bool(linked)}
-
-
-@app.post("/api/tg/link")
-def tg_link(u=Depends(user)):
-    url = bot.link_code(u["id"])
-    if not url:
-        raise HTTPException(400, "Telegram bot is not configured by the admin yet")
-    return {"url": url}
-
-
-@app.delete("/api/tg/link")
-def tg_unlink(u=Depends(user)):
-    conn.execute("DELETE FROM tg_links WHERE user_id=?", (u["id"],))
-    return {"ok": True}
 
 
 @app.get("/api/agents")

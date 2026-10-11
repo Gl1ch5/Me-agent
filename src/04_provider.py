@@ -44,12 +44,33 @@ class Provider:
                 except ValueError:
                     pass
 
-    def stream(self, system, messages, tools, emit, cancel):
-        """Returns (assistant_message, usage). Emits text/reasoning deltas."""
+    def cache_mode(self):
+        """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
+        c = self.m.get("cache")
+        if c in ("anthropic", "openai", "off"):
+            return "" if c == "off" else c
+        mid = str(self.m.get("id", "")).lower()
+        if "claude" in mid or "anthropic" in self.base:
+            return "anthropic"
+        if "api.openai.com" in self.base:
+            return "openai"
+        return ""  # DeepSeek, Gemini, Groq… cache a stable prefix automatically
+
+    @staticmethod
+    def _cached(u):
+        d = u.get("prompt_tokens_details") or u.get("input_tokens_details") or {}
+        return int(d.get("cached_tokens") or u.get("cache_read_input_tokens") or u.get("prompt_cache_hit_tokens") or 0)
+
+    def stream(self, system, messages, tools, emit, cancel, cache_key=None):
+        """Returns (assistant_message, usage). Emits text/reasoning deltas. The system prompt + tools form a stable prefix."""
         if self.m.get("api") == "responses":
-            return self._responses(system, messages, tools, emit, cancel)
+            return self._responses(system, messages, tools, emit, cancel, cache_key)
+        cm = self.cache_mode()
+        sysmsg = {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cm == "anthropic" else system}
         body = {"model": self.m["id"], "stream": True, "stream_options": {"include_usage": True},
-                "messages": [{"role": "system", "content": system}] + messages}
+                "messages": [sysmsg] + messages}
+        if cm == "openai" and cache_key:
+            body["prompt_cache_key"] = cache_key
         if tools:
             body["tools"] = [{"type": "function", "function": t} for t in tools]
         if self.m.get("effort") and self.m["effort"] != "none":
@@ -81,9 +102,9 @@ class Provider:
         if calls:
             msg["tool_calls"] = [{"id": c["id"] or "call_" + uuid.uuid4().hex[:8], "type": "function",
                                   "function": {"name": c["name"], "arguments": c["args"] or "{}"}} for _, c in sorted(calls.items())]
-        return msg, {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)}
+        return msg, {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0), "cached": self._cached(usage)}
 
-    def _responses(self, system, messages, tools, emit, cancel):
+    def _responses(self, system, messages, tools, emit, cancel, cache_key=None):
         items = []
         for m in messages:
             if m["role"] == "tool":
@@ -101,6 +122,8 @@ class Provider:
                          {"type": "input_image", "image_url": x["image_url"]["url"]} for x in c]
                 items.append({"role": "user", "content": c})
         body = {"model": self.m["id"], "stream": True, "instructions": system, "input": items, "store": False}
+        if self.cache_mode() == "openai" and cache_key:
+            body["prompt_cache_key"] = cache_key
         if tools:
             body["tools"] = [dict(type="function", **t) for t in tools]
         if self.m.get("effort") and self.m["effort"] != "none":
@@ -128,7 +151,7 @@ class Provider:
         if calls:
             msg["tool_calls"] = [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                                  for c in calls.values()]
-        return msg, {"in": usage.get("input_tokens", 0), "out": usage.get("output_tokens", 0)}
+        return msg, {"in": usage.get("input_tokens", 0), "out": usage.get("output_tokens", 0), "cached": self._cached(usage)}
 
 
 def list_models(prov):

@@ -131,12 +131,36 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("info", text=f"✓ compacted {e['before']} → {e['after']} messages · context now ~{human(e['ctx'])} tokens", color="ok")
             elif t == "usage":
                 self.turn_tokens = (e["in"], e["out"])
+            elif t == "todo":
+                pass  # drawn live from the session by todo_lines()
+            elif t == "verify":
+                self.add("info", text="◌ self-check: changes were made but not run yet — verifying before finishing", color="accent")
+            elif t == "goal":
+                if e["status"] == "working":
+                    self.add("info", text=f"◎ goal: {e['text']}", color="accent")
+                else:
+                    ok = e["status"] == "done"
+                    self.add("info", text=("✓ goal done" if ok else "✗ goal blocked") + (f" — {e['reason']}" if e.get("reason") else ""),
+                             color="ok" if ok else "err")
+            elif t == "turn_diff":
+                files = e.get("files") or []
+                if files:
+                    stats = []
+                    for f in files:
+                        add = sum(1 for l in f["diff"].splitlines() if l.startswith("+") and not l.startswith("+++"))
+                        rem = sum(1 for l in f["diff"].splitlines() if l.startswith("-") and not l.startswith("---"))
+                        stats.append(f"{f['path']} +{add} −{rem}")
+                    self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6} more" if len(stats) > 6 else "") + "   /undo reverts",
+                             color="dim")
+            elif t == "undone":
+                self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
                 self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens")
+                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
+                                       + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
             self.redraw()
@@ -177,12 +201,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
             detail = "\n".join(a.get("content", "").splitlines()[:12])
         elif name == "skill":
             detail = json.dumps(a.get("args", {}), ensure_ascii=False)
+        always = (f"Yes, always allow `{allow_pattern(a.get('cmd', ''))}`" if name == "bash" else "Yes, and switch to full access (/perm)")
         v = self._modal({"kind": "confirm", "title": f"{name}  {label}", "detail": detail, "sel": 0,
-                         "items": [("y", "Yes"), ("a", "Yes, don't ask again (yolo)"), ("n", "No, tell me what to do")]})
-        if v == "a":
-            self.s.config["settings"]["yolo"] = True
+                         "items": [("y", "Yes"), ("a", always), ("n", "No, tell me what to do")]})
+        if v == "a" and name != "bash":
+            self.s.config["settings"]["perm"] = "full"
             self.s.save()
-        return v in ("y", "a")
+        return "always" if v == "a" else v == "y"
 
     def ask_text(self, q, options=None):
         if options:

@@ -225,7 +225,30 @@ class TUIRender:
             col += w
         return ["".join(r) for r in rows], cur_rc
 
+    def todo_lines(self, W, H):
+        """Live checklist above the input while there is open work (the agent's todo tool)."""
+        items = self.agent.session.get("todo") or []
+        if not items or (all(i["s"] == "done" for i in items) and not self.agent.busy):
+            return []
+        done = sum(1 for i in items if i["s"] == "done")
+        head = Line().add(" ").add("todo ", rgb(TH["accent"]) + CSI + "1m").add(f"{done}/{len(items)}", rgb(TH["dim"]))
+        g = self.agent.session.get("goal") or {}
+        if g.get("status") == "working":
+            head.add("  ◎ goal: " + g["text"][: max(10, W - 30)], rgb(TH["accent2"]))
+        cap = max(2, min(7, H // 4))
+        cur = next((k for k, i in enumerate(items) if i["s"] != "done"), len(items))
+        lo = max(0, min(cur - 1, len(items) - cap))
+        out = [head]
+        for i in items[lo:lo + cap]:
+            sym, col = {"done": ("✓", TH["ok"]), "doing": ("▸", TH["accent"])}.get(i["s"], ("○", TH["faint"]))
+            out.append(Line().add("  " + sym + " ", rgb(col)).add(i["t"][: W - 6], rgb(TH["dim"] if i["s"] == "done" else TH["fg"])))
+        if len(items) > lo + cap:
+            out.append(Line().add(f"    … {len(items) - lo - cap} more", rgb(TH["faint"])))
+        return out
+
     def status_line(self, W):
+        if W < 90:
+            return self.status_compact(W)
         m = self.s.model()
         dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
         L = Line().add(" ")
@@ -248,6 +271,8 @@ class TUIRender:
             L.add(f"ctx {human(used)}", dim)
         u = self.agent.session.get("usage", {})
         L.add("   ↑", faint).add(human(u.get("in", 0)), dim).add(" ↓", faint).add(human(u.get("out", 0)), dim)
+        if u.get("cost"):
+            L.add("  " + money(u["cost"]), dim)
         right = Line()
         ctxf = self.agent.context_files()
         if ctxf:
@@ -258,8 +283,9 @@ class TUIRender:
             for t, c in segs:
                 right.add(t, rgb(TH.get(c, c) if not str(c).startswith("#") else c))
             right.add("  ")
-        if self.s.config["settings"].get("yolo"):
-            right.add("yolo ", rgb(TH["warn"]))
+        pm = perm_mode(self.s.config["settings"])
+        if pm != "ask":
+            right.add(("full " if pm == "full" else "read-only "), rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         cs = self.cloud.status
         if self.cloud.online:
             sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]),
@@ -269,6 +295,42 @@ class TUIRender:
             right.add("☁ offline", faint)
         if self.update_avail:
             right.add(f"  ↑ v{self.update_avail} /update", rgb(TH["accent"]))
+        right.add(" ")
+        gap = W - L.width() - right.width()
+        if gap > 0:
+            L.add(" " * gap)
+            L.segs.extend(right.segs)
+        return L
+
+    def status_compact(self, W):
+        """Narrow terminals (Termux on a phone): model · ctx% · cost · cloud, nothing that wraps."""
+        m = self.s.model()
+        dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
+        L = Line().add(" ")
+        if m:
+            L.add("● ", rgb(TH["accent2"])).add(m["name"][: max(6, W // 3)], rgb(TH["fg"]))
+        else:
+            L.add("no model", rgb(TH["warn"]))
+        ctx = int(m.get("context") or 0) if m else 0
+        used = self.agent.ctx_used
+        if ctx:
+            frac = min(1, used / ctx)
+            L.add(f" {int(frac * 100)}%", rgb(TH["ok"] if frac < 0.6 else TH["warn"] if frac < 0.85 else TH["err"]))
+        cost = self.agent.session.get("usage", {}).get("cost", 0)
+        if cost and W >= 44:
+            L.add(" " + money(cost), dim)
+        right = Line()
+        pm = perm_mode(self.s.config["settings"])
+        if pm != "ask":
+            right.add("full " if pm == "full" else "ro ", rgb(TH["warn"] if pm == "full" else TH["accent2"]))
+        if self.cloud.online:
+            sym = {"synced": ("☁✓", TH["ok"]), "syncing": ("☁" + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁!", TH["err"])}.get(
+                self.cloud.status, ("☁", TH["dim"]))
+            right.add(sym[0], rgb(sym[1]))
+        else:
+            right.add("☁–", faint)
+        if self.update_avail:
+            right.add(" ↑", rgb(TH["accent"]))
         right.add(" ")
         gap = W - L.width() - right.width()
         if gap > 0:
@@ -320,7 +382,7 @@ class TUIRender:
                 if msg[0] and time.time() - msg[1] < 4:
                     act.add(msg[0], rgb(TH.get(msg[2], TH["dim"])))
             status = self.status_line(W)
-            bottom = [act] + box + [status]
+            bottom = self.todo_lines(W, H) + [act] + box + [status]
             # suggestions popup
             pop = []
             if self.sugg and not self.modal:
