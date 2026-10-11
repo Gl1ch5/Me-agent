@@ -5,22 +5,24 @@ def _obj(props, req):
 
 
 TOOLS = [
-    {"name": "read", "description": "Read file (code/pdf/office/image) or dir; numbered lines.",
+    {"name": "read", "description": "Read file or dir (code, pdf, office, image).",
      "parameters": _obj({"path": "string", "offset": "integer", "limit": "integer"}, ["path"])},
     {"name": "write", "description": "Create/overwrite file.", "parameters": _obj({"path": "string", "content": "string"}, ["path", "content"])},
-    {"name": "edit", "description": "Replace exact old→new (all: every match); lines='a-b' replaces those lines; edits=[{old,new},…] for several.",
+    {"name": "edit", "description": "Replace exact old→new; all=true for every match; lines='a-b'; edits=[…].",
      "parameters": _obj({"path": "string", "old": "string", "new": "string", "all": "boolean", "lines": "string",
                          "edits": {"type": "array", "items": {"type": "object"}}}, ["path"])},
     {"name": "bash", "description": "Run shell command in cwd.", "parameters": _obj({"cmd": "string", "timeout": "integer"}, ["cmd"])},
-    {"name": "ls", "description": "Glob files, e.g. src/**/*.py. pattern=map: repo map (files+symbols).",
+    {"name": "ls", "description": "Glob files; pattern=map gives repo map.",
      "parameters": _obj({"pattern": "string"}, ["pattern"])},
     {"name": "grep", "description": "Regex search in files.", "parameters": _obj({"pattern": "string", "path": "string", "glob": "string"}, ["pattern"])},
     {"name": "web_search", "description": "Search the web.", "parameters": _obj({"query": "string"}, ["query"])},
     {"name": "web_fetch", "description": "Fetch URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
-    {"name": "skill", "description": "Use a skill: no action → guide.", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
-    {"name": "todo", "description": "Set your checklist (whole list). Prefix: 'x ' done, '> ' doing.",
+    {"name": "skill", "description": "Use a skill (no action = guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
+    {"name": "todo", "description": "Set checklist (whole list); 'x ' done, '> ' doing.",
      "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}}, ["items"])},
-    {"name": "task", "description": "Run a subagent on a self-contained job; returns its report.",
+    {"name": "memory", "description": "Global memory: text adds a note, forget=id removes one.",
+     "parameters": _obj({"text": "string", "forget": "string"}, [])},
+    {"name": "task", "description": "Run a subagent on a job; returns its report.",
      "parameters": _obj({"agent": "string", "prompt": "string"}, ["prompt"])},
 ]
 # tools added only when usable (keeps the idle prompt small)

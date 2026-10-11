@@ -279,6 +279,21 @@ def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     assert "me" in me.presets(s)
 
 
+def test_memory(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    ag, ev = run(s, "tool:memory " + json.dumps({"text": "deploy on fridays"}))
+    assert ends(ev)[0]["ok"] and "remembered" in ends(ev)[0]["output"], ends(ev)
+    mid = me.mem_list(s.home)[0]["id"]
+    assert "deploy on fridays" in me.Agent(s, print).system_prompt()
+    assert mid in me.mem_prompt(s.home)
+    f = s.home / "memory" / (mid + ".json")
+    assert f.exists() and '"text": "deploy on fridays"' in f.read_text()
+    run(s, "tool:memory " + json.dumps({"forget": mid}))
+    assert me.mem_list(s.home) == [] and "deploy on fridays" not in me.Agent(s, print).system_prompt()
+    ag, ev = run(s, "tool:memory " + json.dumps({"text": "  "}))
+    assert not ends(ev)[0]["ok"]
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

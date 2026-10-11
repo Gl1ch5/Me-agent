@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -214,6 +214,8 @@ class Cloud:
             docs["theme/" + p.name] = p
         for p in (self.s.home / "agents").glob("*.md"):
             docs["agent/" + p.name] = p
+        for p in (self.s.home / "memory").glob("*.json"):
+            docs["memory/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -223,7 +225,8 @@ class Cloud:
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
         return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "theme": self.s.home / "themes" / name,
-                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json"),
+                "memory": self.s.home / "memory" / name}.get(kind)
 
     def sync(self):
         if not self.online:
@@ -948,22 +951,24 @@ def _obj(props, req):
 
 
 TOOLS = [
-    {"name": "read", "description": "Read file (code/pdf/office/image) or dir; numbered lines.",
+    {"name": "read", "description": "Read file or dir (code, pdf, office, image).",
      "parameters": _obj({"path": "string", "offset": "integer", "limit": "integer"}, ["path"])},
     {"name": "write", "description": "Create/overwrite file.", "parameters": _obj({"path": "string", "content": "string"}, ["path", "content"])},
-    {"name": "edit", "description": "Replace exact old→new (all: every match); lines='a-b' replaces those lines; edits=[{old,new},…] for several.",
+    {"name": "edit", "description": "Replace exact old→new; all=true for every match; lines='a-b'; edits=[…].",
      "parameters": _obj({"path": "string", "old": "string", "new": "string", "all": "boolean", "lines": "string",
                          "edits": {"type": "array", "items": {"type": "object"}}}, ["path"])},
     {"name": "bash", "description": "Run shell command in cwd.", "parameters": _obj({"cmd": "string", "timeout": "integer"}, ["cmd"])},
-    {"name": "ls", "description": "Glob files, e.g. src/**/*.py. pattern=map: repo map (files+symbols).",
+    {"name": "ls", "description": "Glob files; pattern=map gives repo map.",
      "parameters": _obj({"pattern": "string"}, ["pattern"])},
     {"name": "grep", "description": "Regex search in files.", "parameters": _obj({"pattern": "string", "path": "string", "glob": "string"}, ["pattern"])},
     {"name": "web_search", "description": "Search the web.", "parameters": _obj({"query": "string"}, ["query"])},
     {"name": "web_fetch", "description": "Fetch URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
-    {"name": "skill", "description": "Use a skill: no action → guide.", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
-    {"name": "todo", "description": "Set your checklist (whole list). Prefix: 'x ' done, '> ' doing.",
+    {"name": "skill", "description": "Use a skill (no action = guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
+    {"name": "todo", "description": "Set checklist (whole list); 'x ' done, '> ' doing.",
      "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}}, ["items"])},
-    {"name": "task", "description": "Run a subagent on a self-contained job; returns its report.",
+    {"name": "memory", "description": "Global memory: text adds a note, forget=id removes one.",
+     "parameters": _obj({"text": "string", "forget": "string"}, [])},
+    {"name": "task", "description": "Run a subagent on a job; returns its report.",
      "parameters": _obj({"agent": "string", "prompt": "string"}, ["prompt"])},
 ]
 # tools added only when usable (keeps the idle prompt small)
@@ -1480,7 +1485,7 @@ def apply_edits(text, a):
 #   ---
 #   prompt…
 
-ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task"
+ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task, memory"
 READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill, todo"
 
 BUILTIN_PRESETS = {
@@ -1610,6 +1615,53 @@ def repo_map(root, sub="", home=HOME, limit=12000):
         jsave(cache_p, cache)
     text = "\n".join(lines) or "no source files"
     return text if len(text) <= limit else text[:limit] + f"\n… cut; use map with path=<subdir> ({len(lines)} files)"
+
+
+# ───────────────────────────── global memory ─────────────────────────────
+# Notes the agent keeps across every chat and device: one JSON file per note (synced as memory/<id>.json, so two devices never overwrite
+# each other). Newest notes go into the system prompt; the account page lists them all with their time.
+
+def mem_dir(home):
+    d = Path(home) / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def mem_list(home):
+    out = []
+    for p in mem_dir(home).glob("*.json"):
+        d = jload(p)
+        if d and d.get("text"):
+            out.append(dict(d, id=p.stem))
+    return sorted(out, key=lambda m: m.get("ts", 0), reverse=True)
+
+
+def mem_add(home, text, source=""):
+    text = " ".join(str(text).split())[:800]
+    if not text:
+        raise ValueError("empty note")
+    mid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    jsave(mem_dir(home) / f"{mid}.json", {"text": text, "ts": time.time(), "source": source[:80]})
+    return mid
+
+
+def mem_forget(home, mid):
+    p = mem_dir(home) / f"{re.sub(r'[^\w-]', '', mid)}.json"
+    if not p.exists():
+        raise ValueError(f"no memory note {mid}")
+    p.unlink()
+
+
+def mem_prompt(home, limit=30, cap=3000):
+    """Newest notes, for the system prompt. Bounded so memory never crowds the context."""
+    lines, used = [], 0
+    for m in mem_list(home)[:limit]:
+        line = f"- [{time.strftime('%Y-%m-%d', time.localtime(m['ts']))} {m['id']}] {m['text']}"
+        if used + len(line) > cap:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines)
 
 
 # ───────────────────────────── checkpoints ─────────────────────────────
@@ -1928,6 +1980,9 @@ class Agent:
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
+        mem = mem_prompt(self.s.home)
+        if mem:
+            extra += "\nGlobal memory (notes you kept earlier, newest first; use memory tool to add or forget):\n" + mem
         if "task" in {t["name"] for t in self.tool_schemas()}:
             extra += "\ntask agents: " + ", ".join(presets(self.s)) + "."
         mcp = self.s.config.get("mcp") or {}
@@ -2114,6 +2169,8 @@ class Agent:
             return False, veto, None
         if name == "todo":
             return self._todo(args)
+        if name == "memory":
+            return self._memory(args)
         if name == "task":
             return self._task(args, temit)
         need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
@@ -2136,6 +2193,20 @@ class Agent:
             raise
         except Exception as e:
             return False, f"error: {type(e).__name__}: {e}", None
+
+    def _memory(self, a):
+        try:
+            if a.get("forget"):
+                mem_forget(self.s.home, a["forget"])
+                self.s.save()
+                return True, f"forgot note {a['forget']}", None
+            if not str(a.get("text", "")).strip():
+                return False, "error: give text (to add) or forget (an id)", None
+            mid = mem_add(self.s.home, a["text"], source=self.session.get("title", ""))
+            self.s.save()
+            return True, f"remembered ({mid}) — it will be in every future chat", None
+        except ValueError as e:
+            return False, f"error: {e}", None
 
     # ─── todo / goal ───
     def _todo(self, a):

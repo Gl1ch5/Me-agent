@@ -11,7 +11,7 @@
 #   ---
 #   prompt…
 
-ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task"
+ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task, memory"
 READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill, todo"
 
 BUILTIN_PRESETS = {

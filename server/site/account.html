@@ -59,6 +59,7 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
 .star{padding:2px 6px!important;font-size:16px!important;border:none!important}
 .ghost-a{background:none!important;color:var(--dim)!important;border:1px solid var(--line)}
+.memrow{border-top:1px solid var(--line);padding:10px 0;display:grid;gap:4px}.memwhen{font:12px var(--mono);color:var(--dim)}.memtext{white-space:pre-wrap;font-size:14px}.memrow button{justify-self:start}
 .sk{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--bg);display:flex;flex-direction:column;gap:8px}
 .sk .t{display:flex;align-items:center;gap:10px;font:600 14px var(--mono)}
 .sk .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;flex-shrink:0}
@@ -169,6 +170,10 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
   </div>
 
   <div data-pane="skills">
+    <div class="card">
+      <div class="row"><div><h2 style="margin:0">memory</h2><p class="dim" style="margin-top:4px">Notes the agent keeps for itself across every chat and device, newest first. It reads them at the start of each chat. You can delete any note.</p></div><span class="tag" id="memcount"></span></div>
+      <div id="memlist" style="margin-top:12px"></div>
+    </div>
     <div class="card">
       <div class="row"><h2 style="margin:0">your skills</h2><div class="btns" style="margin:0"><button class="ghost sm" onclick="tab('market')">browse marketplace</button><button class="sm" onclick="editSkill()">+ new skill</button></div></div>
       <div class="grid" id="myskills" style="margin-top:14px"></div>
@@ -394,6 +399,20 @@ async function addFetched(prov) {
   if (!cfg.model && cfg.models.length) cfg.model = cfg.models[0].name;
   closeModal(); await saveCfg();
 }
+
+// ── memory ──
+async function loadMemory() {
+  const docs = (await api("/api/docs")).filter(d => d.key.startsWith("memory/")).sort((a, b) => b.ts - a.ts);
+  $("memcount").textContent = docs.length + " notes";
+  const rows = await Promise.all(docs.map(async d => {
+    try { const j = JSON.parse((await api("/api/doc?key=" + encodeURIComponent(d.key))).content); return {key: d.key, ...j}; } catch (e) { return null; }
+  }));
+  const list = rows.filter(r => r && r.text).sort((a, b) => b.ts - a.ts);
+  $("memlist").innerHTML = list.length ? list.map(r => `<div class="memrow"><div class="memwhen">${new Date(r.ts * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"})}${r.source ? ` · <span class="dim">${esc(r.source)}</span>` : ""}</div>
+    <div class="memtext">${esc(r.text)}</div><button class="ghost sm" onclick="forgetNote('${esc(r.key)}')">forget</button></div>`).join("")
+    : '<p class="dim">Empty. Ask the agent to remember something, e.g. "remember that I deploy on Fridays".</p>';
+}
+async function forgetNote(key) { if (!confirm("Forget this note on all devices?")) return; await api("/api/doc?key=" + encodeURIComponent(key), undefined, "DELETE"); loadMemory(); }
 
 // ── skills ──
 async function loadSkills() {
@@ -813,7 +832,7 @@ async function load() {
   $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["plugins", k.plugin || 0], ["models", cfg.models.length], ["devices", me.devices.length], ["synced", size(me.bytes)]]
     .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
   renderModels(); renderSecurity(); renderKeys(); loadThemes().catch(() => {});
-  await Promise.all([loadSkills(), loadSessions()]);
+  await Promise.all([loadSkills(), loadSessions(), loadMemory()]);
   tab(want);
 }
 load();

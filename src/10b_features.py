@@ -58,6 +58,53 @@ def repo_map(root, sub="", home=HOME, limit=12000):
     return text if len(text) <= limit else text[:limit] + f"\n… cut; use map with path=<subdir> ({len(lines)} files)"
 
 
+# ───────────────────────────── global memory ─────────────────────────────
+# Notes the agent keeps across every chat and device: one JSON file per note (synced as memory/<id>.json, so two devices never overwrite
+# each other). Newest notes go into the system prompt; the account page lists them all with their time.
+
+def mem_dir(home):
+    d = Path(home) / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def mem_list(home):
+    out = []
+    for p in mem_dir(home).glob("*.json"):
+        d = jload(p)
+        if d and d.get("text"):
+            out.append(dict(d, id=p.stem))
+    return sorted(out, key=lambda m: m.get("ts", 0), reverse=True)
+
+
+def mem_add(home, text, source=""):
+    text = " ".join(str(text).split())[:800]
+    if not text:
+        raise ValueError("empty note")
+    mid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    jsave(mem_dir(home) / f"{mid}.json", {"text": text, "ts": time.time(), "source": source[:80]})
+    return mid
+
+
+def mem_forget(home, mid):
+    p = mem_dir(home) / f"{re.sub(r'[^\w-]', '', mid)}.json"
+    if not p.exists():
+        raise ValueError(f"no memory note {mid}")
+    p.unlink()
+
+
+def mem_prompt(home, limit=30, cap=3000):
+    """Newest notes, for the system prompt. Bounded so memory never crowds the context."""
+    lines, used = [], 0
+    for m in mem_list(home)[:limit]:
+        line = f"- [{time.strftime('%Y-%m-%d', time.localtime(m['ts']))} {m['id']}] {m['text']}"
+        if used + len(line) > cap:
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines)
+
+
 # ───────────────────────────── checkpoints ─────────────────────────────
 # Before a turn first touches a file, its old content is kept; /undo restores the files and drops the turn from history.
 

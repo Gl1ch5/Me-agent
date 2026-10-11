@@ -75,6 +75,9 @@ class Agent:
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
+        mem = mem_prompt(self.s.home)
+        if mem:
+            extra += "\nGlobal memory (notes you kept earlier, newest first; use memory tool to add or forget):\n" + mem
         if "task" in {t["name"] for t in self.tool_schemas()}:
             extra += "\ntask agents: " + ", ".join(presets(self.s)) + "."
         mcp = self.s.config.get("mcp") or {}
@@ -261,6 +264,8 @@ class Agent:
             return False, veto, None
         if name == "todo":
             return self._todo(args)
+        if name == "memory":
+            return self._memory(args)
         if name == "task":
             return self._task(args, temit)
         need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
@@ -283,6 +288,20 @@ class Agent:
             raise
         except Exception as e:
             return False, f"error: {type(e).__name__}: {e}", None
+
+    def _memory(self, a):
+        try:
+            if a.get("forget"):
+                mem_forget(self.s.home, a["forget"])
+                self.s.save()
+                return True, f"forgot note {a['forget']}", None
+            if not str(a.get("text", "")).strip():
+                return False, "error: give text (to add) or forget (an id)", None
+            mid = mem_add(self.s.home, a["text"], source=self.session.get("title", ""))
+            self.s.save()
+            return True, f"remembered ({mid}) — it will be in every future chat", None
+        except ValueError as e:
+            return False, f"error: {e}", None
 
     # ─── todo / goal ───
     def _todo(self, a):

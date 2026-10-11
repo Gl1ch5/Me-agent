@@ -151,6 +151,13 @@ def main():
         except me.CloudError:
             pass
         print("ok   notify / personal Telegram bot validation")
+
+        # global memory: one document per note, synced like any other doc
+        c.req("PUT", "/api/doc", {"key": "memory/20260101-000000-abcd.json", "content": json.dumps({"text": "deploy on fridays", "ts": time.time()})})
+        keys = [d["key"] for d in c.req("GET", "/api/docs")]
+        assert "memory/20260101-000000-abcd.json" in keys
+        c.req("DELETE", "/api/doc?key=memory/20260101-000000-abcd.json")
+        print("ok   memory notes sync as memory/<id>.json")
         c.req("DELETE", f"/api/cloud/{w['id']}")
     finally:
         os.killpg(srv.pid, 9)

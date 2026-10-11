@@ -75,6 +75,8 @@ class Cloud:
             docs["theme/" + p.name] = p
         for p in (self.s.home / "agents").glob("*.md"):
             docs["agent/" + p.name] = p
+        for p in (self.s.home / "memory").glob("*.json"):
+            docs["memory/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -84,7 +86,8 @@ class Cloud:
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
         return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "theme": self.s.home / "themes" / name,
-                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json"),
+                "memory": self.s.home / "memory" / name}.get(kind)
 
     def sync(self):
         if not self.online:

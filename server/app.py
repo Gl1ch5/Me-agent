@@ -322,7 +322,7 @@ def sync(r: SyncReq, u=Depends(user)):
     return {"cursor": rev, "docs": out}
 
 
-KEY_RX = r"(config|skill/[\w.-]+|plugin/[\w.-]+\.py|theme/[\w.-]+\.json|agent/[\w.-]+\.md|session/[\w.-]+)"
+KEY_RX = r"(config|skill/[\w.-]+|plugin/[\w.-]+\.py|theme/[\w.-]+\.json|agent/[\w.-]+\.md|session/[\w.-]+|memory/[\w.-]+\.json)"
 
 
 def put_doc(uid, key, content, deleted=False):
