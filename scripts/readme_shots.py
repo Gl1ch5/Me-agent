@@ -37,10 +37,15 @@ def web_shots(b, token, ws, lang):
         pg = ctx.new_page()
         pg.goto(f"{T.SERVER}/app?ws={ws}")
         pg.wait_for_timeout(2500)
+        if W == 360:
+            pg.click("header .menu")
+            pg.wait_for_timeout(400)
+        pg.click("#slist .si")
+        pg.wait_for_timeout(2200)
         shoot(pg, f"app-chat-{lang}-{W}")
         if W == 360:
             pg.click("header .menu")
-            pg.wait_for_timeout(500)
+            pg.wait_for_timeout(600)
             shoot(pg, f"app-drawer-{lang}-{W}")
         for tab in (TABS if W == 1280 else ("overview", "models")):
             pg.goto(f"{T.SERVER}/account#{tab}")
@@ -129,6 +134,7 @@ def main():
         ws = c.req("POST", "/api/ws", {"name": "coffee-site"})["id"]
         w = c.req("POST", "/api/cloud", {"ws": ws})
         time.sleep(1.5)
+        drive(c, w["id"], "build a landing page for the coffee shop")
         drive(c, w["id"], "tool:todo " + json.dumps({"items": ["x read the brief", "x sketch layout", "> build index.html", "check 360px", "deploy preview"]}))
         drive(c, w["id"], "tool:write " + json.dumps({"path": "index.html", "content": "<!doctype html>\n<h1>Coffee</h1>\n<p>Fresh roasts.</p>\n"}))
         drive(c, w["id"], "ship the landing page", "goal", "goal")
