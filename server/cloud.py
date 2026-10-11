@@ -14,6 +14,7 @@ CLIENT = Path(os.environ.get("ME_CLIENT", Path(__file__).resolve().parent.parent
 API = os.environ.get("ME_INTERNAL_URL", "http://127.0.0.1:8790")
 MAX_WORKERS = int(os.environ.get("ME_MAX_WORKERS", "6"))
 IDLE_SECS = int(os.environ.get("ME_IDLE_SECS", "900"))
+PER_USER = int(os.environ.get("ME_PER_USER", "3"))
 WS_QUOTA = 100 * 1024 * 1024
 SANDBOX = shutil.which("bwrap") and os.environ.get("ME_SANDBOX", "1") == "1"
 
@@ -264,10 +265,13 @@ class Runner:
                     raise RuntimeError("cloud is busy — all sandboxes are working, try again in a minute")
                 idle[0].stop()
                 self.workers.pop(idle[0].id, None)
-            if len([w for w in self.of_user(uid)]) >= 2:
-                old = sorted(self.of_user(uid), key=lambda w: w.last)[0]
-                old.stop()
-                self.workers.pop(old.id, None)
+            mine = self.of_user(uid)
+            if len(mine) >= PER_USER:  # make room, but never interrupt a sandbox that is working
+                idle = sorted((w for w in mine if not w.busy), key=lambda w: w.last)
+                if not idle:
+                    raise RuntimeError(f"you already have {PER_USER} sandboxes working — wait for one to finish")
+                idle[0].stop()
+                self.workers.pop(idle[0].id, None)
             if not wid or not ws_exists(uid, wid):
                 wid = ws_create(uid, "cloud")["id"] if not wid else ws_create(uid, wid)["id"]
             w = Worker(uid, username, token_fn(), wid, session)
