@@ -2777,7 +2777,13 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
 
         def _authed(self):
             if not key:
-                return True
+                # local mode has no key: only a page served from this machine may talk to the agent
+                # (blocks other sites POSTing from the browser and DNS rebinding via a foreign Host)
+                host = self.headers.get("Host", "").rsplit(":", 1)[0].strip("[]")
+                origin = self.headers.get("Origin")
+                if host not in ("localhost", "127.0.0.1"):
+                    return False
+                return origin is None or origin in (f"http://localhost:{port}", f"http://127.0.0.1:{port}")
             return self.headers.get("Authorization", "") == "Bearer " + key
 
         def _route(self, method):
