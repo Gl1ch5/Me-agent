@@ -68,6 +68,8 @@ server/market/   built-in skills, plugins, themes and agents
 apps/            desktop (pywebview) and Android (WebView) shells
 tests/           test_core.py (offline) · test_cloud.py (needs a server) · test_restart.py · test_features.py (own server)
                  screenshots.py (playwright, every UI × 360/1280 × every theme) · measure_tokens.py (startup budget)
+scripts/promo/   promo clips: pty+pyte terminal recorder, local stand, playwright web scenes, ffmpeg assembly
+                 (scripts/build_promo.sh → dist/promo/; storyboards in docs/promo/SCRIPTS.md)
 ```
 
 Edit `src/`, run `python3 build.py`, then `python3 tests/test_core.py`.

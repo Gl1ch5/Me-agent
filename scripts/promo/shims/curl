@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Promo recording only: the public installer URL is rewritten to the local recording stand, so prod is never contacted."""
+import os, sys
+
+REAL = "/usr/bin/curl"
+host = os.environ.get("PROMO_SERVER", "")
+args = [host + a[len("https://me-agent.ru"):] if host and a.startswith("https://me-agent.ru") else a for a in sys.argv[1:]]
+os.execv(REAL, [REAL] + args)
