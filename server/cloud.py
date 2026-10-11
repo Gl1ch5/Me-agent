@@ -137,6 +137,9 @@ class Worker:
         self.last = time.time()
         self.proc = None
         self.on_event = None
+        self.watched = time.time()  # last time a client polled events (push only when nobody watches)
+        self.job = None  # background/scheduled job id driving this worker
+        self._fifo = None
         if meta:  # reattach after a server restart
             self.__dict__.update({k: meta[k] for k in ("id", "uid", "username", "wid", "session", "title", "started", "pid", "port")})
             self.seq = meta.get("seq", 0) + 1000  # jump ahead: clients holding an old cursor still get everything new
@@ -153,7 +156,6 @@ class Worker:
             self._spawn(token)
             if session:
                 self.send({"type": "load", "id": session})
-        self._fifo = None
         threading.Thread(target=self._tail, daemon=True).start()
 
     def _spawn(self, token):
@@ -165,7 +167,7 @@ class Worker:
         work.mkdir(parents=True, exist_ok=True)
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONUNBUFFERED": "1", "ME_YOLO": "1", "ME_WS_LOCAL": "1",
                "ME_WS_ID": wid, "ME_SERVER": API, "TERM": "dumb", "PORT": str(self.port), "ME_RPC_IN": "/run/me.in",
-               "ME_PREVIEW": f"{PUBLIC}/preview/{preview_token(uid, wid)}" if PUBLIC else ""}
+               "ME_PREVIEW": f"{PUBLIC or 'http://127.0.0.1:8790'}/preview/{preview_token(uid, wid)}"}
         inner = ["python3", "-I", "/opt/me.py" if SANDBOX else str(CLIENT), "--rpc"]
         limits = ["prlimit", "--as=4000000000", "--nproc=256", "--fsize=200000000", "--nofile=1024", "--", "nice", "-n", "10"]
         if SANDBOX:
@@ -269,9 +271,8 @@ class Worker:
     def send(self, cmd):
         self.last = time.time()
         try:
-            if self._fifo is None:
-                fd = os.open(self.dir / "in", os.O_WRONLY | os.O_NONBLOCK)
-                self._fifo = os.fdopen(fd, "w", encoding="utf-8")
+            if self._fifo is None:  # O_RDWR never blocks and never fails for lack of a reader: lines wait in the pipe until the sandbox reads
+                self._fifo = os.fdopen(os.open(self.dir / "in", os.O_RDWR), "w", encoding="utf-8")
             self._fifo.write(json.dumps(cmd) + "\n")
             self._fifo.flush()
         except (OSError, ValueError):
@@ -303,6 +304,10 @@ class Worker:
                 self.proc.wait(5)
             except Exception:
                 pass
+        try:
+            self._fifo and self._fifo.close()
+        except OSError:
+            pass
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def wait_events(self, after, timeout=25):
@@ -313,7 +318,8 @@ class Worker:
 
     def info(self):
         return {"id": self.id, "seq": self.seq, "session": self.session, "ws": self.wid, "busy": self.busy, "title": self.title,
-                "started": self.started, "last": self.last, "alive": self.alive, "port": self.port}
+                "started": self.started, "last": self.last, "alive": self.alive, "port": self.port, "job": self.job,
+                "preview": f"{PUBLIC}/preview/{preview_token(self.uid, self.wid)}" if PUBLIC else f"/preview/{preview_token(self.uid, self.wid)}"}
 
 
 RUN = DATA / "run" / "workers"

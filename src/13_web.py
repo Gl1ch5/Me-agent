@@ -1,6 +1,27 @@
 # ───────────────────────────── web ui server ─────────────────────────────
 
 WEBUI = "<!-- built into me.py by build.py -->"
+ICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0b0c10"/>'
+            '<rect x="146" y="146" width="220" height="220" rx="56" fill="#8b7cff"/></svg>')
+PWA_MANIFEST = {"name": "me", "short_name": "me", "description": "Your coding agent, everywhere", "start_url": "/app", "scope": "/",
+                "display": "standalone", "background_color": "#0b0c10", "theme_color": "#0b0c10",
+                "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}]}
+SW_JS = """self.addEventListener('install', e => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', () => {});
+self.addEventListener('push', e => {
+  let d = {}; try { d = e.data.json(); } catch (x) { d = {title: 'me', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'me', {body: d.body || '', tag: d.tag || 'me', data: {url: d.url || '/app'},
+    icon: '/icon.svg', badge: '/icon.svg', renotify: true}));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = e.notification.data && e.notification.data.url || '/app';
+  e.waitUntil(clients.matchAll({type: 'window', includeUncontrolled: true}).then(ws => {
+    for (const w of ws) if (w.url.includes('/app') || w.url.endsWith('/')) { w.focus(); return w.navigate(url); }
+    return clients.openWindow(url);
+  }));
+});"""
 
 
 class WebSession:
@@ -43,7 +64,8 @@ class WebSession:
         return self.waits.pop(rid)[1]
 
     def confirm(self, name, args):
-        return bool(self._wait("confirm", name=name, args=args))
+        r = self._wait("confirm", name=name, args=args)
+        return "always" if r == "always" else bool(r)
 
     def ask(self, q, options=None):
         return self._wait("ask", text=q, options=options) or ""
@@ -53,7 +75,8 @@ class WebSession:
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
-                "pending": [w[2] for w in list(self.waits.values())],
+                "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
+                "day_cost": day_cost(self.s.home), "preview": "",
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
@@ -70,13 +93,32 @@ class WebSession:
                     self.cond.wait(25)
                 evs = [e for e in self.events if e["seq"] > after]
             return {"events": evs, "state": {"busy": a.busy}}
-        if path == "/prompt":
+        if path in ("/prompt", "/goal"):
             if a.busy:
                 raise ValueError("still working")
-            self.push({"type": "user", "text": body["text"]})
+            self.push({"type": "user", "text": ("/goal " if path == "/goal" else "") + body["text"]})
             if not a.session.get("ws") and self.cloud.online:
                 a.session["ws"] = self.ws.for_dir(os.getcwd())
-            threading.Thread(target=a.run, args=(body["text"],), daemon=True).start()
+            if path == "/goal":
+                threading.Thread(target=a.goal, args=(body["text"],), daemon=True).start()
+            else:
+                threading.Thread(target=a.run, args=(body["text"], body.get("images") or ()), daemon=True).start()
+            return {"ok": True}
+        if path == "/undo":
+            r = a.undo()
+            if not r["ok"]:
+                raise ValueError(r["text"])
+            return r
+        if path == "/upload":  # attachments from the browser land in the project folder
+            d = Path(os.getcwd()) / "uploads"
+            d.mkdir(exist_ok=True)
+            name = re.sub(r"[^\w.-]+", "_", body["name"])[:80] or "file"
+            (d / name).write_bytes(base64.b64decode(body["b64"]))
+            return {"path": f"uploads/{name}"}
+        if path == "/perm":
+            st = self.s.config["settings"]
+            st["perm"], st["yolo"] = body["mode"], False
+            self.s.save()
             return {"ok": True}
         if path == "/cancel":
             a.cancel.set()
@@ -180,6 +222,12 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
             path = self.path
             if method == "GET" and (path == "/" or path.startswith("/?")):
                 return self._send(200, WEBUI.replace("__MODE__", "local").encode(), "text/html; charset=utf-8")
+            if path == "/manifest.webmanifest":
+                return self._send(200, json.dumps(dict(PWA_MANIFEST, start_url="/")).encode(), "application/manifest+json")
+            if path == "/sw.js":
+                return self._send(200, SW_JS.encode(), "text/javascript")
+            if path == "/icon.svg":
+                return self._send(200, ICON_SVG.encode(), "image/svg+xml")
             if not path.startswith("/api/agent"):
                 return self._send(404, {"detail": "not found"})
             if not self._authed():

@@ -1,30 +1,34 @@
 # ───────────────────────────── tools ─────────────────────────────
 
+def _obj(props, req):
+    return {"type": "object", "properties": {k: ({"type": v} if isinstance(v, str) else v) for k, v in props.items()}, "required": req}
+
+
 TOOLS = [
-    {"name": "read", "description": "Read file (text/code/pdf/docx/xlsx/pptx/ipynb/image) or list dir. Lines numbered.",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}},
-                    "required": ["path"]}},
-    {"name": "write", "description": "Create/overwrite file.",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-    {"name": "edit", "description": "Replace exact unique text in file (all=true: every match).",
-     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
-                                                     "all": {"type": "boolean"}}, "required": ["path", "old", "new"]}},
-    {"name": "bash", "description": "Run shell command in cwd.",
-     "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}, "timeout": {"type": "integer", "description": "sec, default 120"}},
-                    "required": ["cmd"]}},
-    {"name": "ls", "description": "Glob files, e.g. src/**/*.py.",
-     "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}},
-    {"name": "grep", "description": "Regex search in files.",
-     "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}},
-                    "required": ["pattern"]}},
-    {"name": "web_search", "description": "Search the web; returns answer with sources.",
-     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "web_fetch", "description": "Fetch URL as text.",
-     "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}},
-    {"name": "skill", "description": "Use a skill: no action → its guide+actions; else run action with args.",
-     "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "action": {"type": "string"}, "args": {"type": "object"}},
-                    "required": ["name"]}},
+    {"name": "read", "description": "Read file (code/pdf/office/image) or dir; numbered lines.",
+     "parameters": _obj({"path": "string", "offset": "integer", "limit": "integer"}, ["path"])},
+    {"name": "write", "description": "Create/overwrite file.", "parameters": _obj({"path": "string", "content": "string"}, ["path", "content"])},
+    {"name": "edit", "description": "Replace exact old→new (all: every match); lines='a-b' replaces those lines; edits=[{old,new},…] for several.",
+     "parameters": _obj({"path": "string", "old": "string", "new": "string", "all": "boolean", "lines": "string",
+                         "edits": {"type": "array", "items": {"type": "object"}}}, ["path"])},
+    {"name": "bash", "description": "Run shell command in cwd.", "parameters": _obj({"cmd": "string", "timeout": "integer"}, ["cmd"])},
+    {"name": "ls", "description": "Glob files, e.g. src/**/*.py. pattern=map: repo map (files+symbols).",
+     "parameters": _obj({"pattern": "string"}, ["pattern"])},
+    {"name": "grep", "description": "Regex search in files.", "parameters": _obj({"pattern": "string", "path": "string", "glob": "string"}, ["pattern"])},
+    {"name": "web_search", "description": "Search the web.", "parameters": _obj({"query": "string"}, ["query"])},
+    {"name": "web_fetch", "description": "Fetch URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
+    {"name": "skill", "description": "Use a skill: no action → guide.", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
+    {"name": "todo", "description": "Set your checklist (whole list). Prefix: 'x ' done, '> ' doing.",
+     "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}}, ["items"])},
+    {"name": "task", "description": "Run a subagent on a self-contained job; returns its report.",
+     "parameters": _obj({"agent": "string", "prompt": "string"}, ["prompt"])},
 ]
+# tools added only when usable (keeps the idle prompt small)
+NOTIFY_TOOL = {"name": "notify", "description": "Send the user a message/file via their Telegram.",
+               "parameters": _obj({"text": "string", "file": "string"}, ["text"])}
+MCP_TOOL = {"name": "mcp", "description": "Use an MCP server: no tool → its tools; else call tool with args.",
+            "parameters": _obj({"server": "string", "tool": "string", "args": "object"}, ["server"])}
+READONLY_TOOLS = {"read", "ls", "grep", "web_search", "web_fetch"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", "dist", "build", ".next", ".idea"}
 
 
@@ -39,9 +43,22 @@ def walk_files(root, limit=20000):
                 return
 
 
-def run_shell(cmd, timeout, cancel):
+def shell_env(secrets):
+    """The user's secrets as env vars; with GITHUB_TOKEN, git can clone/push github.com without any setup."""
+    env = dict(os.environ, **{k: str(v) for k, v in (secrets or {}).items() if re.fullmatch(r"[A-Za-z_]\w*", k)})
+    tok = env.get("GITHUB_TOKEN") or env.get("GH_TOKEN")
+    if tok:
+        env.setdefault("GH_TOKEN", tok)
+        n = int(env.get("GIT_CONFIG_COUNT") or 0)
+        env.update({f"GIT_CONFIG_KEY_{n}": "credential.https://github.com.helper",
+                    f"GIT_CONFIG_VALUE_{n}": '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f',
+                    "GIT_CONFIG_COUNT": str(n + 1), "GIT_TERMINAL_PROMPT": "0"})
+    return env
+
+
+def run_shell(cmd, timeout, cancel, env=None):
     kw = {} if WIN else {"start_new_session": True}
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kw)
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
     out = []
     threading.Thread(target=lambda: out.append(proc.stdout.read()), daemon=True).start()
     t0 = time.time()

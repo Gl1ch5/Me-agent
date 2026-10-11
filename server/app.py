@@ -67,7 +67,12 @@ CREATE TABLE IF NOT EXISTS tg_links(chat_id INTEGER PRIMARY KEY, user_id INTEGER
 CREATE INDEX IF NOT EXISTS docs_rev ON docs(user_id, rev);
 """)
 
-for col, ddl in (("kind", "TEXT DEFAULT 'skill'"), ("is_default", "INTEGER DEFAULT 0")):
+conn.executescript("""
+CREATE TABLE IF NOT EXISTS market_versions(mid INTEGER, version INTEGER, content TEXT, note TEXT, created REAL, PRIMARY KEY(mid, version));
+CREATE TABLE IF NOT EXISTS ratings(mid INTEGER, user_id INTEGER, stars INTEGER, ts REAL, PRIMARY KEY(mid, user_id));
+CREATE TABLE IF NOT EXISTS installs(user_id INTEGER, mid INTEGER, version INTEGER, hash TEXT, auto INTEGER DEFAULT 1, ts REAL, PRIMARY KEY(user_id, mid));
+""")
+for col, ddl in (("kind", "TEXT DEFAULT 'skill'"), ("is_default", "INTEGER DEFAULT 0"), ("version", "INTEGER DEFAULT 1")):
     try:
         conn.execute(f"ALTER TABLE market ADD COLUMN {col} {ddl}")
     except sqlite3.OperationalError:
@@ -76,6 +81,11 @@ try:
     conn.execute("ALTER TABLE users ADD COLUMN seeded INTEGER DEFAULT 0")
 except sqlite3.OperationalError:
     pass
+if "bot" not in [r[1] for r in conn.execute("PRAGMA table_info(tg_links)")]:  # a chat may link to the global bot and a personal bot
+    conn.executescript("""BEGIN;
+CREATE TABLE tg_links2(chat_id INTEGER, user_id INTEGER, created REAL, bot TEXT DEFAULT '', PRIMARY KEY(chat_id, bot));
+INSERT INTO tg_links2(chat_id,user_id,created,bot) SELECT chat_id,user_id,created,'' FROM tg_links;
+DROP TABLE tg_links; ALTER TABLE tg_links2 RENAME TO tg_links; COMMIT;""")
 
 
 def setting(key, value=None):
@@ -211,7 +221,12 @@ def me(u=Depends(user)):
     skills = [r["key"][6:] for r in conn.execute("SELECT key FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'skill/%' ORDER BY key",
                                                   (u["id"],))]
     return {"username": u["username"], "admin": bool(u["admin"]), "totp_enabled": bool(u["totp_on"]), "created": u["created"],
-            "docs": st["n"], "bytes": st["s"], "kinds": kinds, "devices": devices, "skills": skills}
+            "docs": st["n"], "bytes": st["s"], "kinds": kinds, "devices": devices, "skills": skills,
+            "push": bool(conn.execute("SELECT 1 FROM push_subs WHERE user_id=?", (u["id"],)).fetchone()) if _has("push_subs") else False}
+
+
+def _has(table):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone())
 
 
 class Code(BaseModel):
@@ -385,13 +400,48 @@ def skill_meta(content):
 class Publish(BaseModel):
     content: str
     ext: str = "py"
+    note: str = ""
 
 
 @app.get("/api/market")
-def market(q: str = "", kind: str = ""):
-    rows = conn.execute("SELECT id,name,author,description,icon,color,ext,installs,updated,kind FROM market ORDER BY installs DESC, updated DESC").fetchall()
+def market(q: str = "", kind: str = "", sort: str = ""):
+    rows = conn.execute("""SELECT m.id,m.name,m.author,m.description,m.icon,m.color,m.ext,m.installs,m.updated,m.kind,m.version,
+        (SELECT AVG(stars) FROM ratings r WHERE r.mid=m.id) rating, (SELECT COUNT(*) FROM ratings r WHERE r.mid=m.id) votes
+        FROM market m ORDER BY installs DESC, updated DESC""").fetchall()
     q = q.lower()
-    return [dict(r) for r in rows if (not q or q in (r["name"] + " " + (r["description"] or "")).lower()) and (not kind or r["kind"] == kind)]
+    out = [dict(r, rating=round(r["rating"], 2) if r["rating"] else None) for r in rows
+           if (not q or q in (r["name"] + " " + (r["description"] or "")).lower()) and (not kind or r["kind"] == kind)]
+    if sort == "rating":
+        out.sort(key=lambda r: (-(r["rating"] or 0), -r["votes"]))
+    elif sort == "new":
+        out.sort(key=lambda r: -r["updated"])
+    return out
+
+
+def chash(c):
+    return hashlib.sha256((c or "").encode()).hexdigest()[:20]
+
+
+def new_version(mid, content, note=""):
+    """Content changed: bump the version, keep history (last 20), and update every install that opted into auto-update
+    and was not edited by its user since installing."""
+    v = conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM market_versions WHERE mid=?", (mid,)).fetchone()[0]
+    conn.execute("INSERT INTO market_versions VALUES(?,?,?,?,?)", (mid, v, content, note[:300], time.time()))
+    conn.execute("DELETE FROM market_versions WHERE mid=? AND version<=?", (mid, v - 20))
+    conn.execute("UPDATE market SET version=? WHERE id=?", (v, mid))
+    r = conn.execute("SELECT * FROM market WHERE id=?", (mid,)).fetchone()
+    key = doc_key_for(r)
+    for i in conn.execute("SELECT * FROM installs WHERE mid=? AND auto=1", (mid,)).fetchall():
+        d = conn.execute("SELECT content, deleted FROM docs WHERE user_id=? AND key=?", (i["user_id"], key)).fetchone()
+        if d and not d["deleted"] and chash(d["content"]) == i["hash"]:
+            put_doc(i["user_id"], key, content)
+            conn.execute("UPDATE installs SET version=?, hash=?, ts=? WHERE user_id=? AND mid=?", (v, chash(content), time.time(), i["user_id"], mid))
+    return v
+
+
+def record_install(uid, r):
+    conn.execute("INSERT OR REPLACE INTO installs(user_id,mid,version,hash,auto,ts) VALUES(?,?,?,?,COALESCE((SELECT auto FROM installs "
+                 "WHERE user_id=? AND mid=?),1),?)", (uid, r["id"], r["version"] or 1, chash(r["content"]), uid, r["id"], time.time()))
 
 
 def doc_key_for(r):
@@ -404,6 +454,7 @@ def seed_user(uid):
     for r in conn.execute("SELECT * FROM market WHERE is_default=1"):
         if not conn.execute("SELECT 1 FROM docs WHERE user_id=? AND key=?", (uid, doc_key_for(r))).fetchone():
             put_doc(uid, doc_key_for(r), r["content"])
+            record_install(uid, r)
     conn.execute("UPDATE users SET seeded=1 WHERE id=?", (uid,))
 
 
@@ -433,12 +484,15 @@ def market_publish(p: Publish, u=Depends(user)):
         raise HTTPException(409, "name taken by another author")
     now = time.time()
     if cur:
+        old = conn.execute("SELECT id, content FROM market WHERE name=?", (name,)).fetchone()
         conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,updated=?,kind=? WHERE name=?",
                      (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, kind, name))
+        v = new_version(old["id"], p.content, p.note) if old["content"] != p.content else None
     else:
-        conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                     (name, u["username"], u["id"], meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, now, kind))
-    return {"ok": True, "name": name}
+        c = conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,created,updated,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                         (name, u["username"], u["id"], meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), ext, p.content, now, now, kind))
+        v = new_version(c.lastrowid, p.content, p.note or "first release")
+    return {"ok": True, "name": name, "version": v}
 
 
 @app.post("/api/market/{mid}/install")
@@ -447,7 +501,54 @@ def market_install(mid: int, u=Depends(user)):
     if not r:
         raise HTTPException(404)
     put_doc(u["id"], doc_key_for(r), r["content"])
-    conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (mid,))
+    if not conn.execute("SELECT 1 FROM installs WHERE user_id=? AND mid=?", (u["id"], mid)).fetchone():
+        conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (mid,))
+    record_install(u["id"], r)
+    return {"ok": True, "version": r["version"]}
+
+
+class Rate(BaseModel):
+    stars: int
+
+
+@app.post("/api/market/{mid}/rate")
+def market_rate(mid: int, r: Rate, u=Depends(user)):
+    if not 1 <= r.stars <= 5:
+        raise HTTPException(400, "1-5 stars")
+    if not conn.execute("SELECT 1 FROM market WHERE id=?", (mid,)).fetchone():
+        raise HTTPException(404)
+    conn.execute("INSERT OR REPLACE INTO ratings VALUES(?,?,?,?)", (mid, u["id"], r.stars, time.time()))
+    a = conn.execute("SELECT AVG(stars) a, COUNT(*) n FROM ratings WHERE mid=?", (mid,)).fetchone()
+    return {"rating": round(a["a"], 2), "votes": a["n"]}
+
+
+@app.get("/api/market/{mid}/versions")
+def market_versions(mid: int):
+    return [dict(r) for r in conn.execute("SELECT version, note, created, length(content) size FROM market_versions WHERE mid=? ORDER BY version DESC", (mid,))]
+
+
+@app.get("/api/installed")
+def installed(u=Depends(user)):
+    """What this user installed from the marketplace: version, auto-update, whether a newer version or a local edit exists."""
+    out = []
+    for i in conn.execute("""SELECT i.*, m.name, m.kind, m.version latest, m.content, m.ext FROM installs i JOIN market m ON m.id=i.mid
+                             WHERE i.user_id=?""", (u["id"],)).fetchall():
+        d = conn.execute("SELECT content, deleted FROM docs WHERE user_id=? AND key=?", (u["id"], doc_key_for(i))).fetchone()
+        if not d or d["deleted"]:
+            continue
+        mine = conn.execute("SELECT stars FROM ratings WHERE mid=? AND user_id=?", (i["mid"], u["id"])).fetchone()
+        out.append({"mid": i["mid"], "name": i["name"], "kind": i["kind"], "version": i["version"], "latest": i["latest"], "auto": bool(i["auto"]),
+                    "edited": chash(d["content"]) != i["hash"], "stars": mine["stars"] if mine else None})
+    return out
+
+
+class Auto(BaseModel):
+    on: bool
+
+
+@app.post("/api/market/{mid}/auto")
+def market_auto(mid: int, a: Auto, u=Depends(user)):
+    conn.execute("UPDATE installs SET auto=? WHERE user_id=? AND mid=?", (int(a.on), u["id"], mid))
     return {"ok": True}
 
 
@@ -467,14 +568,25 @@ def seed_market():
         now = time.time()
         vals = (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), p.suffix[1:], c,
                 meta.get("kind") if meta.get("kind") in ("plugin", "theme", "agent") else "skill", int(meta.get("default") == "true"))
-        if conn.execute("SELECT 1 FROM market WHERE name=?", (meta["name"],)).fetchone():
+        cur = conn.execute("SELECT id, content, user_id FROM market WHERE name=?", (meta["name"],)).fetchone()
+        if cur:
+            if cur["user_id"] != 0 or cur["content"] == c:
+                if not conn.execute("SELECT 1 FROM market_versions WHERE mid=?", (cur["id"],)).fetchone():
+                    new_version(cur["id"], cur["content"], "initial")
+                continue  # unchanged built-in (or the name belongs to a user): keep its timestamp and version
             conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,kind=?,is_default=?,updated=? WHERE name=? AND user_id=0",
                          (*vals, now, meta["name"]))
+            new_version(cur["id"], c, meta.get("changes", "updated"))
         else:
-            conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,kind,is_default,created,updated) "
-                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (meta["name"], "me", 0, *vals, now, now))
+            ins = conn.execute("INSERT INTO market(name,author,user_id,description,icon,color,ext,content,kind,is_default,created,updated) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (meta["name"], "me", 0, *vals, now, now))
+            new_version(ins.lastrowid, c, "first release")
     for r in conn.execute("SELECT id FROM users WHERE seeded=0").fetchall():
         seed_user(r["id"])
+    if not conn.execute("SELECT 1 FROM installs LIMIT 1").fetchone():  # first run with versions: adopt existing installs
+        for m in conn.execute("SELECT * FROM market").fetchall():
+            for d in conn.execute("SELECT user_id, content FROM docs WHERE key=? AND deleted=0", (doc_key_for(m),)).fetchall():
+                conn.execute("INSERT OR IGNORE INTO installs VALUES(?,?,?,?,1,?)", (d["user_id"], m["id"], m["version"] or 1, chash(d["content"]), time.time()))
 
 
 seed_market()
@@ -595,3 +707,4 @@ async def _threads():
 
 
 import routes_cloud  # noqa: E402,F401  (registers workspace/cloud/telegram/admin routes)
+import features  # noqa: E402,F401  (push, jobs, preview, personal Telegram bots, GitHub, notify)

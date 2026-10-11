@@ -57,6 +57,8 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 .row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .hidden{display:none!important}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.star{padding:2px 6px!important;font-size:16px!important;border:none!important}
+.ghost-a{background:none!important;color:var(--dim)!important;border:1px solid var(--line)}
 .sk{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--bg);display:flex;flex-direction:column;gap:8px}
 .sk .t{display:flex;align-items:center;gap:10px;font:600 14px var(--mono)}
 .sk .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:15px;flex-shrink:0}
@@ -181,8 +183,18 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
   <div data-pane="cloud">
     <div class="card"><div class="row"><div><h2 style="margin:0">cloud sandbox</h2><p class="dim" style="margin-top:4px">Each cloud session runs <code>me</code> in an isolated sandbox with your workspace files. Idle sandboxes stop after 15 min; your work stays synced.</p></div>
       <a class="btn-a" href="/app">open web app →</a></div><table id="workers" style="margin-top:14px"></table></div>
+    <div class="card"><div class="row"><h2 style="margin:0">background &amp; scheduled tasks</h2><button class="sm" onclick="editJob()">+ new task</button></div>
+      <p class="dim" style="margin:6px 0 10px">"Do X and tell me when it's done": a task runs in a sandbox even after you close the page, then reports to Telegram (or a push). Add a schedule to repeat it.</p>
+      <table id="jobs"></table></div>
     <div class="card"><div class="row"><h2 style="margin:0">telegram</h2><span id="tgstate"></span></div>
-      <p class="dim" style="margin:6px 0 10px">Chat with your agent from Telegram — text or voice. Tasks run in your cloud sandbox.</p><div id="tgbody"></div></div>
+      <p class="dim" style="margin:6px 0 10px">Your own bot: create one with <a href="https://t.me/BotFather" target="_blank" style="color:var(--a)">@BotFather</a> (/newbot), paste its token here, then connect. Chat with your agent from it (text or voice), and the agent's <code>notify</code> tool sends you messages and files through it.</p>
+      <div id="tgbody"></div></div>
+    <div class="card"><div class="row"><h2 style="margin:0">notifications</h2><span id="pushstate"></span></div>
+      <p class="dim" style="margin:6px 0 10px">Push to this browser or phone (install the web app to the home screen on iOS): "done" when a task finishes while you are away, "waiting for you" when the agent asks.</p>
+      <div class="btns" style="margin-top:0"><button id="pushon" onclick="pushOn()">turn on here</button><button class="ghost" onclick="pushTest()">send a test</button><button class="ghost" onclick="pushOff()">turn off everywhere</button></div></div>
+    <div class="card"><div class="row"><h2 style="margin:0">github</h2><span id="ghstate"></span></div>
+      <p class="dim" style="margin:6px 0 10px">A <a href="https://github.com/settings/tokens?type=beta" target="_blank" style="color:var(--a)">fine-grained token</a> (contents + pull requests: read/write). The agent can then clone, branch, commit, push and open PRs; clone a repo into a workspace from the workspaces tab.</p>
+      <div id="ghbody"></div></div>
     <div class="card"><h2>local web UI</h2><p class="dim">Same interface, agent on your own machine: <code>me web</code> → opens <code>localhost:8080</code>. On Android use Termux: <code>pkg install python</code>, then the install command.</p></div>
   </div>
 
@@ -197,7 +209,7 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
   <div data-pane="workspaces">
     <div class="card"><h2>workspaces</h2><p class="dim" style="margin-bottom:12px">Project folders synced between your machines and the cloud. Code files ≤ 1 MB; heavy, binary and .gitignored files stay local.</p>
       <table id="wslist"></table></div>
-    <div class="card hidden" id="wsview"><div class="row"><h2 style="margin:0" id="wsname"></h2><div class="btns" style="margin:0"><a class="btn-a sm" id="wsopen">open in cloud →</a><button class="danger sm" id="wsdel">delete</button></div></div>
+    <div class="card hidden" id="wsview"><div class="row"><h2 style="margin:0" id="wsname"></h2><div class="btns" style="margin:0"><a class="btn-a sm" id="wsopen">open in cloud →</a><a class="btn-a sm ghost-a" id="wsprev" target="_blank">preview</a><button class="ghost sm" id="wsclone">clone repo</button><button class="danger sm" id="wsdel">delete</button></div></div>
       <div class="ftree"><div id="wsfiles"></div><pre id="wsfile" class="fview">select a file</pre></div></div>
   </div>
 
@@ -205,7 +217,7 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
     <div class="card">
       <div class="row"><div><h2 style="margin:0">skills marketplace</h2><p class="dim" style="margin-top:4px">Install in one click — it lands on all your machines on next sync.</p></div>
         <button class="ghost sm" onclick="publish()">publish a skill</button></div>
-      <div class="row" style="margin-top:14px;flex-wrap:nowrap"><div class="switch" id="mkind"><button class="on" data-k="skill">skills</button><button data-k="agent">agents</button><button data-k="plugin">plugins</button><button data-k="theme">themes</button></div><input id="mq" placeholder="search…"></div>
+      <div class="row" style="margin-top:14px;flex-wrap:nowrap"><div class="switch" id="mkind"><button class="on" data-k="skill">skills</button><button data-k="agent">agents</button><button data-k="plugin">plugins</button><button data-k="theme">themes</button></div><input id="mq" placeholder="search…"><select id="msort" style="width:auto"><option value="">popular</option><option value="rating">top rated</option><option value="new">new</option></select></div>
       <div class="grid" id="mk" style="margin-top:14px"></div>
     </div>
   </div>
@@ -526,15 +538,79 @@ async function loadCloud() {
     `<tr><td>${esc(w.title || w.session || "—")}</td><td class="dim">${esc(w.ws)}</td><td>${w.busy ? '<span class="tag a">working</span>' : '<span class="tag on">idle</span>'}</td>
      <td class="dim">${ago(w.last)}</td><td style="text-align:right;white-space:nowrap"><a class="btn-a sm" href="/app?s=${esc(w.session || "")}">open</a> <button class="ghost sm" onclick="stopWorker('${w.id}')">stop</button></td></tr>`).join("")
     : '<tr><td class="dim">No sandboxes running. Open the web app or message the Telegram bot to start one.</td></tr>';
-  const t = await api("/api/tg");
-  $("tgstate").innerHTML = t.linked ? '<span class="tag on">connected</span>' : '<span class="tag">not connected</span>';
-  $("tgbody").innerHTML = !t.bot ? '<p class="dim">The admin has not configured a bot yet.</p>'
-    : t.linked ? `<div class="btns"><a class="btn-a" href="https://t.me/${esc(t.bot)}" target="_blank">open @${esc(t.bot)}</a><button class="ghost" onclick="tgUnlink()">disconnect</button></div>`
-    : `<div class="btns"><button onclick="tgLink()">connect @${esc(t.bot)}</button></div>`;
+  loadJobs(); loadTg(); loadGh(); renderPush();
 }
+async function loadTg() {
+  const t = await api("/api/tg");
+  $("tgstate").innerHTML = t.own_linked || t.linked ? '<span class="tag on">connected</span>' : '<span class="tag">not connected</span>';
+  const own = t.own
+    ? `<div class="btns" style="margin-top:0"><span>your bot <b>@${esc(t.own)}</b></span>${t.own_linked ? `<a class="btn-a sm" href="https://t.me/${esc(t.own)}" target="_blank">open</a>` : `<button class="sm" onclick="tgLink(true)">connect this chat</button>`}<button class="ghost sm" onclick="tgBotDel()">remove bot</button></div>`
+    : `<div class="row" style="flex-wrap:nowrap"><input id="tgown" type="password" onfocus="this.type='text'" placeholder="your bot token 123456789:AA…"><button onclick="tgBotSet()">save</button></div><div class="err" id="tgerr"></div>`;
+  const glob = t.bot ? `<p class="dim" style="margin-top:12px;font-size:12.5px">or the shared bot @${esc(t.bot)}: ${t.linked ? `connected · <a href="#" onclick="tgUnlink();return false" style="color:var(--a)">disconnect</a>` : `<a href="#" onclick="tgLink(false);return false" style="color:var(--a)">connect</a>`}</p>` : "";
+  $("tgbody").innerHTML = own + glob;
+}
+async function tgBotSet() {
+  try { const r = await api("/api/tg/bot", {token: $("tgown").value.trim()}); toast("@" + r.username + " is running"); if (r.url) window.open(r.url, "_blank"); setTimeout(loadTg, 6000); loadTg(); }
+  catch (e) { $("tgerr").textContent = e.message; }
+}
+async function tgBotDel() { if (!confirm("Remove your bot?")) return; await api("/api/tg/bot", undefined, "DELETE"); loadTg(); }
 async function stopWorker(id) { await api("/api/cloud/" + id, undefined, "DELETE"); loadCloud(); }
-async function tgLink() { const r = await api("/api/tg/link", {}); window.open(r.url, "_blank"); setTimeout(loadCloud, 8000); }
-async function tgUnlink() { await api("/api/tg/link", undefined, "DELETE"); loadCloud(); }
+async function tgLink(own) { const r = await api("/api/tg/link", {own: !!own}); window.open(r.url, "_blank"); setTimeout(loadTg, 8000); }
+async function tgUnlink() { await api("/api/tg/link", undefined, "DELETE"); loadTg(); }
+// ── jobs ──
+async function loadJobs() {
+  const js = await api("/api/jobs");
+  const st = j => j.status === "running" ? '<span class="tag a">running</span>' : j.status === "done" ? '<span class="tag on">done</span>' : j.status === "error" ? '<span class="tag" style="color:var(--err)">error</span>' : '<span class="tag">waiting</span>';
+  $("jobs").innerHTML = js.length ? "<tr><th>task</th><th>schedule</th><th>state</th><th>next</th><th></th></tr>" + js.map(j =>
+    `<tr><td><b>${esc(j.name)}</b>${j.result ? `<div class="dim" style="font-size:12px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.result)}</div>` : ""}</td>
+     <td class="dim"><code>${esc(j.cron || "once")}</code></td><td>${st(j)}${j.enabled ? "" : ' <span class="tag">paused</span>'}</td>
+     <td class="dim" style="white-space:nowrap">${j.enabled && j.next ? new Date(j.next * 1000).toLocaleString([], {dateStyle: "short", timeStyle: "short"}) : "—"}</td>
+     <td style="text-align:right;white-space:nowrap">${j.session ? `<a class="btn-a sm" href="/app?s=${esc(j.session)}">open</a> ` : ""}<button class="ghost sm" onclick="jobAct(${j.id},'run')">run now</button>
+     ${j.cron ? `<button class="ghost sm" onclick="jobAct(${j.id},'toggle')">${j.enabled ? "pause" : "resume"}</button>` : ""} <button class="danger sm" onclick="jobDel(${j.id})">delete</button></td></tr>`).join("")
+    : '<tr><td class="dim">No tasks yet.</td></tr>';
+}
+async function editJob() {
+  const ws = await api("/api/ws").catch(() => []);
+  modal(`<h2>new task</h2><label>what to do</label><textarea id="jp" rows="6" placeholder="e.g. Check the site for broken links and send me the report"></textarea>
+    <div class="f2"><div><label>workspace</label><select id="jw"><option value="">new sandbox folder</option>${ws.map(w => `<option value="${esc(w.id)}">${esc(w.name)}</option>`).join("")}</select></div>
+    <div><label>repeat (cron, your time · blank = once now)</label><input id="jc" placeholder="0 9 * * 1-5"></div></div>
+    <p class="dim" style="font-size:12px;margin-top:8px"><code>0 9 * * 1-5</code> weekdays 9:00 · <code>*/30 * * * *</code> every 30 min · <code>0 20 * * 0</code> Sundays 20:00</p>
+    <div class="btns"><button onclick="saveJob()">start</button><button class="ghost" onclick="closeModal()">cancel</button></div><div class="err" id="je"></div>`);
+}
+async function saveJob() {
+  try { await api("/api/jobs", {prompt: $("jp").value, cron: $("jc").value.trim(), ws: $("jw").value, tz: -new Date().getTimezoneOffset()}); closeModal(); toast("task scheduled"); loadJobs(); }
+  catch (e) { $("je").textContent = e.message; }
+}
+async function jobAct(id, a) { await api(`/api/jobs/${id}/${a}`, {}); toast(a === "run" ? "started" : "updated"); setTimeout(loadJobs, 600); }
+async function jobDel(id) { if (!confirm("Delete this task?")) return; await api("/api/jobs/" + id, undefined, "DELETE"); loadJobs(); }
+// ── push ──
+function renderPush() {
+  const ok = "serviceWorker" in navigator && "PushManager" in window;
+  $("pushstate").innerHTML = me.push ? '<span class="tag on">on</span>' : '<span class="tag">off</span>';
+  $("pushon").disabled = !ok; if (!ok) $("pushon").textContent = "not supported in this browser";
+}
+async function pushOn() {
+  try {
+    const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
+    if (await Notification.requestPermission() !== "granted") return toast("notifications are blocked in the browser settings");
+    const {key} = await api("/api/push/key");
+    const b = atob(key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - key.length % 4) % 4));
+    const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: Uint8Array.from(b, c => c.charCodeAt(0))});
+    await api("/api/push/subscribe", sub.toJSON()); me.push = true; renderPush(); toast("notifications on");
+  } catch (e) { toast("notifications: " + e.message); }
+}
+async function pushTest() { const r = await api("/api/push/test", {}); toast(r.sent ? "sent — check your notifications" : "no subscribed devices yet"); }
+async function pushOff() { await api("/api/push", undefined, "DELETE"); me.push = false; renderPush(); toast("notifications off"); }
+// ── github ──
+async function loadGh() {
+  const g = await api("/api/github");
+  $("ghstate").innerHTML = g.connected ? `<span class="tag on">${esc(g.login || "connected")}</span>` : '<span class="tag">not connected</span>';
+  $("ghbody").innerHTML = g.connected
+    ? `<div class="btns" style="margin-top:0">${g.error ? `<span class="err">${esc(g.error)}</span>` : `<span>signed in as <b>${esc(g.login)}</b></span>`}<button class="ghost sm" onclick="ghOff()">disconnect</button></div>`
+    : `<div class="row" style="flex-wrap:nowrap"><input id="ghtok" type="password" onfocus="this.type='text'" placeholder="github_pat_…"><button onclick="ghOn()">connect</button></div><div class="err" id="ghe"></div>`;
+}
+async function ghOn() { try { const r = await api("/api/github", {token: $("ghtok").value.trim()}); toast("GitHub: " + r.login); await loadCfg(); loadGh(); } catch (e) { $("ghe").textContent = e.message; } }
+async function ghOff() { await api("/api/github", undefined, "DELETE"); await loadCfg(); loadGh(); }
 
 // ── workspaces ──
 let wsCur = null;
@@ -547,10 +623,20 @@ async function loadWs() {
 }
 async function viewWs(id, name) {
   wsCur = id; $("wsview").classList.remove("hidden"); $("wsname").textContent = name; $("wsopen").href = "/app?ws=" + id;
+  $("wsprev").href = (await api("/api/cloud").catch(() => [])).find(w => w.ws === id)?.preview || "#";
+  if ($("wsprev").href.endsWith("#")) $("wsprev").onclick = e => { e.preventDefault(); toast("open the workspace in the cloud once to get its preview link"); }; else $("wsprev").onclick = null;
+  $("wsclone").onclick = () => modal(`<h2>clone a repository</h2><label>owner/repo or https URL</label><input id="cl_u" placeholder="octocat/hello-world"><label>branch (optional)</label><input id="cl_b">
+    <div class="btns"><button onclick="doClone('${esc(id)}','${esc(name)}')">clone</button><button class="ghost" onclick="closeModal()">cancel</button></div><div class="err" id="cle"></div>
+    <p class="dim" style="font-size:12px;margin-top:8px">Private repos use your GitHub token (cloud tab).</p>`);
   $("wsdel").onclick = async () => { if (!confirm("Delete workspace " + name + " from the cloud? Local copies stay.")) return; await api("/api/ws/" + id, undefined, "DELETE"); $("wsview").classList.add("hidden"); loadWs(); };
   const files = Object.keys((await api(`/api/ws/${id}/manifest`)).files).sort();
   $("wsfiles").innerHTML = files.map(f => `<button onclick="viewFile(this,'${esc(f)}')" title="${esc(f)}">${esc(f)}</button>`).join("") || '<p class="dim" style="padding:8px">empty</p>';
   $("wsfile").textContent = "select a file"; $("wsview").scrollIntoView({behavior: "smooth"});
+}
+async function doClone(id, name) {
+  $("cle").textContent = "cloning…"; $("cle").className = "err dim";
+  try { const r = await api(`/api/ws/${id}/clone`, {url: $("cl_u").value.trim(), branch: $("cl_b").value.trim()}); closeModal(); toast("cloned into " + r.path); viewWs(id, name); }
+  catch (e) { $("cle").className = "err"; $("cle").textContent = e.message; }
 }
 async function viewFile(b, f) {
   document.querySelectorAll("#wsfiles button").forEach(x => x.classList.toggle("on", x === b));
@@ -559,32 +645,47 @@ async function viewFile(b, f) {
 }
 
 // ── marketplace ──
-async function loadMarket() { market = await api("/api/market"); renderMarket(); }
+let installedMk = {};
+async function loadMarket() {
+  [market, installedMk] = await Promise.all([api("/api/market?sort=" + ($("msort").value || "")),
+    tok ? api("/api/installed").then(l => Object.fromEntries(l.map(i => [i.mid, i]))).catch(() => ({})) : {}]);
+  renderMarket();
+}
+const stars = (r, n) => r ? `<span title="${r} / 5 · ${n} vote${n > 1 ? "s" : ""}" style="color:var(--y)">★ ${r.toFixed(1)}</span> <span class="dim">(${n})</span>` : '<span class="dim">no ratings</span>';
 function renderMarket() {
   const q = $("mq").value.toLowerCase();
   document.querySelectorAll("#mkind button").forEach(b => b.classList.toggle("on", b.dataset.k === mkKind));
   const mine = new Set([...skills.map(s => s.name), ...plugins.map(s => s.name)]);
   const list = market.filter(m => (m.kind || "skill") === mkKind && (!q || (m.name + " " + m.description).toLowerCase().includes(q)));
-  $("mk").innerHTML = list.map(m => skillCard(m,
-    `<span>by ${esc(m.author)} · ${m.installs} installs</span><span><button class="ghost sm" onclick="viewMarket(${m.id})">view</button>
-     ${!tok ? "" : mine.has(m.name) ? '<span class="tag on">installed</span>' : `<button class="sm" onclick="install(${m.id},this)">install</button>`}</span>`)).join("")
+  $("mk").innerHTML = list.map(m => { const ins = installedMk[m.id];
+    const state = !tok ? "" : ins ? (ins.version < m.version ? `<button class="sm" onclick="install(${m.id},this)">update to v${m.version}</button>` : `<span class="tag on">installed v${ins.version}</span>`)
+      : mine.has(m.name) ? '<span class="tag on">installed</span>' : `<button class="sm" onclick="install(${m.id},this)">install</button>`;
+    return skillCard(m, `<span>v${m.version || 1} · ${stars(m.rating, m.votes)} · ${m.installs} installs</span><span><button class="ghost sm" onclick="viewMarket(${m.id})">view</button> ${state}</span>`); }).join("")
     || '<p class="dim">Nothing found.</p>';
 }
 $("mq").oninput = renderMarket;
+$("msort").onchange = loadMarket;
 document.querySelectorAll("#mkind button").forEach(b => b.onclick = () => { mkKind = b.dataset.k; renderMarket(); });
 async function install(id, btn) {
   if (btn) btn.textContent = "…";
   await api(`/api/market/${id}/install`, {}); toast("installed · syncing to your devices"); await loadSkills(); await loadMarket();
 }
 async function viewMarket(id) {
-  const m = await api("/api/market/" + id);
+  const [m, vs] = await Promise.all([api("/api/market/" + id), api(`/api/market/${id}/versions`).catch(() => [])]);
+  const ins = installedMk[id];
   modal(`<div class="row"><div class="sk" style="border:none;padding:0"><div class="t"><span class="ic" style="background:${col(m.color)}22;color:${col(m.color)}">${esc(m.icon)}</span>${esc(m.name)}</div></div>
     <span class="dim" style="font-size:12px">by ${esc(m.author)} · ${m.installs} installs · ${esc(m.ext)}</span></div>
-    <p class="dim" style="margin:10px 0">${esc(m.description)}</p><textarea rows="20" readonly spellcheck="false">${esc(m.content)}</textarea>
+    <p class="dim" style="margin:10px 0">${esc(m.description)}</p>
+    <div class="row" style="margin-bottom:10px"><span>${tok ? [1, 2, 3, 4, 5].map(n => `<button class="ghost sm star" onclick="rate(${id},${n})" title="${n} star${n > 1 ? "s" : ""}" style="color:${ins?.stars >= n ? "var(--y)" : "var(--dim)"}">★</button>`).join("") : ""}</span>
+      ${ins ? `<label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--fg)"><input type="checkbox" style="width:auto" ${ins.auto ? "checked" : ""} onchange="setAuto(${id},this.checked)">auto-update${ins.edited ? ' <span class="dim">(you edited it — updates skip it)</span>' : ""}</label>` : ""}</div>
+    ${vs.length ? `<details style="margin-bottom:10px"><summary class="dim" style="cursor:pointer;font-size:12.5px">versions (${vs.length})</summary>${vs.map(v => `<div class="dim" style="font-size:12.5px;padding:3px 0">v${v.version} · ${new Date(v.created * 1000).toLocaleDateString()} · ${esc(v.note || "")}</div>`).join("")}</details>` : ""}
+    <textarea rows="20" readonly spellcheck="false">${esc(m.content)}</textarea>
     <div class="btns">${tok ? `<button onclick="install(${m.id});closeModal()">install</button>` : '<a href="/account" style="color:var(--a)">log in to install</a>'}
     <button class="ghost" onclick="closeModal()">close</button>
     ${me && (me.admin || me.username === m.author) ? `<button class="danger" style="margin-left:auto" onclick="unpublish(${m.id})">remove from marketplace</button>` : ""}</div>`);
 }
+async function rate(id, n) { try { const r = await api(`/api/market/${id}/rate`, {stars: n}); toast(`rated ${n}★ · now ${r.rating} (${r.votes})`); if (installedMk[id]) installedMk[id].stars = n; closeModal(); loadMarket(); } catch (e) { toast(e.message); } }
+async function setAuto(id, on) { await api(`/api/market/${id}/auto`, {on}); if (installedMk[id]) installedMk[id].auto = on; toast("auto-update " + (on ? "on" : "off")); }
 async function unpublish(id) { if (!confirm("Remove from marketplace?")) return; await api("/api/market/" + id, undefined, "DELETE"); closeModal(); loadMarket(); }
 function publish() {
   modal(`<h2>publish a skill</h2><p class="dim" style="margin-bottom:10px">Pick one of yours. Its header needs <code>name:</code> and <code>description:</code>. Don't include secrets — use <code>env:</code>.</p>

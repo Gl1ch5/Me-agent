@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b0c10">
 <title>me</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E">
 <style>/*CSS*/</style>
 </head>
@@ -13,30 +15,36 @@
 <aside id="side">
   <div class="brand"><i></i>me<small id="mode"></small><button class="ib side-close" onclick="closeSide()" aria-label="close menu"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
   <button class="newbtn" onclick="newChat()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+  <div class="todo-card hidden" id="todoCard"></div>
   <div class="slist" id="slist"></div>
   <div class="side-foot"><a id="acct" href="/account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span id="who">account</span></a>
-    <span class="spacer"></span><button class="ib" onclick="pickTheme()" title="theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button></div>
+    <span class="spacer"></span><button class="ib hidden" id="bell" onclick="enablePush()" title="notify me when a task is done"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg></button><button class="ib" onclick="pickTheme()" title="theme"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button></div>
 </aside>
 <div class="scrim" id="scrim" onclick="closeSide()"></div>
 <main>
   <header>
     <button class="ib menu" onclick="openSide()"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <div class="title" id="title">New chat</div>
+    <button class="pill hidden" id="todoChip" onclick="openSide()" title="checklist"><svg viewBox="0 0 24 24"><path d="M4 7l2 2 4-4M4 17l2 2 4-4M13 7h7M13 17h7"/></svg><span></span></button>
+    <a class="pill hidden" id="previewBtn" target="_blank" rel="noopener" title="open the site the agent built"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>preview</span></a>
     <button class="pill" id="wsPill" title="workspace"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span id="ws">—</span></button>
   </header>
   <div id="chat"><div class="inner" id="log"></div></div>
   <div class="composer">
     <div class="box">
+      <div class="atts hidden" id="atts"></div>
       <textarea id="input" rows="1" placeholder="Ask anything…"></textarea>
       <div class="row">
         <button class="pill" id="modelBtn" onclick="pickModel()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/></svg><span id="model">model</span></button>
         <button class="pill mode" id="agentBtn" onclick="pickAgent()"><svg viewBox="0 0 24 24"><path d="M4 7h10M4 12h16M4 17h7"/><circle cx="18" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></svg><span id="agentName">code</span></button>
         <span class="spacer"></span>
+        <input type="file" id="file" multiple hidden>
+        <button class="ib" id="attach" title="attach images or files" onclick="$('file').click()"><svg viewBox="0 0 24 24"><path d="M20 11.5l-8.4 8.4a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg></button>
         <button class="ib" id="mic" title="hold to talk"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
         <button class="ib send" id="send" onclick="sendOrStop()" disabled><svg viewBox="0 0 24 24" id="sendIcon"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
       </div>
     </div>
-    <div class="status"><span id="ctxfiles"></span><span class="ctx" id="ctx"></span><span id="tok" class="tok"></span><span id="sync"></span></div>
+    <div class="status"><button class="perm" id="perm" onclick="pickPerm()" title="permissions"></button><span id="ctxfiles"></span><span class="ctx" id="ctx"></span><span id="cost" class="cost"></span><span id="tok" class="tok"></span><span id="sync"></span></div>
   </div>
 </main>
 </div>

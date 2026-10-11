@@ -21,14 +21,20 @@ def run_headless(store, prompt, yolo):
             return True
         if not sys.stdin.isatty():
             return False
-        sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N] ")
-        return input().strip().lower().startswith("y")
+        sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N/a=always] ")
+        r = input().strip().lower()
+        return "always" if r.startswith("a") else r.startswith("y")
 
     def ask(q, options=None):
         if not sys.stdin.isatty():
             return ""
         return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
     ag = Agent(store, emit, confirm, ask)
+    if prompt.startswith("/goal "):
+        g = ag.goal(prompt[6:].strip().strip('"'))
+        sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
+        print()
+        return 0 if g["status"] == "done" else 2
     ag.run(prompt)
     print()
 
@@ -60,7 +66,7 @@ def run_rpc(store):
         if e["type"] == "turn_end" and cloud.online:
             threading.Thread(target=cloud.sync, daemon=True).start()
 
-    ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: bool(wait("confirm", name=n, args=a))),
+    ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: (lambda r: "always" if r == "always" else bool(r))(wait("confirm", name=n, args=a))),
                lambda q, options=None: wait("ask", text=q, options=options) or "")
     if os.environ.get("ME_WS_ID"):
         ag.session["ws"] = os.environ["ME_WS_ID"]
@@ -84,6 +90,12 @@ def run_rpc(store):
         t = cmd.get("type")
         if t == "prompt" and not ag.busy:
             threading.Thread(target=ag.run, args=(cmd["text"], cmd.get("images", ())), daemon=True).start()
+        elif t == "goal" and not ag.busy:
+            threading.Thread(target=ag.goal, args=(cmd["text"],), daemon=True).start()
+        elif t == "undo":
+            r = ag.undo()
+            if not r["ok"]:
+                emit({"type": "error", "text": r["text"]})
         elif t == "cancel":
             ag.cancel.set()
         elif t in ("confirm", "answer") and cmd.get("id") in waits:

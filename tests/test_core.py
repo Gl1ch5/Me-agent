@@ -113,6 +113,155 @@ def test_md_render():
     assert all(l.width() <= 40 for l in lines), [l.width() for l in lines]
 
 
+def ends(ev):
+    return [e for e in ev if e["type"] == "tool_end"]
+
+
+def test_todo_and_goal():
+    s = make()
+    ag, ev = run(s, "tool:todo " + json.dumps({"items": ["x read code", "> write fix", "run tests"]}))
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo"], ag.session["todo"]
+    assert any(e["type"] == "todo" for e in ev) and "1/3 done" in ends(ev)[0]["output"]
+    ev = []
+    ag = me.Agent(s, ev.append)
+    g = ag.goal("make it work")
+    assert g["status"] == "done" and "tests green" in g["reason"], g
+    assert [e["status"] for e in ev if e["type"] == "goal"] == ["working", "done"]
+
+
+def test_edit_variants(tmp=Path(tempfile.mkdtemp())):
+    f = tmp / "e.py"
+    f.write_text("a = 1\nb = 2\nc = 3\n")
+    s = make()
+    run(s, "tool:edit " + json.dumps({"path": str(f), "edits": [{"old": "a = 1", "new": "a = 10"}, {"old": "c = 3", "new": "c = 30"}]}))
+    assert f.read_text() == "a = 10\nb = 2\nc = 30\n"
+    run(s, "tool:edit " + json.dumps({"path": str(f), "lines": "2-2", "new": "b = 20\nbb = 21"}))
+    assert f.read_text() == "a = 10\nb = 20\nbb = 21\nc = 30\n", f.read_text()
+    ag, ev = run(s, "tool:edit " + json.dumps({"path": str(f), "edits": [{"old": "a = 10", "new": "x"}, {"old": "nope = 1", "new": "y"}]}))
+    assert "edit #2 of 2" in ends(ev)[0]["output"] and "a = 10" in f.read_text()  # all-or-nothing
+    ag, ev = run(s, "tool:edit " + json.dumps({"path": str(f), "old": "bb = 22", "new": "z"}))
+    assert "Closest is line 3" in ends(ev)[0]["output"], ends(ev)[0]["output"]
+    f.write_text("x = 1   \ny = 2\n")
+    run(s, "tool:edit " + json.dumps({"path": str(f), "old": "x = 1\ny = 2", "new": "x = 5\ny = 2"}))
+    assert f.read_text().startswith("x = 5"), f.read_text()
+
+
+def test_repo_map(tmp=Path(tempfile.mkdtemp())):
+    (tmp / "pkg").mkdir()
+    (tmp / "pkg" / "a.py").write_text("import os\nclass Foo:\n    def inner(self): pass\ndef bar():\n    pass\n")
+    (tmp / "web.js").write_text("export function render() {}\nconst X = 1\n")
+    out = me.repo_map(str(tmp), home=tempfile.mkdtemp())
+    assert "pkg/a.py: Foo, bar" in out and "inner" not in out and "web.js: render, X" in out, out
+
+
+def test_parallel_readonly(tmp=Path(tempfile.mkdtemp())):
+    (tmp / "p1.txt").write_text("one")
+    (tmp / "p2.txt").write_text("two")
+    ag, ev = run(make(), "tools:" + json.dumps([["read", {"path": str(tmp / "p1.txt")}], ["read", {"path": str(tmp / "p2.txt")}]]))
+    kinds = [e["type"] for e in ev if e["type"] in ("tool_start", "tool_end")]
+    assert kinds == ["tool_start", "tool_start", "tool_end", "tool_end"], kinds  # both started before either finished
+    assert "one" in ends(ev)[0]["output"] and "two" in ends(ev)[1]["output"]
+
+
+def test_undo_and_diff(tmp=Path(tempfile.mkdtemp())):
+    f = tmp / "u.txt"
+    f.write_text("before\n")
+    s = make()
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.run("tool:edit " + json.dumps({"path": str(f), "old": "before", "new": "after"}))
+    ag.run("tool:write " + json.dumps({"path": str(tmp / "new.txt"), "content": "fresh"}))
+    td = [e for e in ev if e["type"] == "turn_diff"]
+    assert len(td) == 2 and "+after" in td[0]["files"][0]["diff"], td
+    n = len(ag.session["messages"])
+    assert ag.undo()["ok"] and not (tmp / "new.txt").exists() and len(ag.session["messages"]) < n
+    assert ag.undo()["ok"] and f.read_text() == "before\n"
+    assert not ag.undo()["ok"]
+
+
+def test_self_verify(tmp=Path(tempfile.mkdtemp())):
+    ag, ev = run(make(), "tool:write " + json.dumps({"path": str(tmp / "v.py"), "content": "x=1"}))
+    assert any(e["type"] == "verify" for e in ev)
+    assert any(m["role"] == "user" and str(m["content"]).startswith("[self-check]") for m in ag.session["messages"])
+
+
+def test_subagent():
+    s = make()
+    before = len(s.sessions())
+    ag, ev = run(s, "tool:task " + json.dumps({"agent": "review", "prompt": "hi"}))
+    out = ends(ev)[0]
+    assert out["ok"] and "Hello" in out["output"], out
+    assert any(e["type"] == "tool_event" and "review agent" in e.get("text", "") for e in ev)
+    assert len(s.sessions()) == before + 1  # the subagent's own session is not saved
+    sub = me.Agent(s, print)
+    sub.depth = 1
+    assert "task" not in [t["name"] for t in sub.tool_schemas()]  # no recursive subagents
+
+
+def test_permissions(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    s.config["settings"]["yolo"] = False
+    tb = me.ToolBox(s, me.Skills(s))
+    s.config["settings"]["perm"] = "ask"
+    assert tb.needs_confirm("write", {"path": str(tmp / "x")}, cwd=str(tmp)) is False  # inside the project
+    assert tb.needs_confirm("write", {"path": "/etc/x"}, cwd=str(tmp)) is True
+    assert tb.needs_confirm("bash", {"cmd": "git status"}) is False
+    assert tb.needs_confirm("bash", {"cmd": "git status; rm -rf /"}) is True
+    s.config["settings"]["perm"] = "read"
+    assert isinstance(tb.needs_confirm("edit", {"path": str(tmp / "x")}, cwd=str(tmp)), str)
+    s.config["settings"]["perm"] = "full"
+    assert tb.needs_confirm("bash", {"cmd": "rm -rf build"}) is False
+    s.config["settings"]["perm"] = "ask"
+    ag = me.Agent(s, lambda e: None, confirm=lambda n, a: "always")
+    ag.run("tool:bash " + json.dumps({"cmd": "echo always-ok"}))
+    assert "echo always-ok*" in s.config["settings"]["allow"]
+
+
+def test_cost_and_cache():
+    s = make()
+    s.config["models"][0]["price"] = [1.0, 2.0, 0.1]
+    ag, ev = run(s, "hi")
+    end = [e for e in ev if e["type"] == "turn_end"][0]
+    assert end["cost"] > 0 and ag.session["usage"]["cost"] > 0 and me.day_cost(s.home) > 0
+    assert ag.session["usage"]["cached"] == 800
+    s.config["models"][0]["cache"] = "anthropic"
+    run(s, "hi")
+    assert isinstance(mock_llm.LAST["messages"][0]["content"], list) and mock_llm.LAST["messages"][0]["content"][0]["cache_control"]
+    s.config["settings"]["max_turn_cost"] = 1e-9
+    ag, ev = run(s, "tool:ls " + json.dumps({"pattern": "*"}))
+    assert any(e["type"] == "error" and "limit" in e["text"] for e in ev)
+
+
+MCP_SERVER = r"""
+import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m:
+        continue
+    if m["method"] == "initialize":
+        r = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}, "serverInfo": {"name": "t", "version": "1"}}
+    elif m["method"] == "tools/list":
+        r = {"tools": [{"name": "add", "description": "Add numbers", "inputSchema": {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}}]}
+    else:
+        r = {"content": [{"type": "text", "text": str(m["params"]["arguments"]["a"] + m["params"]["arguments"]["b"])}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}), flush=True)
+"""
+
+
+def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
+    srv = tmp / "mcp_srv.py"
+    srv.write_text(MCP_SERVER)
+    s = make()
+    assert "mcp" not in [t["name"] for t in me.Agent(s, print).tool_schemas()]
+    s.config["mcp"] = {"calc": {"command": sys.executable, "args": [str(srv)], "description": "math"}}
+    a = me.Agent(s, print)
+    assert "mcp" in [t["name"] for t in a.tool_schemas()] and "calc: math" in a.system_prompt()
+    ag, ev = run(s, "tool:mcp " + json.dumps({"server": "calc"}))
+    assert "add(a: number, b: number)" in ends(ev)[0]["output"], ends(ev)[0]["output"]
+    ag, ev = run(s, "tool:mcp " + json.dumps({"server": "calc", "tool": "add", "args": {"a": 2, "b": 3}}))
+    assert ends(ev)[0]["output"] == "5"
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

@@ -32,7 +32,17 @@ Every agent makes you rebuild your setup on each machine. **me** keeps your mode
 | **Plugins** | Change me itself: commands, tools, keys, status bar, themes. Voice input (hold space → Groq Whisper) ships as one. |
 | **Themes** | Terminal, web app and site share one palette. Nord, Tokyo Night, Gruvbox, Catppuccin, Rosé Pine… |
 | **Search** | `web_search` via DeepSeek's built-in search (DuckDuckGo fallback) + `web_fetch`. |
-| **Everywhere** | TUI · `me web` (localhost:8080) · cloud `/app` · Windows app · Android app · Telegram bot. |
+| **Goals & plans** | `todo` checklist live in every UI · `/goal "…"` works until done **and verified**, or reports exactly why it is blocked · self-check before "done". |
+| **Subagents** | `task(agent, prompt)` runs any preset in a fresh context and returns a short report. |
+| **Safe edits** | multi-edit and line-range patches, helpful misses · checkpoint per turn → `/undo` · web diff review with keep / revert. |
+| **Permissions** | read-only · ask · full, plus a command allow-list ("always allow `npm test`"). |
+| **Cost** | price table per model, prompt caching, parallel read-only tools · cost per task / session / day with optional limits. |
+| **Background** | "do X and notify me": tasks keep running after you close the page; cron schedules; push + Telegram when done. |
+| **Preview** | the site the agent built opens on your phone by link (static files or the sandbox dev server on `$PORT`). |
+| **GitHub** | token in the account: clone into a workspace, branch, commit, push, open PRs. |
+| **Telegram** | your own bot per account; the agent's `notify` tool sends you messages and files. |
+| **MCP** | any MCP server, loaded lazily like a skill (one line idle, schemas on demand). |
+| **Everywhere** | TUI (compact on Termux) · `me web` (localhost:8080) · cloud `/app` (installable PWA, attachments) · Windows · Android · Telegram. |
 
 ## Use
 
@@ -43,7 +53,9 @@ Every agent makes you rebuild your setup on each machine. **me** keeps your mode
 | `me -p "task" [-y]` | one-shot, headless |
 | `me --rpc` | JSON-lines agent over stdio (what the cloud runner uses) |
 
-Key commands: `/agent` mode · `/model` · `/theme` · `/init` · `/compact` · `/autocompact` · `/skills` · `/plugins` · `/workspace` · `/sessions` · `/login` · `/2fa` · `/quit`
+Key commands: `/goal` · `/undo` · `/todo` · `/perm` · `/cost` · `/mcp` · `/agent` mode · `/model` · `/theme` · `/init` · `/compact` · `/autocompact` · `/skills` · `/plugins` · `/workspace` · `/sessions` · `/login` · `/2fa` · `/quit`
+
+`me -p '/goal "all tests pass"'` exits 0 only when the goal is done and verified (2 = blocked) — handy in CI.
 
 ## Develop
 
@@ -54,7 +66,8 @@ build.py         src/ → me.py (single file, committed; CI checks it is fresh)
 server/          FastAPI: accounts, TOTP, sync, workspaces, sandbox runner, Telegram, site
 server/market/   built-in skills, plugins, themes and agents
 apps/            desktop (pywebview) and Android (WebView) shells
-tests/           test_core.py (offline) · test_cloud.py (needs a server)
+tests/           test_core.py (offline) · test_cloud.py (needs a server) · test_restart.py · test_features.py (own server)
+                 screenshots.py (playwright, every UI × 360/1280 × every theme) · measure_tokens.py (startup budget)
 ```
 
 Edit `src/`, run `python3 build.py`, then `python3 tests/test_core.py`.

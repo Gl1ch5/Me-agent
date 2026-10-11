@@ -4,20 +4,32 @@ SYSTEM = """You are me, an expert software engineer working in the user's termin
 cwd: {cwd} | os: {os} | date: {date}
 
 Work:
-- Understand first: read the relevant code before changing it. Ask only when truly ambiguous.
-- Split work into small steps. For 3+ steps state a short plan, then execute it step by step.
-- Build what is needed now, but keep it open for the future: clear modules, small functions, no hardcoded hacks.
-- Match the project's style, naming and libraries. No new dependencies without reason.
-- Verify: run tests, build, or the code itself. Fix what you broke. Never claim untested success.
-- Prefer edit over rewrite; use paths relative to cwd. Read several files at once when independent.
-- web_search for current facts/APIs, web_fetch for docs and URLs.
-- Confirm before destructive or irreversible actions (deleting data, force-push, production).
-Design (UI work):
-- No emoji unless asked. Icons: custom inline SVG with one consistent stroke style.
-- Restrained palette: neutral + one accent + one semantic color; consistent spacing scale; clear type hierarchy; light and dark.
-- Handle empty, loading and error states; make it responsive.
-Reply: concise, no filler. Say what changed and how you verified it.{skills}{project}{user}"""
+- Read the relevant code before changing it. Ask only when truly ambiguous.
+- Small steps; for 3+ steps keep a todo list current.
+- Build what is needed now, open for later: clear modules, small functions, no hacks. Match the project's style; no needless deps.
+- Before saying done, verify: run tests, build, lint or the code. Never claim untested success.
+- Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- web_search for current facts, web_fetch for docs/URLs.
+- Confirm before destructive or irreversible actions.
+UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
+Reply: concise. Say what changed and how you verified it.{extra}{skills}{project}{user}"""
 
+
+
+class LimitHit(Exception):
+    pass
+
+
+VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
+                "or the code itself, and fix any failure. If nothing can be run, say so and why.")
+GOAL_PROMPT = """GOAL: {objective}
+
+Work autonomously until this is done. First write verifiable success criteria and a todo list. Then do one step at a time,
+keep the todo current, and verify with real checks (tests, build, running the code). Do not ask the user unless truly blocked.
+End your final message with exactly one line:
+GOAL: DONE <the evidence that every criterion passes>
+or
+GOAL: BLOCKED <the precise reason and what is needed>"""
 
 
 class Agent:
@@ -40,6 +52,9 @@ class Agent:
         self.cancel = threading.Event()
         self.busy = False
         self.ctx_used = 0
+        self.depth = 0  # subagent nesting
+        self.persist = True  # subagents don't save their own sessions
+        self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -59,8 +74,17 @@ class Agent:
             project += "\n\n" + pr["prompt"]
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
+        extra = ""
+        if "task" in {t["name"] for t in self.tool_schemas()}:
+            extra += "\ntask agents: " + ", ".join(presets(self.s)) + "."
+        mcp = self.s.config.get("mcp") or {}
+        if mcp:
+            extra += "\nMCP servers (mcp tool): " + "; ".join(f"{k}{': ' + v['description'] if v.get('description') else ''}" for k, v in mcp.items())
+        if os.environ.get("ME_PREVIEW"):
+            extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
+                      f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
-                             skills=skills, project=project, user=user)
+                             extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
@@ -71,7 +95,14 @@ class Agent:
 
     def tool_schemas(self):
         allowed = preset_tools(self.preset())
-        return [t for t in TOOLS if t["name"] in allowed] + PLUGINS.tool_schemas()
+        if self.depth:
+            allowed.discard("task")
+        out = [t for t in TOOLS if t["name"] in allowed]
+        if self.s.auth.get("token"):
+            out.append(NOTIFY_TOOL)
+        if self.s.config.get("mcp"):
+            out.append(MCP_TOOL)
+        return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion."""
@@ -84,69 +115,60 @@ class Agent:
             return
         self.busy = True
         self.cancel.clear()
+        self.snap = {}
+        start_idx = len(self.session["messages"])
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
-        t0, tin, tout = time.time(), 0, 0
+        t0, tin, tout, cost = time.time(), 0, 0, 0.0
+        wrote, ran, nudged = False, False, False
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
+        st = self.s.config["settings"]
         try:
             while True:
                 limit = self.compact_threshold(m)
                 if limit and self.ctx_used > limit:
                     self.compact(reason="auto")
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel)
+                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel,
+                                         cache_key=self.session["id"])
+                c = usage_cost(m, usage)
                 tin += usage["in"]
                 tout += usage["out"]
+                cost += c
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
                 self.session["ctx"] = self.ctx_used
-                self.session["usage"]["in"] = self.session["usage"].get("in", 0) + usage["in"]
-                self.session["usage"]["out"] = self.session["usage"].get("out", 0) + usage["out"]
-                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout})
+                u = self.session["usage"]
+                u["in"] = u.get("in", 0) + usage["in"]
+                u["out"] = u.get("out", 0) + usage["out"]
+                u["cached"] = u.get("cached", 0) + usage.get("cached", 0)
+                u["cost"] = round(u.get("cost", 0) + c, 6)
+                today = add_day_cost(self.s.home, c) if c and self.persist else day_cost(self.s.home)
+                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": usage.get("cached", 0),
+                           "cost": cost, "session_cost": u["cost"], "day_cost": today})
                 self.session["messages"].append(msg)
                 self.checkpoint()
                 if not msg.get("tool_calls"):
+                    if wrote and not ran and not nudged and "bash" in {t["name"] for t in self.tool_schemas()} and not st.get("no_verify"):
+                        nudged = True  # self-check before "done": changes were made but nothing was run since
+                        self.emit({"type": "verify"})
+                        self.session["messages"].append({"role": "user", "content": VERIFY_NUDGE})
+                        continue
                     break
+                self._limits(cost, st)
+                results = self._run_calls(msg["tool_calls"], pr)
                 imgs = []
-                for tc in msg["tool_calls"]:
+                for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"] or "{}")
-                    except ValueError:
-                        args = None
-                    tid = tc["id"]
-                    ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
-                    if name == "skill" and args:
-                        sk = self.skills.all().get(args.get("name"), {})
-                        ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
-                    self.emit(ev)
-                    t1 = time.time()
-                    if args is None:
-                        ok, out, img = False, "error: arguments were not valid JSON", None
-                    elif name not in {t["name"] for t in self.tool_schemas()}:
-                        ok, out, img = False, f"error: tool {name} is not available in the {pr['name']} agent", None
-                    elif name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
-                        ok, out, img = False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
-                    elif isinstance(PLUGINS.emit("before_tool", name, args), str):
-                        ok, out, img = False, PLUGINS.emit("before_tool", name, args), None
-                    elif self.tools.needs_confirm(name, args) and not self.confirm(name, args):
-                        ok, out, img = False, "user denied this action. ask what to do instead.", None
-                    else:
-                        try:
-                            ok, out, img = self.tools.run(name, self.remap(args), lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e}),
-                                                          self.cancel, self.ask)
-                        except Cancelled:
-                            raise
-                        except Exception as e:
-                            ok, out, img = False, f"error: {type(e).__name__}: {e}", None
+                    if ok and name in ("write", "edit"):
+                        wrote, ran = True, False
+                    elif name == "bash" or name == "task":
+                        ran = ran or wrote
                     if img:
                         imgs.append(img)
-                    self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": out})
-                    self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": out, "time": time.time() - t1})
-                    self.checkpoint()
-                    if self.cancel.is_set():
-                        raise Cancelled()
+                if self.cancel.is_set():
+                    raise Cancelled()
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
@@ -154,13 +176,226 @@ class Agent:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
             self.emit({"type": "error", "text": "interrupted"})
+        except LimitHit as e:
+            self._fix_dangling()
+            self.emit({"type": "error", "text": str(e)})
         except Exception as e:
             self._fix_dangling()
             self.emit({"type": "error", "text": str(e)})
         finally:
             self.busy = False
+            self._finish_checkpoint(start_idx)
+            if self.persist:
+                self.s.save_session(self.session)
+            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,
+                       "session_cost": self.session["usage"].get("cost", 0)})
+
+    def _limits(self, cost, st):
+        mt, md = float(st.get("max_turn_cost") or 0), float(st.get("max_day_cost") or 0)
+        if mt and cost >= mt:
+            raise LimitHit(f"stopped: this task reached the {money(mt)} per-task limit (/config to change)")
+        if md and day_cost(self.s.home) >= md:
+            raise LimitHit(f"stopped: today's spending reached the {money(md)} daily limit (/config to change)")
+
+    def _run_calls(self, calls, pr):
+        """Independent read-only calls run in parallel; anything that changes state runs in order."""
+        prepared = []
+        for tc in calls:
+            name = tc["function"]["name"]
+            try:
+                args = json.loads(tc["function"]["arguments"] or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError
+            except ValueError:
+                args = None
+            tid = tc["id"]
+            ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+            if name == "skill" and args:
+                sk = self.skills.all().get(args.get("name"), {})
+                ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
+            prepared.append((tc, name, args, tid, ev))
+        results = {}
+        par = len(prepared) > 1 and all(n in READONLY_TOOLS and a is not None for _, n, a, _, _ in prepared)
+        if par:
+            for p in prepared:
+                self.emit(p[4])
+            ths = []
+            for tc, name, args, tid, _ in prepared:
+                def work(tc=tc, name=name, args=args, tid=tid):
+                    t1 = time.time()
+                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                th = threading.Thread(target=work, daemon=True)
+                th.start()
+                ths.append(th)
+            for th in ths:
+                th.join()
+        out = []
+        for tc, name, args, tid, ev in prepared:
+            if not par:
+                if self.cancel.is_set():
+                    results[tid] = (False, "cancelled", None, 0)
+                else:
+                    self.emit(ev)
+                    t1 = time.time()
+                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+            ok, res, img, dt = results[tid]
+            self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": res})
+            self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": res, "time": dt})
+            self.checkpoint()
+            out.append((tc, (ok, res, img)))
+        return out
+
+    def _exec(self, name, args, tid, pr):
+        """Checks + runs one tool. Returns (ok, output, image)."""
+        temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
+        if args is None:
+            return False, "error: arguments were not valid JSON — send a JSON object", None
+        if name not in {t["name"] for t in self.tool_schemas()}:
+            return False, f"error: tool {name} is not available in the {pr['name']} agent", None
+        if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+            return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
+        veto = PLUGINS.emit("before_tool", name, args)
+        if isinstance(veto, str):
+            return False, veto, None
+        if name == "todo":
+            return self._todo(args)
+        if name == "task":
+            return self._task(args, temit)
+        need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
+        if isinstance(need, str):
+            return False, need, None
+        if need:
+            ans = self.confirm(name, args)
+            if not ans:
+                return False, "user denied this action. ask what to do instead.", None
+            if ans == "always" and name == "bash":
+                st = self.s.config["settings"]
+                st["allow"] = list(st.get("allow") or DEFAULT_ALLOW) + [allow_pattern(args.get("cmd", ""))]
+                self.s.save()
+        args = self.remap(args)
+        if name in ("write", "edit"):
+            self._snapshot(args.get("path", ""))
+        try:
+            return self.tools.run(name, args, temit, self.cancel, self.ask)
+        except Cancelled:
+            raise
+        except Exception as e:
+            return False, f"error: {type(e).__name__}: {e}", None
+
+    # ─── todo / goal ───
+    def _todo(self, a):
+        items = []
+        for i in a.get("items") or []:
+            if isinstance(i, dict):  # tolerate {t, s} / {text, done}
+                t, st = str(i.get("t") or i.get("text") or ""), i.get("s") or ("done" if i.get("done") else "todo")
+            else:
+                t = str(i).strip()
+                m = re.match(r"^(?:\[(x|X|>| )\]|(x|X|>|✓|-))\s+", t)
+                mark = (m.group(1) or m.group(2)) if m else ""
+                t, st = (t[m.end():] if m else t), {"x": "done", "X": "done", "✓": "done", ">": "doing"}.get(mark, "todo")
+            if t.strip():
+                items.append({"t": t.strip()[:200], "s": st if st in ("todo", "doing", "done") else "todo"})
+        self.session["todo"] = items[:50]
+        self.emit({"type": "todo", "items": self.session["todo"]})
+        n = sum(1 for i in items if i["s"] == "done")
+        nxt = next((i["t"] for i in items if i["s"] != "done"), None)
+        return True, f"todo: {n}/{len(items)} done" + (f"; next: {nxt}" if nxt else "; all done — verify, then report"), None
+
+    def goal(self, objective, max_rounds=None):
+        """/goal: work autonomously until the objective is verifiably met or blocked. Binary result."""
+        max_rounds = int(max_rounds or self.s.config["settings"].get("goal_rounds") or 12)
+        g = self.session["goal"] = {"text": objective, "status": "working", "reason": "", "round": 0}
+        self.emit({"type": "goal", **g})
+        prompt = GOAL_PROMPT.format(objective=objective)
+        for r in range(1, max_rounds + 1):
+            g["round"] = r
+            self.run(prompt)
+            last = next((m for m in reversed(self.session["messages"]) if m["role"] == "assistant"), {})
+            verdict = re.search(r"GOAL:\s*(DONE|BLOCKED)\b[:\s-]*(.*)", last.get("content") or "", re.S | re.I)
+            if self.cancel.is_set() or (self.session["messages"] and self.session["messages"][-1].get("content") == "[interrupted by user]"):
+                g.update(status="blocked", reason="interrupted by user")
+                break
+            if verdict:
+                g.update(status=verdict.group(1).lower(), reason=verdict.group(2).strip()[:600])
+                break
+            prompt = ("Continue toward the goal. Check your todo list, do the next step, verify. When the success criteria pass, "
+                      "reply GOAL: DONE <evidence>; if you cannot proceed, GOAL: BLOCKED <reason>.")
+        else:
+            g.update(status="blocked", reason=f"no verified result after {max_rounds} rounds")
+        self.emit({"type": "goal", **g})
+        if self.persist:
             self.s.save_session(self.session)
-            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used})
+        return g
+
+    # ─── subagents ───
+    def _task(self, a, temit):
+        name = a.get("agent") or "code"
+        if name not in presets(self.s):
+            return False, f"error: no agent '{name}'. agents: {', '.join(presets(self.s))}", None
+        report = {"text": ""}
+
+        def sub_emit(e):
+            t = e["type"]
+            if t == "tool_start":
+                temit({"t": "status", "text": f"{name} › {e['name']} {e.get('label', '')[:60]}"})
+                temit({"t": "log", "text": f"{e['name']} {e.get('label', '')[:80]}"})
+            elif t == "text":
+                report["text"] += e["text"]
+            elif t == "tool_end":
+                report["text"] = ""
+            elif t == "todo":
+                done = sum(1 for i in e["items"] if i["s"] == "done")
+                temit({"t": "progress", "v": done / max(1, len(e["items"])), "label": f"{done}/{len(e['items'])}"})
+            elif t == "error":
+                temit({"t": "log", "text": "✗ " + e["text"]})
+        sub = Agent(self.s, sub_emit, self.confirm, self.ask)
+        sub.depth, sub.persist = self.depth + 1, False
+        sub.cancel = self.cancel
+        sub.session = new_session(self.session.get("cwd"))
+        sub.session["agent"] = name
+        sub.session["roots"] = list(self.session.get("roots") or [])
+        temit({"t": "status", "text": f"{name} agent started"})
+        sub.run(a.get("prompt", "") + "\n\nYou are a subagent: do the job, verify it, then reply with a short report "
+                                      "(what you did, files touched, results). The report is all the caller sees.")
+        for k in ("in", "out", "cost"):
+            self.session["usage"][k] = self.session["usage"].get(k, 0) + sub.session["usage"].get(k, 0)
+        self.snap.update({k: v for k, v in sub.snap.items() if k not in self.snap})
+        last = next((m.get("content") for m in reversed(sub.session["messages"]) if m["role"] == "assistant" and m.get("content")), "")
+        return bool(last), clip(last or report["text"] or "(subagent returned nothing)", 6000), None
+
+    # ─── checkpoints / undo ───
+    def _snapshot(self, path):
+        p = os.path.abspath(os.path.expanduser(path))
+        if p not in self.snap:
+            try:
+                self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    def _finish_checkpoint(self, start_idx):
+        if not self.snap or not self.persist:
+            return
+        files = dict(self.snap)
+        Checkpoints(self.s, self.session["id"]).push({"msgs": start_idx, "files": files, "t": time.time()})
+        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+                 for p, old in files.items()]
+        self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
+
+    def undo(self):
+        """Restore the files the last turn changed and drop that turn from history."""
+        if self.busy:
+            return {"ok": False, "text": "busy"}
+        cp = Checkpoints(self.s, self.session["id"]).pop()
+        if not cp:
+            return {"ok": False, "text": "nothing to undo"}
+        restore_files(cp["files"])
+        if 0 <= cp["msgs"] <= len(self.session["messages"]):
+            self.session["messages"] = self.session["messages"][:cp["msgs"]]
+        self.s.save_session(self.session)
+        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
+        self.emit(ev)
+        return dict(ev, ok=True)
 
     def _fix_dangling(self):
         """Every tool_call must have a tool result, or APIs reject the history."""
@@ -224,7 +459,7 @@ class Agent:
 
     def checkpoint(self, every=1.0):
         """Save mid-turn (throttled) so other devices see each step live."""
-        if time.time() - getattr(self, "_saved", 0) >= every:
+        if self.persist and time.time() - getattr(self, "_saved", 0) >= every:
             self._saved = time.time()
             self.s.save_session(self.session)
 

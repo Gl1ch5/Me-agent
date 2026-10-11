@@ -1,0 +1,297 @@
+# ───────────────────────────── repo map ─────────────────────────────
+# Compact index of files + top-level symbols, built lazily (map tool) and cached per workspace by file mtime.
+
+MAP_EXT = {".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".rb", ".php", ".c", ".h", ".cc",
+           ".cpp", ".hpp", ".cs", ".scala", ".lua", ".sh", ".vue", ".svelte", ".dart", ".ex", ".css", ".scss", ".html", ".md", ".sql"}
+SYM_RX = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:pub(?:\(\w+\))?\s+)?(?:async\s+)?(?:abstract\s+)?(?:static\s+)?"
+                    r"(?:def|class|function\*?|func|fn|struct|enum|trait|interface|type|impl|module|object|const|let|var)\s+"
+                    r"(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)")
+MD_RX = re.compile(r"^#{1,2}\s+(.+)")
+CSS_RX = re.compile(r"^([.#]?[A-Za-z][\w-]*)\s*[{,]")
+
+
+def file_symbols(path):
+    ext = os.path.splitext(path)[1].lower()
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i > 4000 or len(out) >= 40:
+                    break
+                if ext == ".md":
+                    m = MD_RX.match(line)
+                elif ext in (".css", ".scss"):
+                    m = CSS_RX.match(line)
+                else:
+                    m = SYM_RX.match(line)  # top level only: no leading indent
+                if m:
+                    out.append(m.group(1).strip()[:40])
+    except OSError:
+        pass
+    return out
+
+
+def repo_map(root, sub="", home=HOME, limit=12000):
+    root = os.path.abspath(root)
+    cache_p = Path(home) / "cache" / ("map-" + hashlib.sha1(root.encode()).hexdigest()[:12] + ".json")
+    cache = jload(cache_p, {}) or {}
+    fresh, lines = {}, []
+    base = os.path.join(root, sub) if sub else root
+    for f in sorted(walk_files(base, 5000)):
+        rel = os.path.relpath(f, root)
+        if os.path.splitext(f)[1].lower() not in MAP_EXT:
+            continue
+        try:
+            mt = os.path.getmtime(f)
+        except OSError:
+            continue
+        c = cache.get(rel)
+        syms = c[1] if c and c[0] == mt else file_symbols(f)
+        fresh[rel] = [mt, syms]
+        lines.append(rel + (": " + ", ".join(syms) if syms else ""))
+    if not sub:
+        jsave(cache_p, fresh)
+    else:
+        cache.update(fresh)
+        jsave(cache_p, cache)
+    text = "\n".join(lines) or "no source files"
+    return text if len(text) <= limit else text[:limit] + f"\n… cut; use map with path=<subdir> ({len(lines)} files)"
+
+
+# ───────────────────────────── checkpoints ─────────────────────────────
+# Before a turn first touches a file, its old content is kept; /undo restores the files and drops the turn from history.
+
+class Checkpoints:
+    KEEP = 30
+
+    def __init__(self, store, sid):
+        self.p = store.home / "checkpoints" / f"{sid}.json"
+
+    def load(self):
+        return jload(self.p, []) or []
+
+    def push(self, cp):
+        cps = self.load()[-(self.KEEP - 1):] + [cp]
+        jsave(self.p, cps)
+
+    def pop(self):
+        cps = self.load()
+        if not cps:
+            return None
+        cp = cps.pop()
+        jsave(self.p, cps)
+        return cp
+
+
+def restore_files(files):
+    for path, old in files.items():
+        p = Path(path)
+        if old is None:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(old, "utf-8")
+
+
+def file_diff(path, old):
+    try:
+        new = Path(path).read_text("utf-8", "replace")
+    except OSError:
+        new = ""
+    d = list(difflib.unified_diff((old or "").splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
+    return "\n".join(d[:400]) + ("\n…" if len(d) > 400 else "")
+
+
+# ───────────────────────────── cost ─────────────────────────────
+# $ per 1M tokens: (input, output, cached input). First substring match of the model id wins; a model's own "price" overrides.
+
+PRICES = [
+    ("gpt-5-nano", (0.05, 0.4, 0.005)), ("gpt-5-mini", (0.25, 2, 0.025)), ("gpt-5", (1.25, 10, 0.125)), ("gpt-4.1-nano", (0.1, 0.4, 0.025)),
+    ("gpt-4.1-mini", (0.4, 1.6, 0.1)), ("gpt-4.1", (2, 8, 0.5)), ("gpt-4o-mini", (0.15, 0.6, 0.075)), ("gpt-4o", (2.5, 10, 1.25)),
+    ("o4-mini", (1.1, 4.4, 0.275)), ("o3", (2, 8, 0.5)), ("haiku", (1, 5, 0.1)), ("sonnet", (3, 15, 0.3)), ("opus", (5, 25, 0.5)),
+    ("deepseek", (0.28, 0.42, 0.028)), ("gemini-2.5-pro", (1.25, 10, 0.31)), ("gemini-2.5-flash-lite", (0.1, 0.4, 0.025)),
+    ("flash-lite", (0.1, 0.4, 0.025)), ("flash", (0.3, 2.5, 0.075)), ("gemini", (1.25, 10, 0.31)), ("grok-4-fast", (0.2, 0.5, 0.05)),
+    ("grok", (3, 15, 0.75)), ("kimi", (0.6, 2.5, 0.15)), ("qwen", (0.4, 1.2, 0.08)), ("glm", (0.6, 2.2, 0.11)), ("mistral", (0.4, 2, 0.04)),
+]
+
+
+def model_price(m):
+    p = m.get("price")
+    if isinstance(p, (list, tuple)) and len(p) >= 2:
+        return float(p[0]), float(p[1]), float(p[2] if len(p) > 2 else p[0])
+    mid = str(m.get("id", "")).lower()
+    for k, v in PRICES:
+        if k in mid:
+            return v
+    return 0.0, 0.0, 0.0
+
+
+def usage_cost(m, u):
+    pin, pout, pc = model_price(m)
+    cached = min(u.get("cached", 0), u.get("in", 0))
+    return ((u.get("in", 0) - cached) * pin + cached * pc + u.get("out", 0) * pout) / 1e6
+
+
+def add_day_cost(home, cost):
+    p = Path(home) / "usage.json"
+    d = jload(p, {}) or {}
+    day = time.strftime("%Y-%m-%d")
+    d[day] = round(d.get(day, 0) + cost, 6)
+    jsave(p, dict(sorted(d.items())[-90:]))
+    return d[day]
+
+
+def day_cost(home):
+    return (jload(Path(home) / "usage.json", {}) or {}).get(time.strftime("%Y-%m-%d"), 0)
+
+
+def money(x):
+    return "$0" if not x else f"${x:.4f}" if x < 0.01 else f"${x:.3f}" if x < 1 else f"${x:.2f}"
+
+
+# ───────────────────────────── permissions ─────────────────────────────
+# settings.perm: "read" (no writes/commands unless allow-listed) · "ask" (writes inside the project are free, commands ask) · "full".
+# settings.allow: command patterns that never ask, e.g. "git status*", "npm test*". Legacy settings.yolo = full.
+
+PERMS = {"read": "read-only", "ask": "workspace-write (ask for commands)", "full": "full access"}
+DEFAULT_ALLOW = ["git status*", "git diff*", "git log*", "git show*", "ls*", "pwd", "cat *", "head *", "tail *", "wc *", "which *",
+                 "python3 -m pytest*", "pytest*", "npm test*", "npm run test*", "npm run build*", "npm run lint*", "go test*", "cargo test*",
+                 "node --check *", "python3 -m py_compile *"]
+
+
+def perm_mode(settings):
+    return "full" if settings.get("yolo") else settings.get("perm") or "ask"
+
+
+def cmd_allowed(cmd, patterns):
+    cmd = cmd.strip()
+    if not cmd or re.search(r"[;&|`<>\n]|\$\(", cmd):  # chained / redirected commands always ask
+        return False
+    return any(fnmatch.fnmatchcase(cmd, p) for p in patterns)
+
+
+def allow_pattern(cmd):
+    """'npm run build --prod' → 'npm run build*' (first two words)."""
+    words = cmd.strip().split()
+    return " ".join(words[:2 if len(words) > 1 else 1]) + "*"
+
+
+# ───────────────────────────── MCP (lazy) ─────────────────────────────
+# config.mcp = {name: {"command": "npx", "args": [...], "env": {...}, "description": ""} | {"url": "https://…/mcp", "headers": {…}}}
+# Idle cost: one line per server in the prompt. Servers start on first use; tool schemas are fetched only when asked.
+
+class MCPClient:
+    def __init__(self, name, spec):
+        self.name, self.spec = name, spec
+        self.proc, self.lock, self.n, self.sid = None, threading.Lock(), 0, None
+        self.tools = None
+
+    def _rpc_stdio(self, msg):
+        if not self.proc or self.proc.poll() is not None:
+            env = dict(os.environ, **{k: str(v) for k, v in (self.spec.get("env") or {}).items()})
+            self.proc = subprocess.Popen([self.spec["command"], *self.spec.get("args", [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", bufsize=1)
+            self._init()
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+        if "id" not in msg:
+            return None
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError(f"mcp {self.name}: server exited")
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("id") == msg["id"]:
+                return r
+
+    def _rpc_http(self, msg):
+        h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **(self.spec.get("headers") or {})}
+        if self.sid:
+            h["Mcp-Session-Id"] = self.sid
+        req = urllib.request.Request(self.spec["url"], data=json.dumps(msg).encode(), headers=h, method="POST")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            self.sid = resp.headers.get("Mcp-Session-Id") or self.sid
+            body = resp.read().decode("utf-8", "replace")
+        if "id" not in msg:
+            return None
+        if resp.headers.get("Content-Type", "").startswith("text/event-stream"):
+            for line in body.splitlines():
+                if line.startswith("data:"):
+                    try:
+                        r = json.loads(line[5:])
+                    except ValueError:
+                        continue
+                    if r.get("id") == msg["id"]:
+                        return r
+            raise RuntimeError("mcp: no response in stream")
+        return json.loads(body)
+
+    def _send(self, method, params=None, notify=False):
+        msg = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        if not notify:
+            self.n += 1
+            msg["id"] = self.n
+        r = (self._rpc_http if self.spec.get("url") else self._rpc_stdio)(msg)
+        if r and r.get("error"):
+            raise RuntimeError(f"mcp {self.name}: {r['error'].get('message', r['error'])}")
+        return (r or {}).get("result")
+
+    def _init(self):
+        self._send("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "me", "version": VERSION}})
+        self._send("notifications/initialized", notify=True)
+
+    def list_tools(self):
+        with self.lock:
+            if self.spec.get("url") and not self.sid and self.tools is None:
+                self._init()
+            if self.tools is None:
+                self.tools = (self._send("tools/list") or {}).get("tools", [])
+            return self.tools
+
+    def call(self, tool, args):
+        with self.lock:
+            if self.spec.get("url") and not self.sid:
+                self._init()
+            r = self._send("tools/call", {"name": tool, "arguments": args or {}}) or {}
+        parts = []
+        for c in r.get("content", []):
+            parts.append(c.get("text") if c.get("type") == "text" else f"[{c.get('type')}]")
+        return not r.get("isError"), "\n".join(p for p in parts if p) or json.dumps(r)[:4000]
+
+    def close(self):
+        if self.proc:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
+
+
+MCP_CLIENTS = {}
+
+
+def mcp_client(store, name):
+    spec = (store.config.get("mcp") or {}).get(name)
+    if not spec:
+        raise KeyError(name)
+    c = MCP_CLIENTS.get(name)
+    if not c or c.spec != spec:
+        if c:
+            c.close()
+        c = MCP_CLIENTS[name] = MCPClient(name, spec)
+    return c
+
+
+def mcp_describe(tools):
+    out = []
+    for t in tools:
+        props = (t.get("inputSchema") or {}).get("properties", {})
+        req = set((t.get("inputSchema") or {}).get("required", []))
+        args = ", ".join(f"{k}{'' if k in req else '?'}: {v.get('type', 'any')}" for k, v in props.items())
+        out.append(f"- {t['name']}({args}): {(t.get('description') or '').strip().splitlines()[0][:160] if t.get('description') else ''}")
+    return "\n".join(out) or "(no tools)"

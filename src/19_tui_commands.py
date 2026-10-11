@@ -145,9 +145,110 @@ class TUICommands:
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
-        st["yolo"] = not st.get("yolo")
+        st["yolo"] = False
+        st["perm"] = "ask" if perm_mode(st) == "full" else "full"
         self.s.save()
-        self.toast(f"yolo {'ON — tools run without asking' if st['yolo'] else 'off — will ask before write/edit/bash'}", "warn" if st["yolo"] else "ok")
+        self.toast(f"{'full access — tools run without asking' if st['perm'] == 'full' else 'ask — commands and writes outside the project ask'}",
+                   "warn" if st["perm"] == "full" else "ok")
+
+    def cmd_perm(self, arg):
+        st = self.s.config["settings"]
+        cur = perm_mode(st)
+        v = arg or self.pick("Permissions", [(k, ("● " if k == cur else "  ") + PERMS[k], {
+            "read": "no file changes; only allow-listed commands", "ask": "edits inside the project are free; commands ask",
+            "full": "everything runs without asking"}[k]) for k in PERMS] + [("allow", "  allow-list…", "commands that never ask")])
+        if v in PERMS:
+            st["perm"], st["yolo"] = v, False
+            self.s.save()
+            return self.toast("permissions: " + PERMS[v], "ok")
+        if v == "allow":
+            cur_list = st.get("allow") or list(DEFAULT_ALLOW)
+            text = self.prompt("Allowed commands, one pattern per line (* = anything; chained/redirected commands always ask)",
+                               "\n".join(cur_list), multiline=True)
+            if text is not None:
+                st["allow"] = [l.strip() for l in text.splitlines() if l.strip()]
+                self.s.save()
+                self.toast(f"{len(st['allow'])} allowed patterns", "ok")
+
+    def cmd_goal(self, arg):
+        if self.agent.busy:
+            return self.toast("busy", "warn")
+        arg = (arg or "").strip().strip('"')
+        if not arg:
+            arg = self.prompt("Goal — the agent works until it is done and verified, or blocked", multiline=True)
+            if not arg:
+                return
+        self.add("user", text="/goal " + arg)
+        self.agent.goal(arg)
+
+    def cmd_undo(self, arg):
+        r = self.agent.undo()
+        if not r["ok"]:
+            self.toast(r["text"], "warn")
+        else:
+            self.render_history()
+            self.info("↶ " + r["text"], "warn")
+
+    def cmd_todo(self, arg):
+        items = self.agent.session.get("todo") or []
+        if not items:
+            return self.toast("no todo list in this session")
+        self.add("assistant", text="\n".join(("- [x] " if i["s"] == "done" else "- [ ] " if i["s"] == "todo" else "- [>] ") + i["t"] for i in items)).done = True
+
+    def cmd_cost(self, arg):
+        st = self.s.config["settings"]
+        u = self.agent.session.get("usage", {})
+        m = self.s.model() or {}
+        pin, pout, pc = model_price(m)
+        if arg:
+            k, _, v = arg.partition(" ")
+            if k in ("turn", "day"):
+                st["max_turn_cost" if k == "turn" else "max_day_cost"] = float(v or 0)
+                self.s.save()
+                return self.toast(f"{k} limit {money(float(v or 0)) if float(v or 0) else 'off'}", "ok")
+        days = jload(self.s.home / "usage.json", {}) or {}
+        txt = (f"## Spending\n- session: **{money(u.get('cost', 0))}** · ↑{human(u.get('in', 0))} ↓{human(u.get('out', 0))}"
+               f" · cached {human(u.get('cached', 0))}\n- today: **{money(day_cost(self.s.home))}** · last 7 days: "
+               f"{money(sum(v for k, v in sorted(days.items())[-7:]))}\n- {m.get('name', 'model')}: ${pin}/M in · ${pout}/M out · ${pc}/M cached"
+               f"{'' if any((pin, pout)) else ' (unknown — set price in /models)'}\n- limits: per task {money(st.get('max_turn_cost') or 0) if st.get('max_turn_cost') else 'off'}"
+               f" · per day {money(st.get('max_day_cost') or 0) if st.get('max_day_cost') else 'off'}  (`/cost turn 0.5`, `/cost day 5`)")
+        self.add("assistant", text=txt).done = True
+
+    def cmd_mcp(self, arg):
+        mc = self.s.config.setdefault("mcp", {})
+        items = [(k, k, v.get("url") or " ".join([v.get("command", "")] + v.get("args", []))[:60]) for k, v in mc.items()]
+        k = self.pick("MCP servers — loaded lazily: one prompt line idle, tools fetched on use", items + [("+", "+ add server", "stdio command or http url")])
+        if k is None:
+            return
+        if k == "+":
+            name = self.prompt("Name (e.g. github)")
+            if not name:
+                return
+            target = self.prompt("Command (npx -y @modelcontextprotocol/server-github) or URL (https://…/mcp)")
+            if not target:
+                return
+            desc = self.prompt("One-line description for the agent", "")
+            if target.startswith(("http://", "https://")):
+                spec = {"url": target}
+            else:
+                import shlex
+                parts = shlex.split(target)
+                spec = {"command": parts[0], "args": parts[1:]}
+            if desc:
+                spec["description"] = desc
+            mc[re.sub(r"[^\w-]", "", name)] = spec
+            self.s.save()
+            return self.toast(f"MCP {name} added", "ok")
+        act = self.pick(k, [("test", "test: list tools", ""), ("del", "remove", "")])
+        if act == "del":
+            mc.pop(k, None)
+            self.s.save()
+            MCP_CLIENTS.pop(k, None)
+        elif act == "test":
+            try:
+                self.add("assistant", text=f"## {k}\n" + mcp_describe(mcp_client(self.s, k).list_tools())).done = True
+            except Exception as e:
+                self.info(f"✗ {e}", "err")
 
     def cmd_model(self, arg):
         ms = self.s.config["models"]
@@ -284,7 +385,8 @@ class TUICommands:
         fields = [("name", "display name"), ("id", "API model id"), ("provider", "provider"), ("api", "chat | responses"),
                   ("context", "context window, tokens"), ("max_out", "max output tokens (blank = default)"),
                   ("effort", "reasoning effort: none/minimal/low/medium/high/xhigh"), ("temperature", "blank = default"),
-                  ("vision", "send images: true/false")]
+                  ("vision", "send images: true/false"), ("price", "$ per 1M tokens: in out [cached] (blank = built-in table)"),
+                  ("cache", "prompt caching: auto / anthropic / openai / off")]
         while True:
             items = [(f, f"{f:<12} {m.get(f, '')}", d) for f, d in fields] + [("use", "✓ use this model", ""), ("del", "✗ delete", "")]
             f = self.pick(f"Model · {m['name']}", items)
@@ -309,6 +411,17 @@ class TUICommands:
                 v = "" if v == "none" else v
             elif f == "provider":
                 v = self.pick("Provider", list(self.s.config["providers"]), current=m.get("provider"))
+            elif f == "cache":
+                v = self.pick("Prompt caching", [("", "auto", "detect from model/provider"), ("anthropic", "anthropic", "cache_control marker"),
+                                                 ("openai", "openai", "prompt_cache_key"), ("off", "off", "")], current=m.get("cache", ""))
+            elif f == "price":
+                v = self.prompt("in out [cached], $ per 1M tokens", " ".join(map(str, m.get("price") or [])))
+                if v is not None:
+                    try:
+                        v = [float(x) for x in v.replace(",", " ").split()][:3] or ""
+                    except ValueError:
+                        self.toast("numbers, e.g. 3 15 0.3", "err")
+                        continue
             elif f == "vision":
                 v = self.pick("Vision", [(True, "true", ""), (False, "false", "")], current=m.get("vision", True))
             else:

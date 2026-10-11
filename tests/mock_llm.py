@@ -10,6 +10,9 @@ def sse(h, obj):
     h.wfile.flush()
 
 
+LAST = {}  # last request body, for tests
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -24,6 +27,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        LAST.clear()
+        LAST.update(req)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -36,8 +41,17 @@ class H(BaseHTTPRequestHandler):
                 sse(self, {"choices": [{"delta": {"content": part}}]})
         else:
             text = last["content"] if isinstance(last["content"], str) else last["content"][0]["text"]
-            if text.startswith("tool:"):
+            if text.startswith("tools:"):  # several calls in one message: tools:[["read", {...}], ["ls", {...}]]
+                for i, (name, args) in enumerate(json.loads(text[6:])):
+                    sse(self, {"choices": [{"delta": {"tool_calls": [{"index": i, "id": f"c{i}", "function": {"name": name, "arguments": json.dumps(args)}}]}}]})
+            elif text.startswith("GOAL:"):
+                sse(self, {"choices": [{"delta": {"content": "all criteria pass\nGOAL: DONE tests green"}}]})
+            elif text.startswith("tool:"):
                 name, _, args = text[5:].partition(" ")
+                try:  # ignore any text after the JSON (e.g. a background-job suffix)
+                    args = json.dumps(json.JSONDecoder().raw_decode(args)[0])
+                except ValueError:
+                    pass
                 sse(self, {"choices": [{"delta": {"reasoning_content": "thinking about it"}}]})
                 sse(self, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": name, "arguments": ""}}]}}]})
                 for i in range(0, len(args), 7):
@@ -46,7 +60,7 @@ class H(BaseHTTPRequestHandler):
                 for w in ("Hello", " **world**", "!\n```py\nprint(1)\n```"):
                     time.sleep(0.02)
                     sse(self, {"choices": [{"delta": {"content": w}}]})
-        sse(self, {"choices": [], "usage": {"prompt_tokens": 900 + len(json.dumps(msgs)) // 4, "completion_tokens": 20}})
+        sse(self, {"choices": [], "usage": {"prompt_tokens": 900 + len(json.dumps(msgs)) // 4, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 800}}})
         self.wfile.write(b"data: [DONE]\n\n")
 
     def do_responses(self, req):

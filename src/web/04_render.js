@@ -80,27 +80,34 @@ function onEvent(e) {
     return;
   }
   if (t === "confirm") {
-    const c = el(`<div class="confirm"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class="btns"><button class="btn">allow</button><button class="btn ghost">deny</button></div></div>`);
-    const [y, n] = c.querySelectorAll("button");
+    const c = el(`<div class="confirm"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class="btns"><button class="btn">allow</button><button class="btn ghost">${e.name === "bash" ? "always allow" : "allow all (full)"}</button><button class="btn ghost">deny</button></div></div>`);
+    const [y, al, n] = c.querySelectorAll("button");
     y.onclick = () => { api(base + "/confirm", {id: e.id, ok: true}); c.remove(); };
+    al.onclick = () => { api(base + "/confirm", {id: e.id, ok: "always"}); if (e.name !== "bash") { state.perm = "full"; A.setPerm("full"); renderStatus(); } c.remove(); };
     n.onclick = () => { api(base + "/confirm", {id: e.id, ok: false}); c.remove(); };
     return;
   }
   if (t === "compacting") { el(`<div class="info">compacting history…</div>`); return; }
   if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">compacted ${e.before} → ${e.after} messages · ~${human(e.ctx)} tokens</div>`); return; }
-  if (t === "usage") { state.ctx = e.ctx; renderStatus(e.in, e.out); return; }
+  if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
   if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${esc(e.text)}</div>`); return; }
   if (t === "turn_end") {
     const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();
-    el(`<div class="stats">${failed ? I.x : I.check}${dur(e.time)} · ↑ ${human(e.in)} ↓ ${human(e.out)} · ${human(e.in + e.out)} tokens</div>`);
+    el(`<div class="stats">${failed ? I.x : I.check}${dur(e.time)} · ↑ ${human(e.in)} ↓ ${human(e.out)} · ${human(e.in + e.out)} tokens${e.cost ? " · " + money(e.cost) : ""}</div>`);
     state.ctx = e.ctx; renderStatus(); refreshSessions(); return;
   }
+  if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
+  if (t === "goal") { goalEvent(e); return; }
+  if (t === "verify") { el(`<div class="info">self-check: running checks before finishing</div>`); return; }
+  if (t === "turn_diff") { diffCard(e.files || []); return; }
+  if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
   if (t === "loaded" && e.title) $("title").textContent = e.title;
   if (t === "reload") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }
   if (t === "exit") { busy = false; setBusy(); restartSandbox(); }
 }
 function renderHistory(s) {
   clearLog();
+  if (!s || !s.messages || !s.messages.length) renderTodo([]);
   if (!s || !s.messages || !s.messages.length) return emptyState();
   const txt = c => Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : (c || "");
   const outs = {};
@@ -117,6 +124,8 @@ function renderHistory(s) {
     }
   });
   $("title").textContent = s.title || "Chat";
+  renderTodo(s.todo || []);
+  if (s.goal && s.goal.status !== "working") goalEvent(s.goal, true);
   setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);
 }
 function renderStatus(tin, tout) {
@@ -131,6 +140,12 @@ function renderStatus(tin, tout) {
   $("agentName").textContent = ag ? ag.label : (state.agent || "code");
   const cf = state.context || [];
   $("ctxfiles").innerHTML = cf.length ? `<span class="cf on" title="loaded into every turn">◆ ${cf.map(esc).join(" · ")}</span>` : `<span class="cf" title="ask the agent to create it, or /init in the terminal">◇ no AGENTS.md</span>`;
+  const cost = state.session?.usage?.cost || 0;
+  $("cost").textContent = cost || state.day_cost ? money(cost) + (state.day_cost ? " · today " + money(state.day_cost) : "") : "";
+  const pm = state.perm || "ask";
+  $("perm").textContent = {read: "read-only", ask: "ask", full: "full access", sandbox: "sandbox"}[pm] || pm;
+  $("perm").className = "perm " + pm;
+  if (state.preview) { $("previewBtn").href = state.preview + "/"; $("previewBtn").classList.remove("hidden"); } else $("previewBtn").classList.add("hidden");
   $("ws").textContent = state.ws || (MODE === "local" ? (state.cwd || "local").split(/[\\/]/).pop() : "cloud");
 }
 function renderSessions() {
@@ -144,7 +159,7 @@ function renderSessions() {
 async function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }
 function setBusy() {
   $("sendIcon").innerHTML = busy ? I.stop : I.up;
-  $("send").disabled = !busy && !$("input").value.trim();
+  $("send").disabled = !busy && !$("input").value.trim() && !atts.length;
   if (busy && (!workEl || workEl.parentNode !== log)) {
     workEl = document.createElement("div"); workEl.className = "working";
     workEl.innerHTML = '<span class="spin"></span><span class="shimmer">working…</span><span class="el"></span>'; log.appendChild(workEl); scroll();
