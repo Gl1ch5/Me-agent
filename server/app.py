@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 from pydantic import BaseModel
 
 HERE = Path(__file__).resolve().parent
-DB = os.environ.get("ME_DB", str(HERE / "me.db"))
+DB_PATH = os.environ.get("ME_DB", str(HERE / "me.db"))
 CLIENT = Path(os.environ.get("ME_CLIENT", HERE.parent / "me.py"))
 PUBLIC = os.environ.get("ME_PUBLIC_URL", "").rstrip("/")
 MAX_DOC = 20 * 1024 * 1024
@@ -30,14 +30,30 @@ def notify(uid=None):
         changed.notify_all()
 
 
-def db():
-    c = sqlite3.connect(DB, check_same_thread=False, isolation_level=None)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
-    return c
+class DB:
+    """One sqlite connection per thread (sqlite objects must not be shared across threads)."""
+
+    def __init__(self, path):
+        self.path, self.local = path, threading.local()
+
+    def _c(self):
+        c = getattr(self.local, "c", None)
+        if c is None:
+            c = sqlite3.connect(self.path, isolation_level=None, timeout=30)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA journal_mode=WAL")
+            c.execute("PRAGMA busy_timeout=30000")
+            self.local.c = c
+        return c
+
+    def execute(self, *a):
+        return self._c().execute(*a)
+
+    def executescript(self, s):
+        return self._c().executescript(s)
 
 
-conn = db()
+conn = DB(DB_PATH)
 conn.executescript("""
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE COLLATE NOCASE, pw TEXT, totp TEXT, totp_on INTEGER DEFAULT 0,
   admin INTEGER DEFAULT 0, created REAL, seen REAL);
@@ -271,7 +287,7 @@ def sync(r: SyncReq, u=Depends(user)):
     with lock:
         rev = conn.execute("SELECT COALESCE(MAX(rev),0) FROM docs WHERE user_id=?", (uid,)).fetchone()[0]
         pushed = set()
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         for d in r.push:
             if not re.fullmatch(KEY_RX, d.key) or len(d.content) > MAX_DOC:
                 continue
