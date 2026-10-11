@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>me — your agent, everywhere</title>
+<meta name="description" content="A minimal coding agent in one Python file. Config, keys, skills and chats sync to the cloud — install on any machine and you're home.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0c10;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--y:#e7c66b;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+:root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.wrap{max-width:980px;margin:0 auto;padding:0 20px}
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.logo{font-family:var(--mono);font-weight:700;font-size:20px;letter-spacing:-.5px;display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo i{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b));display:inline-block}
+nav .links{display:flex;gap:22px;font-size:14px;color:var(--dim)}
+nav .links a{text-decoration:none}nav .links a:hover{color:var(--fg)}
+.hero{padding:70px 0 40px}
+.hero h1{font-family:var(--mono);font-size:clamp(40px,8vw,84px);line-height:1;letter-spacing:-3px;font-weight:700}
+.hero h1 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{margin-top:22px;font-size:clamp(16px,2.2vw,20px);color:var(--dim);max-width:640px;line-height:1.55}
+.hero p b{color:var(--fg);font-weight:500}
+.install{margin-top:34px;max-width:680px}
+.tabs{display:flex;gap:4px;margin-bottom:-1px}
+.tabs button{font:500 13px var(--mono);background:none;border:1px solid transparent;border-bottom:none;color:var(--dim);padding:8px 14px;border-radius:8px 8px 0 0;cursor:pointer}
+.tabs button.on{background:var(--bg2);border-color:var(--line);color:var(--fg)}
+.cmd{display:flex;align-items:center;gap:12px;background:var(--bg2);border:1px solid var(--line);border-radius:0 10px 10px 10px;padding:16px 18px;font:14px var(--mono);overflow-x:auto}
+.cmd .p{color:var(--a);user-select:none}.cmd code{flex:1;white-space:nowrap}
+.copy{font:12px var(--mono);background:var(--line);color:var(--fg);border:none;border-radius:6px;padding:6px 10px;cursor:pointer;flex-shrink:0}
+.copy:hover{background:var(--faint)}
+.note{margin-top:12px;font-size:13px;color:var(--dim)}
+.term{margin:56px 0 0;border:1px solid var(--line);border-radius:14px;background:#0e0f13;overflow:hidden;box-shadow:0 30px 80px -30px rgba(139,124,255,.25)}
+.term .bar{display:flex;gap:7px;padding:12px 14px;border-bottom:1px solid #1d2029}
+.term .bar i{width:11px;height:11px;border-radius:50%;background:#2a2d38}
+.term pre{font:13px/1.6 var(--mono);color:#d8dae3;padding:18px 20px;overflow-x:auto;min-height:330px;white-space:pre}
+.c-a{color:#8b7cff}.c-b{color:#4fd1c5}.c-d{color:#6b6f80}.c-f{color:#3a3d4a}.c-ok{color:#5ad18a}.c-y{color:#e7c66b}.c-m{color:#d27cff}.c-u{background:#262a38;display:inline-block;width:100%}
+section{padding:80px 0 0}
+h2{font-family:var(--mono);font-size:26px;letter-spacing:-1px;margin-bottom:10px}
+.sub{color:var(--dim);margin-bottom:34px;line-height:1.6;max-width:620px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.grid div{background:var(--bg);padding:26px}
+.grid h3{font:600 15px var(--mono);margin-bottom:8px;display:flex;gap:10px;align-items:center}
+.grid h3 em{font-style:normal;color:var(--a)}
+.grid p{color:var(--dim);font-size:14.5px;line-height:1.6}
+.code{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:20px;font:13px/1.65 var(--mono);overflow-x:auto;white-space:pre}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+@media (max-width:760px){.two{grid-template-columns:1fr}nav .links a.hide{display:none}}
+.k{color:#c39bff}.s{color:#a5d6a7}.cm{color:var(--dim)}.fn{color:var(--b)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td{padding:10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td:first-child{font-family:var(--mono);color:var(--a);white-space:nowrap;padding-right:24px}
+td:last-child{color:var(--dim)}
+footer{padding:90px 0 50px;color:var(--dim);font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.blink{animation:b 1s steps(1) infinite}@keyframes b{50%{opacity:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <a class="logo" href="/"><i></i>me</a>
+  <div class="links"><a class="hide" href="#skills">skills</a><a class="hide" href="#commands">commands</a><a href="/account">account</a></div>
+</nav>
+
+<div class="hero">
+  <h1>your agent,<br><span>everywhere.</span></h1>
+  <p><b>me</b> is a minimal coding agent in <b>one Python file</b>. Your models, API keys, prompts, skills and chats live in the cloud — install on any machine, log in, and everything is already there.</p>
+  <div class="install">
+    <div class="tabs"><button class="on" data-t="sh">macOS / Linux</button><button data-t="ps">Windows</button></div>
+    <div class="cmd"><span class="p">$</span><code id="cmd">curl -fsSL __SERVER__/i | sh</code><button class="copy" id="cp">copy</button></div>
+    <div class="note">Needs Python 3.8+. No pip, no node, no dependencies. Then just type <code>me</code>.</div>
+  </div>
+</div>
+
+<div class="term"><div class="bar"><i></i><i></i><i></i></div><pre id="demo"></pre></div>
+
+<section>
+  <h2>tiny on purpose</h2>
+  <p class="sub">Most agents spend 10–20k tokens before you say hello. me starts at ~600: a 60-token system prompt and seven compact tools. Everything else loads only when it's needed.</p>
+  <div class="grid">
+    <div><h3><em>01</em>one file</h3><p>~3k lines of stdlib Python. Read it, fork it, run it anywhere Python runs — Linux, macOS, Windows, a server, a Raspberry Pi.</p></div>
+    <div><h3><em>02</em>cloud sync</h3><p>Config, providers, keys, system prompt, skills and full chat history follow your account. New laptop? <code>me</code> → log in → done.</p></div>
+    <div><h3><em>03</em>any model</h3><p>Any OpenAI-compatible API: chat/completions or responses, reasoning effort, streaming thinking, custom names, context sizes, model sync.</p></div>
+    <div><h3><em>04</em>skills, not MCP</h3><p>A skill is one .py file: instructions + actions. Costs ~15 tokens idle. Actions run in a sandboxed process with live progress bars.</p></div>
+    <div><h3><em>05</em>real TUI</h3><p>Full-screen, animated, slash commands with fuzzy suggestions, @file completion, diffs, collapsible tool cards, context meter.</p></div>
+    <div><h3><em>06</em>2FA if you want</h3><p>Username + password by default. Attach Google Authenticator, Aegis or 1Password in one command when you want it locked down.</p></div>
+  </div>
+</section>
+
+<section id="skills">
+  <h2>skills are just python</h2>
+  <p class="sub">The model sees one line per skill. When it needs one, it loads the guide and calls actions. Each call shows up as a live card — status, progress, logs — then collapses into a one-liner.</p>
+  <div class="two">
+<div class="code"><span class="s">"""
+name: github
+description: issues & PRs on GitHub
+icon:
+color: magenta
+env: GITHUB_TOKEN
+---
+Call list_prs before labeling.
+"""</span>
+
+<span class="k">@action</span>
+<span class="k">def</span> <span class="fn">list_prs</span>(ctx, repo: str):
+    <span class="s">"Open PRs of a repo"</span>
+    <span class="k">return</span> ctx.http.get(<span class="s">f"…/repos/{repo}/pulls"</span>)
+
+<span class="k">@action</span>(confirm=<span class="k">True</span>)
+<span class="k">def</span> <span class="fn">label</span>(ctx, repo: str, nums: list):
+    <span class="s">"Label many PRs"</span>
+    <span class="k">for</span> n <span class="k">in</span> ctx.progress(nums, <span class="s">"labeling"</span>):
+        ctx.log(<span class="s">f"#{n}"</span>)
+        …</div>
+<div class="code" style="background:#0e0f13;color:#d8dae3"><span class="c-m">  ╭─  github · label ─────── 2.4s ─╮</span>
+<span class="c-m">  │</span> <span class="c-d">repo="me" nums=[12,15,19]</span>      <span class="c-m">│</span>
+<span class="c-m">  │</span> labeling <span class="c-m">██████████</span><span class="c-f">░░░░░</span> <span class="c-d">2/3</span>   <span class="c-m">│</span>
+<span class="c-m">  │</span> <span class="c-m">›</span> <span class="c-d">#12</span>                          <span class="c-m">│</span>
+<span class="c-m">  │</span> <span class="c-m">›</span> <span class="c-d">#15</span>                          <span class="c-m">│</span>
+<span class="c-m">  ╰────────────────────────────────╯</span>
+
+<span class="c-ok">  ✓</span> <span class="c-m"> github</span> <span class="c-d">·</span> list_prs  <span class="c-f">0.8s</span>  <span class="c-d">3 open</span>
+
+<span class="c-d">  /skills → new from template,
+           ask me to write one,
+           install from URL</span></div>
+  </div>
+</section>
+
+<section id="commands">
+  <h2>commands</h2>
+  <p class="sub">Type <code>/</code> and start typing — suggestions are fuzzy.</p>
+  <table>
+    <tr><td>/model /models</td><td>switch, add, edit, sync models from a provider</td></tr>
+    <tr><td>/provider</td><td>any OpenAI-compatible URL + key</td></tr>
+    <tr><td>/effort</td><td>reasoning effort none → xhigh</td></tr>
+    <tr><td>/prompt</td><td>your own system prompt, synced</td></tr>
+    <tr><td>/skills /secret</td><td>manage skills and the env secrets they use</td></tr>
+    <tr><td>/sessions /new</td><td>resume any chat from any machine</td></tr>
+    <tr><td>/login /2fa /sync</td><td>cloud account, authenticator, sync now</td></tr>
+    <tr><td>me -p "task"</td><td>headless one-shot · <code>me --rpc</code> JSON-lines for your own UI</td></tr>
+  </table>
+</section>
+
+<footer><span>me v__VERSION__ · made for people who switch machines</span><span><a href="/account">account</a> · <a href="/me.py">source</a></span></footer>
+</div>
+
+<script>
+const S = "__SERVER__";
+const cmds = {sh: `curl -fsSL ${S}/i | sh`, ps: `irm ${S}/i.ps1 | iex`};
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  document.getElementById("cmd").textContent = cmds[b.dataset.t];
+});
+if (/Win/.test(navigator.platform)) document.querySelector('[data-t="ps"]').click();
+document.getElementById("cp").onclick = e => {
+  navigator.clipboard.writeText(document.getElementById("cmd").textContent);
+  e.target.textContent = "copied"; setTimeout(() => e.target.textContent = "copy", 1400);
+};
+// terminal demo
+const pre = document.getElementById("demo");
+const SP = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const W = 64;
+function bar(f, w) { const n = Math.floor(f * w); return `<span class="c-m">${"█".repeat(n)}</span><span class="c-f">${"░".repeat(w - n)}</span>`; }
+const user = "add retries to the http client and run tests";
+let t = 0;
+function frame() {
+  t++;
+  const typed = user.slice(0, Math.min(user.length, t));
+  const T = t - user.length - 6;
+  let out = `<span class="c-a">  █▀▄▀█ █▀▀</span>\n<span class="c-b">  █ ▀ █ ██▄</span>   <span class="c-d">me · ~/code/api</span>\n\n`;
+  out += `<span class="c-y">›</span> ${esc(typed)}${T < 0 ? '<span class="blink">▌</span>' : ""}\n\n`;
+  if (T > 0) out += `  <span class="c-f">∴</span> <span class="c-d"><i>thought for 1.2s</i></span>\n`;
+  if (T > 4) out += `  ${T > 9 ? '<span class="c-ok">✓</span>' : '<span class="c-a">' + SP[t % 10] + '</span>'} <b>read</b> <span class="c-d">src/http.py</span>${T > 9 ? '  <span class="c-f">0.0s</span>' : ""}\n`;
+  if (T > 10) out += `  ${T > 15 ? '<span class="c-ok">✓</span>' : '<span class="c-a">' + SP[t % 10] + '</span>'} <b>edit</b> <span class="c-d">src/http.py</span>\n    <span class="c-f">│</span> <span class="c-ok">+    for attempt in range(retries):</span>\n    <span class="c-f">│</span> <span class="c-ok">+        try: return self._send(req)</span>\n`;
+  if (T > 16) {
+    const p = Math.min(1, (T - 16) / 24);
+    if (p < 1) {
+      out += `  <span class="c-m">╭─  pytest · run ${"─".repeat(36)} ${(p * 3.1).toFixed(1)}s ─╮</span>\n`;
+      out += `  <span class="c-m">│</span> tests ${bar(p, 40)} <span class="c-d">${Math.floor(p * 48)}/48</span>${" ".repeat(5)}<span class="c-m">│</span>\n`;
+      out += `  <span class="c-m">│</span> <span class="c-m">›</span> <span class="c-d">test_retry_backoff PASSED</span>${" ".repeat(27)}<span class="c-m">│</span>\n`;
+      out += `  <span class="c-m">╰${"─".repeat(56)}╯</span>\n`;
+    } else out += `  <span class="c-ok">✓</span> <span class="c-m"> pytest</span> <span class="c-d">·</span> run  <span class="c-f">3.1s</span>  <span class="c-d">48 passed</span>\n`;
+  }
+  if (T > 42) out += `\n  Added retries with exponential backoff to <span class="c-b">HttpClient._send</span>.\n  All 48 tests pass.\n\n  <span class="c-ok">✓</span> <span class="c-d">6.8s  ·  ↑ 4.1k  ↓ 312  ·  4.4k tokens</span>\n`;
+  const lines = out.split("\n").length;
+  out += "\n".repeat(Math.max(0, 15 - lines));
+  out += `<span class="c-a">╭${"─".repeat(W)}╮</span>\n<span class="c-a">│</span> <span class="c-a">›</span> <span class="c-f">ask anything, / for commands</span>${" ".repeat(W - 32)}<span class="c-a">│</span>\n<span class="c-a">╰${"─".repeat(W)}╯</span>\n`;
+  out += ` <span class="c-b">●</span> gpt-5 <span class="c-d">· high   ctx</span> ${bar(T > 42 ? .13 : .02, 10).replace(/c-m/g, "c-ok")} <span class="c-d">4.4k/400k 1%   ↑4.1k ↓312</span>   <span class="c-ok">☁ ✓</span>`;
+  pre.innerHTML = out;
+  if (T > 80) t = 0;
+}
+setInterval(frame, 90);
+</script>
+</body>
+</html>

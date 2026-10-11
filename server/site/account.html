@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>me · account</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#0b0c10;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+:root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:0 20px 80px}
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0 40px}
+.logo{font-family:var(--mono);font-weight:700;font-size:20px;display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit}
+.logo i{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}
+h1{font-family:var(--mono);font-size:30px;letter-spacing:-1px;margin-bottom:6px}
+h2{font-family:var(--mono);font-size:16px;margin:0 0 14px}
+.dim{color:var(--dim)}
+.card{border:1px solid var(--line);border-radius:14px;padding:24px;margin-top:20px;background:var(--bg)}
+input{width:100%;font:15px var(--sans);background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:9px;padding:12px 14px;margin-top:10px;outline:none}
+input:focus{border-color:var(--a)}
+button{font:500 14px var(--mono);background:var(--a);color:#fff;border:none;border-radius:9px;padding:11px 18px;cursor:pointer;margin-top:14px}
+button.ghost{background:none;color:var(--dim);border:1px solid var(--line)}
+button.ghost:hover{color:var(--fg)}
+button.small{padding:5px 10px;font-size:12px;margin:0}
+.switch{display:flex;gap:4px;background:var(--bg2);padding:4px;border-radius:10px;width:max-content}
+.switch button{margin:0;background:none;color:var(--dim);padding:8px 16px}
+.switch button.on{background:var(--line);color:var(--fg)}
+.err{color:var(--err);font-size:14px;margin-top:10px;min-height:18px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.stat{background:var(--bg2);border-radius:10px;padding:14px}
+.stat b{display:block;font:600 22px var(--mono)}
+.stat span{font-size:12px;color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;color:var(--dim);font-weight:500;padding:8px 6px;border-bottom:1px solid var(--line)}
+td{padding:9px 6px;border-bottom:1px solid var(--line)}
+.tag{font:11px var(--mono);padding:2px 7px;border-radius:5px;background:var(--line);color:var(--dim)}
+.tag.on{background:rgba(90,209,138,.15);color:var(--ok)}
+#qr{background:#fff;padding:12px;border-radius:10px;width:max-content;margin:14px 0}
+code{font-family:var(--mono);font-size:13px;background:var(--bg2);padding:2px 6px;border-radius:5px;word-break:break-all}
+.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.hidden{display:none}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a class="logo" href="/"><i></i>me</a><a href="/" class="dim" style="font-size:14px">← home</a></nav>
+
+<div id="auth">
+  <h1>your account</h1>
+  <p class="dim">Same login as in the terminal (<code>/login</code>).</p>
+  <div class="card">
+    <div class="switch"><button class="on" data-m="login">log in</button><button data-m="register">create account</button></div>
+    <form id="f">
+      <input id="u" placeholder="username" autocomplete="username" required>
+      <input id="p" type="password" placeholder="password" autocomplete="current-password" required>
+      <input id="c" class="hidden" placeholder="authenticator code" inputmode="numeric" autocomplete="one-time-code">
+      <button type="submit" id="go">log in</button>
+      <div class="err" id="e"></div>
+    </form>
+  </div>
+</div>
+
+<div id="dash" class="hidden">
+  <div class="row"><div><h1 id="hello"></h1><p class="dim" id="since"></p></div><button class="ghost" id="out">log out</button></div>
+  <div class="card"><div class="stats" id="stats"></div></div>
+  <div class="card"><h2>skills</h2><div class="chips" id="skills"></div></div>
+  <div class="card">
+    <div class="row"><h2 style="margin:0">authenticator (2FA)</h2><span id="tstate"></span></div>
+    <div id="tbody" style="margin-top:12px"></div>
+  </div>
+  <div class="card"><h2>devices</h2><table id="dev"></table></div>
+  <div class="card">
+    <h2>password</h2>
+    <input id="po" type="password" placeholder="current password"><input id="pn" type="password" placeholder="new password">
+    <button id="pw">change</button><div class="err" id="pe"></div>
+  </div>
+  <div class="card hidden" id="admin"><h2>users · admin</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
+</div>
+</div>
+
+<script>
+let mode = "login", tok = localStorage.getItem("me_token");
+const $ = id => document.getElementById(id);
+const ago = t => { if (!t) return "—"; const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; };
+const size = b => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+async function api(path, body, method) {
+  const r = await fetch(path, {method: method || (body ? "POST" : "GET"), headers: {"Content-Type": "application/json", ...(tok ? {Authorization: "Bearer " + tok} : {})}, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
+  mode = b.dataset.m; document.querySelectorAll(".switch button").forEach(x => x.classList.toggle("on", x === b));
+  $("go").textContent = mode === "login" ? "log in" : "create account"; $("e").textContent = "";
+});
+$("f").onsubmit = async e => {
+  e.preventDefault(); $("e").textContent = "";
+  try {
+    const r = await api("/api/" + mode, {username: $("u").value.trim(), password: $("p").value, totp: $("c").value || null, device: "web"});
+    tok = r.token; localStorage.setItem("me_token", tok); load();
+  } catch (err) {
+    if (err.message === "totp_required" || err.message === "totp_invalid") {
+      $("c").classList.remove("hidden"); $("c").focus();
+      $("e").textContent = err.message === "totp_invalid" ? "wrong code" : "enter your authenticator code";
+    } else $("e").textContent = err.message;
+  }
+};
+$("out").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} localStorage.removeItem("me_token"); location.reload(); };
+$("pw").onclick = async () => {
+  try { await api("/api/password", {old: $("po").value, new: $("pn").value}); $("pe").style.color = "var(--ok)"; $("pe").textContent = "changed · other devices logged out"; load(); }
+  catch (e) { $("pe").style.color = ""; $("pe").textContent = e.message; }
+};
+async function load() {
+  let me;
+  try { me = await api("/api/me"); } catch (e) { localStorage.removeItem("me_token"); tok = null; return; }
+  $("auth").classList.add("hidden"); $("dash").classList.remove("hidden");
+  $("hello").textContent = me.username;
+  $("since").textContent = `member since ${new Date(me.created * 1000).toLocaleDateString()}`;
+  const k = me.kinds;
+  $("stats").innerHTML = [["sessions", k.session || 0], ["skills", k.skill || 0], ["devices", me.devices.length], ["synced", size(me.bytes)]]
+    .map(([l, v]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+  $("skills").innerHTML = me.skills.length ? me.skills.map(s => `<span class="tag">${esc(s)}</span>`).join("") : '<span class="dim">no skills yet — /skills in the terminal</span>';
+  $("tstate").innerHTML = me.totp_enabled ? '<span class="tag on">on</span>' : '<span class="tag">off</span>';
+  $("tbody").innerHTML = me.totp_enabled
+    ? `<p class="dim">Login asks for a 6-digit code.</p><input id="tc" placeholder="current code to turn off" inputmode="numeric"><button class="ghost" id="toff">turn off</button><div class="err" id="te"></div>`
+    : `<p class="dim">Optional. Adds a 6-digit code from Google Authenticator, Aegis, 1Password… to every login.</p><button id="ton">set up</button><div id="tsetup"></div>`;
+  if (me.totp_enabled) $("toff").onclick = async () => { try { await api("/api/totp/disable", {code: $("tc").value}); load(); } catch (e) { $("te").textContent = e.message; } };
+  else $("ton").onclick = async () => {
+    const r = await api("/api/totp/setup", {});
+    $("tsetup").innerHTML = `<div id="qr"></div><p class="dim" style="font-size:13px">or enter key: <code>${r.secret}</code></p><input id="tc" placeholder="6-digit code" inputmode="numeric"><button id="tok">enable</button><div class="err" id="te"></div>`;
+    new QRCode($("qr"), {text: r.uri, width: 168, height: 168});
+    $("tok").onclick = async () => { try { await api("/api/totp/enable", {code: $("tc").value}); load(); } catch (e) { $("te").textContent = e.message; } };
+  };
+  $("dev").innerHTML = "<tr><th>device</th><th>last used</th><th></th></tr>" + me.devices.map(d =>
+    `<tr><td>${esc(d.device || "?")} ${d.current ? '<span class="tag on">this</span>' : ""}</td><td class="dim">${ago(d.used)}</td><td style="text-align:right">${d.current ? "" : `<button class="ghost small" data-id="${d.id}">revoke</button>`}</td></tr>`).join("");
+  $("dev").querySelectorAll("button").forEach(b => b.onclick = async () => { await api("/api/devices/" + b.dataset.id, null, "DELETE"); load(); });
+  if (me.admin) {
+    const us = await api("/api/admin/users");
+    $("admin").classList.remove("hidden");
+    $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>dev</th><th>2fa</th></tr>" + us.map(u =>
+      `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString()}</td><td>${u.docs}</td><td class="dim">${size(u.bytes)}</td><td>${u.devices}</td><td>${u.totp_on ? '<span class="tag on">on</span>' : ""}</td></tr>`).join("");
+  }
+}
+if (tok) load();
+</script>
+</body>
+</html>

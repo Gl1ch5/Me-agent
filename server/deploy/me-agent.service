@@ -1,0 +1,14 @@
+[Unit]
+Description=me cloud
+After=network.target
+
+[Service]
+User=meagent
+WorkingDirectory=/opt/me-agent/server
+Environment=ME_DB=/var/lib/me-agent/me.db
+Environment=ME_CLIENT=/opt/me-agent/me.py
+ExecStart=/usr/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8790 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
