@@ -1,7 +1,17 @@
 """Fixed files the promo mock 'writes' (deterministic, no real content). Palette = me-dark."""
 
 
-def page(bg, fg, dim, accent, accent2, title):
+COPY_RU = dict(logo="◆ kofe &amp; co", nav1="меню", nav2="адрес", h1="Кофе, который просыпается раньше вас",
+               lead="Свежая обжарка каждую неделю. Заходите за эспрессо или оставайтесь на весь день.",
+               cta="Смотреть меню", items=[("Эспрессо", "двойной, 2 шота, шоколад"), ("Флэт уайт", "молоко, бархатная пенка"), ("Фильтр", "сезонный сорт, V60")])
+COPY_EN = dict(logo="◆ kofe &amp; co", nav1="menu", nav2="visit", h1="Coffee that wakes up before you do",
+               lead="Fresh roast every week. Stop by for an espresso or stay all day.",
+               cta="See the menu", items=[("Espresso", "double shot, chocolate notes"), ("Flat white", "milk, velvet foam"), ("Filter", "seasonal beans, V60")])
+
+
+def page(bg, fg, dim, accent, accent2, title, copy=COPY_RU):
+    c = copy
+    items = "".join(f'<div class="item"><b>{a}</b><p>{b}</p></div>' for a, b in c["items"])
     return f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
@@ -18,14 +28,12 @@ header{{display:flex;justify-content:space-between;align-items:center;padding:20
 .item b{{color:var(--accent2)}}
 </style></head>
 <body>
-<header><span class="logo">◆ kofe &amp; co</span><nav><a href="#menu">меню</a><a href="#visit">адрес</a></nav></header>
-<section class="hero"><h1>Кофе, который просыпается раньше вас</h1>
-<p>Свежая обжарка каждую неделю. Заходите за эспрессо или оставайтесь на весь день.</p>
-<a class="cta" href="#menu">Смотреть меню</a></section>
+<header><span class="logo">{c["logo"]}</span><nav><a href="#menu">{c["nav1"]}</a><a href="#visit">{c["nav2"]}</a></nav></header>
+<section class="hero"><h1>{c["h1"]}</h1>
+<p>{c["lead"]}</p>
+<a class="cta" href="#menu">{c["cta"]}</a></section>
 <section class="menu" id="menu">
-<div class="item"><b>Эспрессо</b><p>двойной, 2 шота, шоколад</p></div>
-<div class="item"><b>Флэт уайт</b><p>молоко, бархатная пенка</p></div>
-<div class="item"><b>Фильтр</b><p>сезонный сорт, V60</p></div>
+{items}
 </section>
 </body></html>
 """
@@ -33,6 +41,8 @@ header{{display:flex;justify-content:space-between;align-items:center;padding:20
 
 LANDING = page("#0e0f13", "#d8dae3", "#6b6f80", "#8b7cff", "#4fd1c5", "kofe & co")
 LANDING_DARK_THEME = page("#212121", "#ececec", "#9b9b9b", "#ececec", "#a3a3a3", "kofe & co")
+LANDING_EN = page("#0e0f13", "#d8dae3", "#6b6f80", "#8b7cff", "#4fd1c5", "kofe & co", COPY_EN)
+LANDING_EN_DARK = page("#212121", "#ececec", "#9b9b9b", "#ececec", "#a3a3a3", "kofe & co", COPY_EN)
 
 DESIGN_MD = """# DESIGN — kofe & co
 

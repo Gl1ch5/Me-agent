@@ -34,10 +34,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install fastapi uvicorn playwright pyte pillow
+      - run: pip install fastapi uvicorn playwright pyte pillow numpy
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: python3 -m playwright install --with-deps chromium --only-shell
       - run: scripts/build_promo.sh
+      # the full-length video (RU/EN x 16:9/9:16) comes after the short clips: build_promo.sh clears dist/promo first
+      - run: scripts/build_promo_full.sh
+      - name: move the full-length videos next to the short ones for the release
+        if: always()
+        run: cp dist/promo/full/me-*.mp4 dist/promo/full/me-*.webp dist/promo/ 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: promo, path: dist/promo, if-no-files-found: ignore}
@@ -97,8 +102,8 @@ jobs:
           [ -f dist-in/me-desktop.exe ] && cp dist-in/me-desktop.exe release/ || true
           [ -f dist-in/me-android.apk ] && cp dist-in/me-android.apk release/ || true
           if [ "${{ needs.promo.result }}" = "success" ]; then
-            cp dist-in/promo-*.mp4 dist-in/promo-*.webp release/
-            PROMO="promo: ✓ clips attached"
+            cp dist-in/promo-*.mp4 dist-in/promo-*.webp dist-in/me-*.mp4 dist-in/me-*.webp release/
+            PROMO="promo: ✓ short clips and the full-length video (RU/EN × 16:9/9:16) attached"
           else
             PROMO="promo failed — no clips in this nightly (see the promo job log)"
           fi

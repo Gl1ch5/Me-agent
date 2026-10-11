@@ -8,16 +8,22 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "scripts" / "promo"))
 import mock_llm  # noqa: E402
-from fixtures import DESIGN_MD, LANDING, LANDING_DARK_THEME  # noqa: E402
+from fixtures import DESIGN_MD, LANDING, LANDING_DARK_THEME, LANDING_EN, LANDING_EN_DARK  # noqa: E402
 
-VOICE_TEXT = "напиши тест для парсера"  # what the fake transcriber "hears"
+VOICE_TEXT = "напиши тест для парсера"  # what the fake transcriber "hears" (set per language by the caller)
 SCRIPT = {  # exact natural prompt → (tool, args): the model 'decides' to call that tool once
     "сделай лендинг для кофейни": ("write", {"path": "index.html", "content": LANDING}),
+    "напиши тест для парсера": ("write", {"path": "test_parser.py", "content": "def test_parse():\n    assert parse('1') == 1\n"}),
     "опиши дизайн кофейни": ("write", {"path": "DESIGN.md", "content": DESIGN_MD}),
     "сделай страницу по DESIGN.md": ("write", {"path": "index.html", "content": LANDING}),
     "сделай дизайн и страницу кофейни": ("tools", [["write", {"path": "DESIGN.md", "content": DESIGN_MD}],   # one turn, two calls:
                                                   ["write", {"path": "index.html", "content": LANDING}]]),  # DESIGN.md first
     "добавь тёмную тему": ("write", {"path": "index.html", "content": LANDING_DARK_THEME}),
+    "make a landing page for a coffee shop": ("write", {"path": "index.html", "content": LANDING_EN}),
+    "design and build a coffee shop page": ("tools", [["write", {"path": "DESIGN.md", "content": DESIGN_MD}],
+                                                      ["write", {"path": "index.html", "content": LANDING_EN}]]),
+    "add a dark theme": ("write", {"path": "index.html", "content": LANDING_EN_DARK}),
+    "write a test for the parser": ("write", {"path": "test_parser.py", "content": "def test_parse():\n    assert parse('1') == 1\n"}),
 }
 
 
