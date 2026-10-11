@@ -15,13 +15,16 @@ async function poll() {
 }
 async function restartSandbox() {
   if (MODE !== "cloud") return;
-  el(`<div class="info warn">sandbox restarted — your session and files are safe</div>`);
+  el(`<div class="info warn">${tt("sandbox restarted — your session and files are safe")}</div>`);
   try { const w = await api("/api/cloud", {session: state.session?.id, ws: state.ws}); polling++; apply(await A.attach(w), false); } catch (e) {}
+}
+function renderChrome() {
+  $("mode").textContent = t(MODE === "cloud" ? "cloud" : "local");
+  $("who").textContent = state.user || t(MODE === "local" ? "local" : "account");
 }
 async function apply(s, history = true) {
   state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();
-  $("mode").textContent = MODE === "cloud" ? "cloud" : "local";
-  $("who").textContent = s.user || (MODE === "local" ? "local" : "account");
+  renderChrome();
   after = s.after ?? after;
   if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }
   (s.pending || []).forEach(onEvent);
@@ -40,8 +43,8 @@ async function send() {
   if (files.length) t += (t ? "\n\n" : "") + "Attached: " + files.join(", ");
   if (!t && images.length) t = "(see the attached image" + (images.length > 1 ? "s" : "") + ")";
   atts = []; renderAtts();
-  $("input").value = ""; grow(); userMsg((goal ? "/goal " : "") + t + (images.length ? `  [${images.length} image${images.length > 1 ? "s" : ""}]` : ""));
-  if ($("title").textContent === "New chat") $("title").textContent = t.split("\n")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;
+  $("input").value = ""; grow(); userMsg((goal ? "/goal " : "") + t + (images.length ? `  [${images.length} ${pl(images.length, "image", "images")}]` : ""));
+  if (untr($("title").textContent) === "New chat") $("title").textContent = t.split("\n")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;
   try { await (goal ? A.goal(t) : A.prompt(t, images)); } catch (e) { fail(e); busy = false; setBusy(); }
 }
 function sendOrStop() { busy ? api(base + "/cancel", {}) : send(); }
@@ -51,16 +54,16 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSide(
 let touchX = null;  // swipe left on the drawer to close it
 side.addEventListener("touchstart", e => touchX = e.touches[0].clientX, {passive: true});
 side.addEventListener("touchend", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });
-async function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = "New chat"; }
+async function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
 async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
   const ms = state.config?.models || [];
-  $("pbody").innerHTML = ms.map(m => `<button onclick="setModel('${esc(m.name)}')"><span>${m.name === state.config.model ? "●" : "○"}</span>${esc(m.name)}<span class="d">${esc(m.id)}</span></button>`).join("") || '<p style="padding:12px;color:var(--dim)">No models — add one in your account or with /models.</p>';
+  $("pbody").innerHTML = ms.map(m => `<button onclick="setModel('${esc(m.name)}')"><span>${m.name === state.config.model ? "●" : "○"}</span>${esc(m.name)}<span class="d">${esc(m.id)}</span></button>`).join("") || `<p style="padding:12px;color:var(--dim)">${esc(t("No models — add one in your account or with /models."))}</p>`;
   $("popup").classList.remove("hidden");
 }
 function pickAgent() {
   $("pbody").innerHTML = (state.agents || []).map(a => `<button onclick="setAgent('${esc(a.name)}')"><span>${a.name === state.agent ? "●" : "○"}</span><b>${esc(a.label)}</b><span class="d">${esc(a.description)}</span></button>`).join("")
-    + (MODE === "cloud" ? `<a class="more" href="/account#market">more agents in the marketplace →</a>` : "");
+    + (MODE === "cloud" ? `<a class="more" href="/account#market">${esc(t("more agents in the marketplace →"))}</a>` : "");
   $("popup").classList.remove("hidden");
 }
 async function setAgent(n) { $("popup").classList.add("hidden"); state.agent = n; renderStatus(); await A.setAgent(n); }
@@ -81,12 +84,12 @@ async function recStart() {
       stream.getTracks().forEach(t => t.stop()); $("mic").classList.remove("rec");
       const blob = new Blob(chunks, {type: rec.mimeType || "audio/webm"}); rec = null;
       if (blob.size < 2000) return;
-      inp.placeholder = "transcribing…";
+      inp.placeholder = t("transcribing…");
       try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(" ") ? " " : "") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }
-      finally { inp.placeholder = "Ask anything…"; }
+      finally { inp.placeholder = t("Ask anything…"); }
     };
     rec.start(); $("mic").classList.add("rec");
-  } catch (e) { alert("microphone: " + e.message); }
+  } catch (e) { alert(t("microphone: {m}", {m: e.message})); }
 }
 function recStop() { if (rec && rec.state === "recording") rec.stop(); }
 const mic = $("mic");
@@ -97,8 +100,8 @@ inp.addEventListener("keydown", e => { if (e.code === "Space" && !inp.value && e
 inp.addEventListener("keyup", e => { if (e.code === "Space") recStop(); });
 $("wsPill").onclick = async () => {
   if (MODE === "cloud") return location.href = "/account#workspaces";
-  const p = prompt("Project folder for the local agent", state.cwd || "");
+  const p = prompt(t("Project folder for the local agent"), state.cwd || "");
   if (!p) return;
-  try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = "New chat"; } catch (e) { alert(e.message); }
+  try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };
 A.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));

@@ -20,8 +20,8 @@ async function loadThemes() {
   themeList = r.themes; applyTheme(themeList.find(t => t.name === r.current));
 }
 function pickTheme() {
-  $("pbody").innerHTML = themeList.map(t => `<button onclick="setTheme('${esc(t.name)}')"><span class="sw" style="background:${t.colors.bg};border-color:${t.colors.line}"><i style="background:${t.colors.accent}"></i><i style="background:${t.colors.accent2}"></i></span>${esc(t.label || t.name)}<span class="d">${t.dark === false ? "light" : "dark"}</span></button>`).join("")
-    + `<a class="more" href="${MODE === "cloud" ? "/account#market" : "#"}" onclick="${MODE === "local" ? "alert('Install more with /theme in the terminal or the marketplace on the site');return false" : ""}">more themes in the marketplace →</a>`;
+  $("pbody").innerHTML = themeList.map(t => `<button onclick="setTheme('${esc(t.name)}')"><span class="sw" style="background:${t.colors.bg};border-color:${t.colors.line}"><i style="background:${t.colors.accent}"></i><i style="background:${t.colors.accent2}"></i></span>${esc(t.label || t.name)}<span class="d">${esc(t.dark === false ? window.t("light") : window.t("dark"))}</span></button>`).join("")
+    + `<a class="more" href="${MODE === "cloud" ? "/account#market" : "#"}" onclick="${MODE === "local" ? "alert(t('Install more with /theme in the terminal or the marketplace on the site'));return false" : ""}">${esc(window.t("more themes in the marketplace →"))}</a>`;
   $("popup").classList.remove("hidden");
 }
 async function setTheme(name) {

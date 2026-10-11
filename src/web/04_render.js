@@ -4,10 +4,10 @@ let stick = true;
 chat.addEventListener("scroll", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);
 function scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }
 let workEl = null;
-function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }
+function el(html) { const d = document.createElement("div"); d.innerHTML = html.trim(); const n = d.firstChild; i18nApply(d); workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }
 function clearLog() { log.innerHTML = ""; live = {}; cur = {}; workEl = null; }
 function emptyState() {
-  log.innerHTML = `<div class="empty" style="min-height:60vh"><div><h2>what are we <span>building?</span></h2><p>${MODE === "cloud" ? "Runs in your cloud sandbox · files sync to all your machines" : "Running locally on this machine"}</p></div></div>`;
+  log.innerHTML = `<div class="empty" style="min-height:60vh"><div><h2>${esc(t("what are we"))} <span>${esc(t("building?"))}</span></h2><p>${esc(MODE === "cloud" ? t("Runs in your cloud sandbox · files sync to all your machines") : t("Running locally on this machine"))}</p></div></div>`;
 }
 function userMsg(t) { if (log.querySelector(".empty")) log.innerHTML = ""; el(`<div class="msg user"><div class="bub">${esc(t)}</div></div>`); }
 function shortPath(s) {
@@ -30,10 +30,10 @@ function onEvent(e) {
   if (t === "user") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }
   if (t === "turn_start") { if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }
   if (t === "reasoning") {
-    if (!cur.think) { cur.think = el(`<details class="think"><summary>${I.think}<span class="shimmer">thinking…</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }
+    if (!cur.think) { cur.think = el(`<details class="think"><summary>${I.think}<span class="shimmer">${tt("thinking…")}</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }
     cur.think.querySelector("pre").textContent += e.text; scroll(); return;
   }
-  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector("summary span").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };
+  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector("summary span").outerHTML = tt("thought for {d}", {d: dur((Date.now() - cur.thinkT) / 1000)}); cur.thinkDone = true; } };
   if (t === "text") {
     endThink();
     if (!cur.text) { cur.text = el(`<div class="msg md"></div>`); cur.raw = ""; }
@@ -73,32 +73,32 @@ function onEvent(e) {
     const opts = e.options || [];
     const c = el(`<div class="confirm ask"><b>${esc(e.text)}</b><div class="btns" style="margin-top:10px;flex-wrap:wrap">${opts.length
       ? opts.map((o, i) => `<button class="btn ${i ? "ghost" : ""}" data-v="${esc(o)}">${esc(o)}</button>`).join("")
-      : `<input class="askin" placeholder="answer…"><button class="btn" data-in="1">send</button>`}</div></div>`);
+      : `<input class="askin" placeholder="answer…" data-i18n-ph="answer…"><button class="btn" data-in="1">${tt("send")}</button>`}</div></div>`);
     const send = v => { api(base + "/answer", {id: e.id, text: v}); c.innerHTML = `<span class="dim">${esc(e.text)} → <b>${esc(v || "—")}</b></span>`; c.className = "info"; };
     c.querySelectorAll("button").forEach(b => b.onclick = () => send(b.dataset.in ? c.querySelector("input").value : b.dataset.v));
     c.querySelector("input")?.addEventListener("keydown", ev => ev.key === "Enter" && send(ev.target.value));
     return;
   }
   if (t === "confirm") {
-    const c = el(`<div class="confirm"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class="btns"><button class="btn">allow</button><button class="btn ghost">${e.name === "bash" ? "always allow" : "allow all (full)"}</button><button class="btn ghost">deny</button></div></div>`);
+    const c = el(`<div class="confirm"><b>${tt("Allow {name}?", {name: e.name})}</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class="btns"><button class="btn">${tt("allow")}</button><button class="btn ghost">${tt(e.name === "bash" ? "always allow" : "allow all (full)")}</button><button class="btn ghost">${tt("deny")}</button></div></div>`);
     const [y, al, n] = c.querySelectorAll("button");
     y.onclick = () => { api(base + "/confirm", {id: e.id, ok: true}); c.remove(); };
     al.onclick = () => { api(base + "/confirm", {id: e.id, ok: "always"}); if (e.name !== "bash") { state.perm = "full"; A.setPerm("full"); renderStatus(); } c.remove(); };
     n.onclick = () => { api(base + "/confirm", {id: e.id, ok: false}); c.remove(); };
     return;
   }
-  if (t === "compacting") { el(`<div class="info">compacting history…</div>`); return; }
-  if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">compacted ${e.before} → ${e.after} messages · ~${human(e.ctx)} tokens</div>`); return; }
+  if (t === "compacting") { el(`<div class="info">${tt("compacting history…")}</div>`); return; }
+  if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">${tt("compacted {a} → {b} messages · ~{c} tokens", {a: e.before, b: e.after, c: human(e.ctx)})}</div>`); return; }
   if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
-  if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${esc(e.text)}</div>`); return; }
+  if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(e.text)}</div>`); return; }
   if (t === "turn_end") {
     const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();
-    el(`<div class="stats">${failed ? I.x : I.check}${dur(e.time)} · ↑ ${human(e.in)} ↓ ${human(e.out)} · ${human(e.in + e.out)} tokens${e.cost ? " · " + money(e.cost) : ""}</div>`);
+    el(`<div class="stats">${failed ? I.x : I.check}${tt("{a} · ↑ {i} ↓ {o} · {n} tokens{c}", {a: dur(e.time), i: human(e.in), o: human(e.out), n: human(e.in + e.out), c: e.cost ? " · " + money(e.cost) : ""})}</div>`);
     state.ctx = e.ctx; renderStatus(); refreshSessions(); return;
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
   if (t === "goal") { goalEvent(e); return; }
-  if (t === "verify") { el(`<div class="info">self-check: running checks before finishing</div>`); return; }
+  if (t === "verify") { el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
   if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
   if (t === "loaded" && e.title) $("title").textContent = e.title;
@@ -123,38 +123,38 @@ function renderHistory(s) {
       });
     }
   });
-  $("title").textContent = s.title || "Chat";
+  $("title").textContent = s.title || t("Chat");
   renderTodo(s.todo || []);
   if (s.goal && s.goal.status !== "working") goalEvent(s.goal, true);
   setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);
 }
 function renderStatus(tin, tout) {
   const m = (state.config?.models || []).find(x => x.name === state.config?.model);
-  $("model").textContent = m ? m.name + (m.effort ? " · " + m.effort : "") : "no model";
+  $("model").textContent = m ? m.name + (m.effort ? " · " + m.effort : "") : t("no model");
   const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;
   const col = f < .6 ? "var(--ok)" : f < .85 ? "var(--warn)" : "var(--err)";
-  $("ctx").innerHTML = ctx ? `ctx <span class="bar"><i style="width:${(f * 100).toFixed(1)}%;background:${col}"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;
+  $("ctx").innerHTML = ctx ? `${t("ctx")} <span class="bar"><i style="width:${(f * 100).toFixed(1)}%;background:${col}"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `${t("ctx")} ${human(used)}`;
   const u = state.session?.usage || {};
-  $("tok").textContent = tin !== undefined ? `this task ↑${human(tin)} ↓${human(tout)}` : `session ↑${human(u.in)} ↓${human(u.out)}`;
+  $("tok").textContent = tin !== undefined ? `${t("this task")} ↑${human(tin)} ↓${human(tout)}` : `${t("session")} ↑${human(u.in)} ↓${human(u.out)}`;
   const ag = (state.agents || []).find(a => a.name === state.agent);
   $("agentName").textContent = ag ? ag.label : (state.agent || "code");
   const cf = state.context || [];
-  $("ctxfiles").innerHTML = cf.length ? `<span class="cf on" title="loaded into every turn">◆ ${cf.map(esc).join(" · ")}</span>` : `<span class="cf" title="ask the agent to create it, or /init in the terminal">◇ no AGENTS.md</span>`;
+  $("ctxfiles").innerHTML = cf.length ? `<span class="cf on" title="${esc(t("loaded into every turn"))}">◆ ${cf.map(esc).join(" · ")}</span>` : `<span class="cf" title="${esc(t("ask the agent to create it, or /init in the terminal"))}">◇ ${esc(t("no AGENTS.md"))}</span>`;
   const cost = state.session?.usage?.cost || 0;
-  $("cost").textContent = cost || state.day_cost ? money(cost) + (state.day_cost ? " · today " + money(state.day_cost) : "") : "";
+  $("cost").textContent = cost || state.day_cost ? money(cost) + (state.day_cost ? " · " + t("today") + " " + money(state.day_cost) : "") : "";
   const pm = state.perm || "ask";
-  $("perm").textContent = {read: "read-only", ask: "ask", full: "full access", sandbox: "sandbox"}[pm] || pm;
+  $("perm").textContent = {read: t("read-only"), ask: t("ask"), full: t("full access"), sandbox: t("sandbox")}[pm] || pm;
   $("perm").className = "perm " + pm;
   if (state.preview) { $("previewBtn").href = state.preview + "/"; $("previewBtn").classList.remove("hidden"); } else $("previewBtn").classList.add("hidden");
-  $("ws").textContent = state.ws || (MODE === "local" ? (state.cwd || "local").split(/[\\/]/).pop() : "cloud");
+  $("ws").textContent = state.ws || (MODE === "local" ? (state.cwd || t("local")).split(/[\\/]/).pop() : t("cloud"));
 }
 function renderSessions() {
   const ss = state.sessions || [], sid = state.session?.id;
   const groups = {};
   ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;
-    const g = age < 1 ? "Today" : age < 7 ? "This week" : "Older"; (groups[g] ??= []).push(s); });
+    const g = age < 1 ? t("Today") : age < 7 ? t("This week") : t("Older"); (groups[g] ??= []).push(s); });
   $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(s =>
-    `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || "(untitled)")}</button>`).join("")).join("") || '<div class="lbl">no chats yet</div>';
+    `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
 }
 async function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }
 function setBusy() {
@@ -162,7 +162,7 @@ function setBusy() {
   $("send").disabled = !busy && !$("input").value.trim() && !atts.length;
   if (busy && (!workEl || workEl.parentNode !== log)) {
     workEl = document.createElement("div"); workEl.className = "working";
-    workEl.innerHTML = '<span class="spin"></span><span class="shimmer">working…</span><span class="el"></span>'; log.appendChild(workEl); scroll();
+    workEl.innerHTML = '<span class="spin"></span><span class="shimmer" data-t="working…">'+t('working…')+'</span><span class="el"></span>'; log.appendChild(workEl); scroll();
   }
   if (!busy && workEl) { workEl.remove(); workEl = null; }
 }

@@ -147,3 +147,18 @@ textarea{width:100%;background:none;border:none;outline:none;resize:none;color:v
 header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:760px){#previewBtn span{display:none}.status .cost{order:5}}
 @media (max-width:420px){#wsPill span{max-width:70px;overflow:hidden;text-overflow:ellipsis}}
+.side-set{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+.lang{position:relative;display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:999px;background:var(--bg2);padding:2px;font:600 11.5px var(--mono)}
+.lang b{position:absolute;top:2px;bottom:2px;left:2px;width:calc(50% - 2px);border-radius:999px;background:var(--a);transition:transform .2s ease}
+.lang.ru b{transform:translateX(100%)}
+.lang button{position:relative;z-index:1;min-width:38px;padding:3px 10px;border-radius:999px;color:var(--dim);transition:color .2s}
+.lang button[aria-pressed="true"]{color:var(--on-a)}
+.side-set+.side-foot{border-top:none;padding-top:4px}
+.btn,.perm{max-width:100%}
+.confirm .btns,.review .btns{flex-wrap:wrap}
+.review .rv-h{gap:8px}
+.si,.goal span,.info{overflow-wrap:anywhere}
+.popup .d{max-width:55%}
+.popup button b{white-space:normal}
+.status{row-gap:4px}
+@media (max-width:420px){header .title{min-width:0}.pill{padding:5px 7px}}

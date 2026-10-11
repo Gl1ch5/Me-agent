@@ -10,5 +10,5 @@ function md(src) {
   h = h.replace(/(?:^|\n)((?:[-*] .*(?:\n|$))+)/g, (_, l) => "\n<ul>" + l.trim().split("\n").map(x => "<li>" + x.slice(2) + "</li>").join("") + "</ul>\n");
   h = h.replace(/(?:^|\n)((?:\d+[.)] .*(?:\n|$))+)/g, (_, l) => "\n<ol>" + l.trim().split("\n").map(x => "<li>" + x.replace(/^\d+[.)] /, "") + "</li>").join("") + "</ol>\n");
   h = h.split(/\n{2,}/).map(p => /^\s*<(h\d|ul|ol|blockquote|\u0000)/.test(p) || p.startsWith("\u0000") ? p : "<p>" + p.replace(/\n/g, "<br>") + "</p>").join("");
-  return h.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre><div class="bar"><span>${esc(blocks[i][0] || "code")}</span><button onclick="navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);
+  return h.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre><div class="bar"><span>${esc(blocks[i][0] || "code")}</span><button onclick="navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)">${tt("copy")}</button></div><code>${esc(blocks[i][1])}</code></pre>`);
 }
