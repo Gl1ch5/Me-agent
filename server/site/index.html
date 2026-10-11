@@ -155,6 +155,18 @@ Call list_prs before labeling.
   </table>
 </section>
 
+<section id="open">
+  <h2>open source, and yours to run</h2>
+  <p class="sub">Everything here is open: the agent, the web UI, the server and the deploy files. Anyone can run the server part on their own machine, so you never have to trust us with your data.</p>
+  <div class="grid">
+    <div><h3><em>01</em>read it</h3><p>The client is <code>me.py</code>, built from plain files in <code>src/</code>. The server is <code>server/</code> (FastAPI + SQLite). No hidden parts.</p></div>
+    <div><h3><em>02</em>run your own</h3><p>Install the backend on any Linux box with Python, point <code>ME_SERVER</code> at it and your devices sync there instead of here.</p></div>
+    <div><h3><em>03</em>your keys</h3><p>API keys and tokens belong to you. Use your own provider accounts and your own Telegram bot; nothing is shared between users.</p></div>
+    <div><h3><em>04</em>locked down</h3><p>Optional 2FA for every account. Cloud sandboxes run isolated on the server, and you can stop them any time.</p></div>
+  </div>
+  <p class="sub" style="margin-top:22px"><a href="https://github.com/Gl1ch5/Me-agent">github.com/Gl1ch5/Me-agent</a> · report security issues through GitHub.</p>
+</section>
+
 <footer><span>me v__VERSION__ · made for people who switch machines</span><span><a href="/account">account</a> · <a href="/me.py">source</a></span></footer>
 </div>
 
