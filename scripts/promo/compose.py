@@ -59,3 +59,31 @@ def concat_copy(parts, out):
 def webp_preview(mp4, out):
     """480 px high animated WebP, 12 fps — small enough to paste into a README or a release note."""
     ff("-i", str(mp4), "-vf", "fps=12,scale=-2:480:flags=lanczos", "-loop", "0", "-q:v", "55", "-an", str(out))
+
+
+def phone_stack(pc_webm, phone_webm, seconds, out):
+    """Portrait (9:16): PC recording on top (1080 px wide), the phone recording below, centred."""
+    fg = ("[1:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=1080:-2[pc];"
+          "[2:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=-2:1000[ph];"
+          "[0:v][pc]overlay=0:170[a];[a][ph]overlay=(W-w)/2:800,format=yuv420p[v]")
+    ff("-f", "lavfi", "-i", f"color=c={BG}:s=1080x1920:r=30", "-i", str(pc_webm), "-i", str(phone_webm),
+       "-filter_complex", fg, "-map", "[v]", "-t", str(seconds), *VENC, str(out))
+
+
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+def segment(src_args, seconds, out, size, caption_file=None, portrait=False):
+    """Normalise one segment to exact length, add a 0.5 s fade in/out and (optionally) an animated lower-third caption.
+    The caption rises 40 px and fades in over 0.6 s, and fades out over the last 0.5 s."""
+    w, h = size
+    vf = _fit_vf(size, seconds).replace(",format=yuv420p", "")
+    vf += f",fade=t=in:st=0:d=0.5,fade=t=out:st={seconds - 0.5:.2f}:d=0.5"
+    if caption_file:
+        fs, pad = (50, 260) if portrait else (46, 120)
+        vf += (f",drawtext=fontfile={FONT}:textfile={caption_file}:fontsize={fs}:fontcolor=0xd8dae3:"
+               f"box=1:boxcolor=0x111319@0.85:boxborderw=28:x=(w-text_w)/2:"
+               f"y=h-th-{pad}+(1-min(t/0.6\\,1))*40:"
+               f"alpha=min(t/0.4\\,1)*min(({seconds}-t)/0.5\\,1)")
+    vf += ",format=yuv420p"
+    ff(*src_args, "-t", str(seconds), "-vf", vf, *VENC, str(out))
