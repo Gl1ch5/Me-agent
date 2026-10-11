@@ -94,22 +94,41 @@ code{font-family:var(--mono);font-size:12.5px;background:var(--bg2);padding:2px 
 .themecard{display:flex;flex-direction:column;gap:8px;align-items:flex-start;padding:14px;border:2px solid;border-radius:12px;font:500 13px var(--mono);text-align:left}
 .themecard i{width:14px;height:14px;border-radius:50%;display:block}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--line);padding:10px 16px;border-radius:10px;font-size:13px;z-index:10}
+.lang{position:relative;display:flex;border:1px solid var(--line);border-radius:999px;padding:2px;flex-shrink:0;background:var(--bg2)}
+.lang:before{content:"";position:absolute;top:2px;bottom:2px;left:2px;width:calc(50% - 2px);border-radius:999px;background:var(--a);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+.lang:has(button[data-l="ru"].on):before{transform:translateX(100%)}
+.lang button{position:relative;z-index:1;font:700 12px var(--mono);background:none;border:none;color:var(--dim);padding:6px 12px;min-width:42px;border-radius:999px;cursor:pointer;transition:color .2s}
+.lang button.on{background:none;color:var(--on-a,#0b0c10)}
+#who{display:flex;align-items:center;gap:10px;min-width:0}
+#who .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:18ch}
+#auth .card{max-width:460px;width:100%}
+nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
+@media (max-width:760px){
+  nav{flex-wrap:wrap}
+  #auth h1{font-size:22px;line-height:1.2}
+  #auth .card{padding:16px}
+  #auth .switch{width:100%}#auth .switch button{flex:1;padding:9px 8px}
+  #auth .btns button{width:100%;padding:12px}
+  input,textarea,select{font-size:16px}
+  #who .name{max-width:12ch}
+}
+@media (max-width:380px){nav .row{gap:10px!important}.logo{font-size:18px}}
 </style>
 </head>
 <body>
 <div class="wrap">
-<nav><a class="logo" href="/"><i></i>me</a><div class="row" style="gap:16px"><a href="/" class="dim" style="font-size:14px;text-decoration:none">home</a><span id="who" class="dim"></span></div></nav>
+<nav><a class="logo" href="/"><i></i>me</a><div class="row" style="gap:12px"><a href="/" class="dim" style="font-size:14px;text-decoration:none" data-i="home">home</a><span id="who" class="dim"></span><div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ru">RU</button></div></div></nav>
 
 <div id="auth" class="hidden">
-  <h1>your account</h1>
-  <p class="dim">Same login as in the terminal (<code>/login</code>). Everything you change here syncs to every machine.</p>
+  <h1 data-i="auth_h">your account</h1>
+  <p class="dim" data-i="auth_p">Same login as in the terminal (<code>/login</code>). Everything you change here syncs to every machine.</p>
   <div class="card" style="max-width:460px">
-    <div class="switch"><button class="on" data-m="login">log in</button><button data-m="register">create account</button></div>
+    <div class="switch"><button class="on" data-m="login" data-i="m_login">log in</button><button data-m="register" data-i="m_reg">create account</button></div>
     <form id="f">
-      <input id="u" placeholder="username" autocomplete="username" required style="margin-top:14px">
-      <input id="p" type="password" placeholder="password" autocomplete="current-password" required style="margin-top:10px">
-      <input id="c" class="hidden" placeholder="authenticator code" inputmode="numeric" autocomplete="one-time-code" style="margin-top:10px">
-      <div class="btns"><button type="submit" id="go">log in</button></div>
+      <input id="u" data-ph="ph_user" placeholder="username" autocomplete="username" required style="margin-top:14px">
+      <input id="p" type="password" data-ph="ph_pass" placeholder="password" autocomplete="current-password" required style="margin-top:10px">
+      <input id="c" class="hidden" data-ph="ph_code" placeholder="authenticator code" inputmode="numeric" autocomplete="one-time-code" style="margin-top:10px">
+      <div class="btns"><button type="submit" id="go" data-i="go_login">log in</button></div>
       <div class="err" id="e"></div>
     </form>
   </div>
@@ -281,10 +300,46 @@ function skillCard(s, actions) {
     <p>${esc(s.description || "")}</p><div class="f">${actions}</div></div>`;
 }
 
+
+// ── language (shared with the landing page: localStorage "me-lang", else the browser language) ──
+const I18N = {ru: {home: "главная", auth_h: "ваш аккаунт", auth_p: "Тот же вход, что и в терминале (<code>/login</code>). Всё, что вы меняете здесь, синхронизируется на каждую машину.",
+  m_login: "войти", m_reg: "создать аккаунт", go_login: "войти", go_reg: "создать аккаунт", logout: "выйти",
+  ph_user: "имя пользователя", ph_pass: "пароль", ph_code: "код из аутентификатора"}};
+const EN_I = {home: "home", logout: "log out", go_login: "log in", go_reg: "create account"};
+let LANG = "en";
+const L = k => (LANG === "ru" && I18N.ru[k]) || EN_I[k] || k;
+function detectLang() {
+  const q = new URLSearchParams(location.search).get("lang");
+  if (q === "ru" || q === "en") return q;
+  try { const v = localStorage.getItem("me-lang"); if (v === "ru" || v === "en") return v; } catch (e) {}
+  for (const l of (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || "en"])) {
+    const c = String(l).toLowerCase().slice(0, 2);
+    if (c === "ru" || c === "be" || c === "kk") return "ru";
+    if (c === "en") return "en";
+  }
+  return "en";
+}
+const EN_HTML = {};
+document.querySelectorAll("[data-i]").forEach(e => EN_HTML[e.dataset.i] = e.innerHTML);
+const EN_PH = {};
+document.querySelectorAll("[data-ph]").forEach(e => EN_PH[e.dataset.ph] = e.placeholder);
+function setLang(l, save) {
+  LANG = l; document.documentElement.lang = l;
+  document.querySelectorAll("[data-i]").forEach(e => { const k = e.dataset.i; e.innerHTML = (l === "ru" && I18N.ru[k]) || EN_HTML[k]; });
+  document.querySelectorAll("[data-ph]").forEach(e => { const k = e.dataset.ph; e.placeholder = (l === "ru" && I18N.ru[k]) || EN_PH[k]; });
+  $("go").textContent = L(mode === "login" ? "go_login" : "go_reg");
+  document.querySelectorAll(".lang button").forEach(b => b.classList.toggle("on", b.dataset.l === l));
+  document.title = l === "ru" ? "me · аккаунт" : "me · account";
+  const lo = document.querySelector("#who button"); if (lo) lo.textContent = L("logout");
+  if (save) try { localStorage.setItem("me-lang", l); } catch (e) {}
+}
+document.querySelectorAll(".lang button").forEach(b => b.onclick = () => setLang(b.dataset.l, true));
+setLang(detectLang(), false);
+
 // ── auth ──
 document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
   mode = b.dataset.m; document.querySelectorAll(".switch button").forEach(x => x.classList.toggle("on", x === b));
-  $("go").textContent = mode === "login" ? "log in" : "create account"; $("e").textContent = "";
+  $("go").textContent = L(mode === "login" ? "go_login" : "go_reg"); $("e").textContent = "";
 });
 $("f").onsubmit = async e => {
   e.preventDefault(); $("e").textContent = "";
@@ -820,12 +875,12 @@ async function load() {
     if (want === "market" || location.pathname === "/market") { // public marketplace
       $("dash").classList.remove("hidden"); $("tabs").classList.add("hidden");
       document.querySelectorAll("[data-pane]").forEach(p => p.classList.toggle("hidden", p.dataset.pane !== "market"));
-      $("who").innerHTML = '<a href="/account" style="color:var(--a)">log in</a>'; loadMarket(); return;
+      $("who").innerHTML = '<a href="/account" style="color:var(--a)">'+L("m_login")+'</a>'; loadMarket(); return;
     }
     $("auth").classList.remove("hidden"); $("dash").classList.add("hidden"); return;
   }
   $("auth").classList.add("hidden"); $("dash").classList.remove("hidden"); $("tabs").classList.remove("hidden");
-  $("who").textContent = me.username;
+  $("who").innerHTML = `<span class="name" title="${esc(me.username)}">${esc(me.username)}</span><button class="ghost sm" onclick="logout()">${L("logout")}</button>`;
   $("tadmin").classList.toggle("hidden", !me.admin);
   await loadCfg();
   const k = me.kinds;
