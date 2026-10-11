@@ -71,7 +71,7 @@ class Agent:
                         "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
         pr = self.preset()
         if pr.get("prompt"):
-            project += "\n\n" + pr["prompt"]
+            project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
@@ -185,6 +185,8 @@ class Agent:
         finally:
             self.busy = False
             self._finish_checkpoint(start_idx)
+            if pr.get("name") == "me" and self.persist:
+                self.s.save()  # new skills/themes/agents written to the home folder reach every device
             if self.persist:
                 self.s.save_session(self.session)
             self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,

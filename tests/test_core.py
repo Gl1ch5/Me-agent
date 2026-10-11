@@ -262,6 +262,23 @@ def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
     assert ends(ev)[0]["output"] == "5"
 
 
+def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    s.config["agent"] = "me"
+    ag = me.Agent(s, print)
+    sp = ag.system_prompt()
+    assert str(s.home) + "/skills/" in sp and "{home}" not in sp
+    theme = {"name": "sunset", "label": "Sunset", "dark": True, "colors": dict(me.BUILTIN_THEMES["me-dark"]["colors"], accent="#ff7a59")}
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.run("tool:write " + json.dumps({"path": str(s.home / "themes" / "sunset.json"), "content": json.dumps(theme)}))
+    assert not [e for e in ev if e["type"] == "tool_end" and not e["ok"]], ev
+    assert "sunset" in me.themes(s) and me.theme(s, "sunset")["colors"]["accent"] == "#ff7a59"
+    ag.run("tool:write " + json.dumps({"path": str(s.home / "skills" / "hi.md"), "content": "---\nname: hi\ndescription: greets\n---\nSay hi."}))
+    assert "hi" in me.Skills(s).enabled()
+    assert "me" in me.presets(s)
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):
