@@ -265,9 +265,20 @@ def notify_route(n: Notify, u=Depends(user)):
 _texts = {}  # worker id -> final answer text of the current turn
 
 
+def mirror_to_chats(uid, text, file=None):
+    """Show an event in every Telegram chat of this user (personal bot and global bot)."""
+    for b in (bots.get(uid), global_bot):
+        if b and b.token:
+            try:
+                b.mirror(uid, text, file)
+            except Exception:
+                pass
+
+
 def on_worker_event(w, e):
     t = e.get("type")
-    if t == "ask":  # the sandbox is blocked until someone answers: offer the question in every linked Telegram chat
+    job = bool(w.job)  # background jobs report through job_finished, not the chat mirror
+    if t == "ask":  # the sandbox is blocked until someone answers: offer the question in Telegram
         for b in (bots.get(w.uid), global_bot):
             if b and b.token:
                 try:
@@ -280,17 +291,32 @@ def on_worker_event(w, e):
         _texts[w.id] = (_texts.get(w.id, "") + e.get("text", ""))[-4000:]
     elif t == "tool_start":
         _texts[w.id] = ""
+    elif t == "user" and not job and not getattr(w, "tg_turn", False):
+        mirror_to_chats(w.uid, f"› {(w.title or 'task')[:40]}: {e.get('text', '')[:300]}")
+    elif t == "goal" and e.get("status") in ("done", "blocked") and not job:
+        ok = e["status"] == "done"
+        w.tg_goal = w.tg_turn = False
+        mirror_to_chats(w.uid, f"{'✓ goal done' if ok else '✗ goal blocked'} · {(w.title or 'task')[:40]}"
+                               + (f"\n{e['reason'][:600]}" if e.get("reason") else ""))
+    elif t == "undone" and not job:
+        mirror_to_chats(w.uid, "↶ " + e.get("text", "reverted"))
     elif t in ("ask", "confirm") and time.time() - w.watched > 20:
         threading.Thread(target=push, args=(w.uid, "me is waiting for you", e.get("text") or e.get("name", ""),
                                             f"/app?s={w.session or ''}", "wait-" + w.id), daemon=True).start()
     elif t == "turn_end" or (t == "exit" and w.job):
         text = _texts.pop(w.id, "").strip()
+        own = getattr(w, "tg_turn", False)  # this turn was started from a chat, which already got its answer
+        if not getattr(w, "tg_goal", False):
+            w.tg_turn = False  # a goal keeps the flag until it finishes
         if w.job:
             threading.Thread(target=job_finished, args=(w, e, text), daemon=True).start()
-        elif time.time() - w.watched > 20:
-            title = "Done: " + (w.title or "task")[:60]
-            threading.Thread(target=push, args=(w.uid, title, text[:300] or "finished", f"/app?s={w.session or ''}", "done-" + w.id),
-                             daemon=True).start()
+        else:
+            if not own and not getattr(w, "tg_goal", False):
+                mirror_to_chats(w.uid, f"✓ {(w.title or 'task')[:40]}\n{text[:3500] or 'done'}")
+            if time.time() - w.watched > 20:
+                title = "Done: " + (w.title or "task")[:60]
+                threading.Thread(target=push, args=(w.uid, title, text[:300] or "finished", f"/app?s={w.session or ''}", "done-" + w.id),
+                                 daemon=True).start()
 
 
 cloud.runner.on_event = on_worker_event
