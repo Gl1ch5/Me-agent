@@ -73,7 +73,10 @@ def run_rpc(store):
     if cloud.online:
         cloud.watch(remote)
     emit({"type": "ready", "version": VERSION, "session": ag.session["id"]})
-    for line in sys.stdin:
+    src = sys.stdin
+    if os.environ.get("ME_RPC_IN"):  # cloud: a FIFO opened read-write never hits EOF, so a server restart does not end us
+        src = io.TextIOWrapper(io.FileIO(os.open(os.environ["ME_RPC_IN"], os.O_RDWR), "r"), encoding="utf-8")
+    for line in src:
         try:
             cmd = json.loads(line)
         except ValueError:

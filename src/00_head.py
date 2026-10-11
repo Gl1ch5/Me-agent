@@ -17,7 +17,7 @@ import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
 VERSION = "0.4.2"
-SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
+SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"]

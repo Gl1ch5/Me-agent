@@ -10,9 +10,11 @@ Environment=ME_CLIENT=/opt/me-agent/me.py
 Environment=ME_DATA=/var/lib/me-agent
 Environment=ME_INTERNAL_URL=http://127.0.0.1:8790
 Environment=ME_MAX_WORKERS=6
+Environment=ME_PUBLIC_URL=https://me-agent.ru
 MemoryMax=2500M
 ExecStart=/usr/bin/python3 -m uvicorn app:app --host 127.0.0.1 --port 8790 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

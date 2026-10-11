@@ -17,7 +17,7 @@ import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
 VERSION = "0.4.2"
-SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
+SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"]
@@ -1742,7 +1742,10 @@ def run_rpc(store):
     if cloud.online:
         cloud.watch(remote)
     emit({"type": "ready", "version": VERSION, "session": ag.session["id"]})
-    for line in sys.stdin:
+    src = sys.stdin
+    if os.environ.get("ME_RPC_IN"):  # cloud: a FIFO opened read-write never hits EOF, so a server restart does not end us
+        src = io.TextIOWrapper(io.FileIO(os.open(os.environ["ME_RPC_IN"], os.O_RDWR), "r"), encoding="utf-8")
+    for line in src:
         try:
             cmd = json.loads(line)
         except ValueError:

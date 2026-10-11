@@ -126,45 +126,98 @@ def ws_get(uid, wid, paths):
 
 
 class Worker:
-    def __init__(self, uid, username, token, wid, session=None):
-        self.id = uuid.uuid4().hex[:12]
-        self.uid, self.username, self.wid = uid, username, wid
+    """One sandbox. I/O goes through files, not pipes, so the sandbox survives a server restart (KillMode=process):
+    commands → FIFO `in` (opened O_RDWR inside, never EOF), events/stderr → append-only `out` (tailed here).
+    A small `sh` shepherd is bwrap's parent, so --die-with-parent fires when we kill it, not when uvicorn restarts."""
+
+    def __init__(self, uid, username, token, wid, session=None, meta=None):
         self.events = collections.deque(maxlen=800)
-        self.seq = 0
         self.cond = threading.Condition()
         self.busy = False
-        self.session = session
-        self.title = ""
         self.last = time.time()
-        self.started = time.time()
+        self.proc = None
+        self.on_event = None
+        if meta:  # reattach after a server restart
+            self.__dict__.update({k: meta[k] for k in ("id", "uid", "username", "wid", "session", "title", "started", "pid", "port")})
+            self.seq = meta.get("seq", 0) + 1000  # jump ahead: clients holding an old cursor still get everything new
+            self.dir = RUN / self.id
+            self._scan()
+        else:
+            self.id = uuid.uuid4().hex[:12]
+            self.uid, self.username, self.wid = uid, username, wid
+            self.session, self.title, self.started, self.seq = session, "", time.time(), 0
+            self.port = free_port()
+            self.dir = RUN / self.id
+            self.dir.mkdir(parents=True, exist_ok=True)
+            os.mkfifo(self.dir / "in")
+            self._spawn(token)
+            if session:
+                self.send({"type": "load", "id": session})
+        self._fifo = None
+        threading.Thread(target=self._tail, daemon=True).start()
+
+    def _spawn(self, token):
+        uid, wid = self.uid, self.wid
         home = DATA / "run" / str(uid) / "home"
         home.mkdir(parents=True, exist_ok=True)
-        me.jsave(home / ".me" / "auth.json", {"server": API, "token": token, "user": username})
+        me.jsave(home / ".me" / "auth.json", {"server": API, "token": token, "user": self.username})
         work = ws_root(uid, wid)
         work.mkdir(parents=True, exist_ok=True)
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONUNBUFFERED": "1", "ME_YOLO": "1", "ME_WS_LOCAL": "1",
-               "ME_WS_ID": wid, "ME_SERVER": API, "TERM": "dumb"}
+               "ME_WS_ID": wid, "ME_SERVER": API, "TERM": "dumb", "PORT": str(self.port), "ME_RPC_IN": "/run/me.in",
+               "ME_PREVIEW": f"{PUBLIC}/preview/{preview_token(uid, wid)}" if PUBLIC else ""}
         inner = ["python3", "-I", "/opt/me.py" if SANDBOX else str(CLIENT), "--rpc"]
-        limits = ["prlimit", "--as=1500000000", "--nproc=256", "--fsize=200000000", "--nofile=512", "--", "nice", "-n", "10"]
+        limits = ["prlimit", "--as=4000000000", "--nproc=256", "--fsize=200000000", "--nofile=1024", "--", "nice", "-n", "10"]
         if SANDBOX:
             ro = [x for d in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc") if os.path.exists(d) for x in ("--ro-bind", d, d)]
             cmd = ["bwrap", *ro, "--ro-bind", str(CLIENT), "/opt/me.py", "--bind", str(home), "/home/me", "--bind", str(work), "/work",
-                   "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev", "--unshare-all", "--share-net", "--die-with-parent",
-                   "--new-session", "--chdir", "/work", "--setenv", "HOME", "/home/me", "--setenv", "ME_HOME", "/home/me/.me", *limits, *inner]
+                   "--tmpfs", "/tmp", "--dir", "/run", "--bind", str(self.dir / "in"), "/run/me.in", "--proc", "/proc", "--dev", "/dev",
+                   "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--chdir", "/work", "--setenv", "HOME", "/home/me",
+                   "--setenv", "ME_HOME", "/home/me/.me", *limits, *inner]
         else:
-            env.update(HOME=str(home), ME_HOME=str(home / ".me"))
+            env.update(HOME=str(home), ME_HOME=str(home / ".me"), ME_RPC_IN=str(self.dir / "in"))
             cmd = [*limits, *inner]
-        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
-                                     cwd=str(work), text=True, encoding="utf-8", bufsize=1)
-        threading.Thread(target=self._read, daemon=True).start()
-        threading.Thread(target=self._err, daemon=True).start()
-        if session:
-            self.send({"type": "load", "id": session})
+        out = open(self.dir / "out", "ab")
+        shepherd = ["sh", "-c", '"$@"; echo \'{"type":"exit"}\'', "sh", *cmd]
+        self.proc = subprocess.Popen(shepherd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, cwd=str(work),
+                                     start_new_session=True)
+        out.close()
+        self.pid = self.proc.pid
+        self._save()
 
-    def _err(self):
-        for line in self.proc.stderr:
-            if line.strip():
-                self._push({"type": "log", "text": line.rstrip()[:500]})
+    def _save(self):
+        me.jsave(self.dir / "meta.json", {k: getattr(self, k) for k in ("id", "uid", "username", "wid", "session", "title", "started", "pid",
+                                                                         "port", "seq")})
+
+    def _scan(self):
+        """After reattach: recover busy/session/title from what the sandbox already printed."""
+        try:
+            for line in open(self.dir / "out", encoding="utf-8", errors="replace"):
+                self._track(self._parse(line), replay=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _parse(line):
+        try:
+            e = json.loads(line)
+            return e if isinstance(e, dict) else None
+        except ValueError:
+            return {"type": "log", "text": line.rstrip()[:500]} if line.strip() else None
+
+    def _track(self, e, replay=False):
+        if not e:
+            return
+        t = e.get("type")
+        if t in ("ready", "loaded") and e.get("session"):
+            self.session = e["session"]
+            self.title = e.get("title") or self.title
+        elif t == "turn_start":
+            self.busy = True
+        elif t in ("turn_end", "exit"):
+            self.busy = False
+        elif t == "confirm" and not replay:  # sandboxed; auto-approve (ME_YOLO also does this)
+            self.send({"type": "confirm", "id": e["id"], "ok": True})
 
     def _push(self, e):
         with self.cond:
@@ -172,51 +225,85 @@ class Worker:
             e["seq"] = self.seq
             self.events.append(e)
             self.cond.notify_all()
-
-    def _read(self):
-        for line in self.proc.stdout:
+        if e.get("type") in ("turn_end", "loaded", "ready", "exit"):
+            self._save()
+        cb = self.on_event or getattr(globals().get("runner"), "on_event", None)
+        if cb:
             try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            t = e.get("type")
-            if t in ("ready", "loaded") and e.get("session"):
-                self.session = e["session"]
-                self.title = e.get("title") or self.title
-            elif t == "turn_start":
-                self.busy = True
-            elif t == "turn_end":
-                self.busy = False
-            elif t == "confirm":  # sandboxed; auto-approve (ME_YOLO also does this)
-                self.send({"type": "confirm", "id": e["id"], "ok": True})
-            self.last = time.time()
-            self._push(e)
+                cb(self, e)
+            except Exception:
+                pass
+
+    def _tail(self):
+        with open(self.dir / "out", encoding="utf-8", errors="replace") as f:
+            if self.proc is None:
+                f.seek(0, 2)
+            buf = ""
+            while True:
+                chunk = f.readline()
+                if not chunk:
+                    if not self.alive:
+                        rest = f.read()
+                        for line in rest.splitlines():
+                            self._handle(line)
+                        break
+                    time.sleep(0.05)
+                    continue
+                buf += chunk
+                if not buf.endswith("\n"):
+                    continue
+                line, buf = buf, ""
+                self._handle(line)
         self.busy = False
-        self._push({"type": "exit"})
+        if not self.events or self.events[-1].get("type") != "exit":
+            self._push({"type": "exit"})
+
+    def _handle(self, line):
+        e = self._parse(line)
+        if not e:
+            return
+        self._track(e)
+        self.last = time.time()
+        self._push(e)
 
     def send(self, cmd):
         self.last = time.time()
         try:
-            self.proc.stdin.write(json.dumps(cmd) + "\n")
-            self.proc.stdin.flush()
+            if self._fifo is None:
+                fd = os.open(self.dir / "in", os.O_WRONLY | os.O_NONBLOCK)
+                self._fifo = os.fdopen(fd, "w", encoding="utf-8")
+            self._fifo.write(json.dumps(cmd) + "\n")
+            self._fifo.flush()
         except (OSError, ValueError):
-            pass
+            self._fifo = None
 
-    def prompt(self, text):
+    def prompt(self, text, images=()):
         if not self.title:
             self.title = text.strip().split("\n")[0][:60]
         self._push({"type": "user", "text": text})
-        self.send({"type": "prompt", "text": text})
+        self.send({"type": "prompt", "text": text, "images": list(images)})
 
     @property
     def alive(self):
-        return self.proc.poll() is None
+        if self.proc is not None:
+            return self.proc.poll() is None
+        try:
+            with open(f"/proc/{self.pid}/stat") as f:
+                return f.read().split(") ")[-1][:1] not in ("Z", "X")
+        except OSError:
+            return False
 
     def stop(self):
         try:
-            self.proc.kill()
+            os.killpg(self.pid, 9)
         except OSError:
             pass
+        if self.proc is not None:
+            try:
+                self.proc.wait(5)
+            except Exception:
+                pass
+        shutil.rmtree(self.dir, ignore_errors=True)
 
     def wait_events(self, after, timeout=25):
         with self.cond:
@@ -226,13 +313,58 @@ class Worker:
 
     def info(self):
         return {"id": self.id, "seq": self.seq, "session": self.session, "ws": self.wid, "busy": self.busy, "title": self.title,
-                "started": self.started, "last": self.last, "alive": self.alive}
+                "started": self.started, "last": self.last, "alive": self.alive, "port": self.port}
+
+
+RUN = DATA / "run" / "workers"
+PUBLIC = os.environ.get("ME_PUBLIC_URL", "").rstrip("/")
+PREVIEW_KEY = os.environ.get("ME_SECRET", "")
+
+
+def preview_token(uid, wid):
+    import hmac
+    key = PREVIEW_KEY or me.jload(DATA / "secret.json", {}).get("k") or _make_secret()
+    return f"{uid}-{wid}-" + hmac.new(key.encode(), f"{uid}:{wid}".encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _make_secret():
+    k = secrets.token_hex(16)
+    me.jsave(DATA / "secret.json", {"k": k})
+    return k
+
+
+def free_port():
+    import socket
+    used = {w.port for w in runner.workers.values()} if "runner" in globals() else set()
+    for _ in range(50):
+        p = 20000 + secrets.randbelow(9000)
+        if p in used:
+            continue
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return 0
 
 
 class Runner:
     def __init__(self):
         self.workers = {}
         self.lock = threading.Lock()
+        self.on_event = None
+        RUN.mkdir(parents=True, exist_ok=True)
+        for d in RUN.iterdir():  # reattach sandboxes that survived a server restart
+            meta = me.jload(d / "meta.json")
+            if not meta or "port" not in meta:
+                shutil.rmtree(d, ignore_errors=True)
+                continue
+            w = Worker(None, None, None, None, meta=meta)
+            if w.alive:
+                self.workers[w.id] = w
+            else:
+                shutil.rmtree(d, ignore_errors=True)
         threading.Thread(target=self._reaper, daemon=True).start()
 
     def _reaper(self):
@@ -275,6 +407,7 @@ class Runner:
             if not wid or not ws_exists(uid, wid):
                 wid = ws_create(uid, "cloud")["id"] if not wid else ws_create(uid, wid)["id"]
             w = Worker(uid, username, token_fn(), wid, session)
+            w.on_event = self.on_event
             self.workers[w.id] = w
             return w
 

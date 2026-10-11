@@ -4,16 +4,15 @@
 
 **Your coding agent, everywhere.** One Python file. Everything synced.
 
-[**me-agent.ru**](http://64.188.66.249:7777) · [Releases](https://github.com/Gl1ch5/Me-agent/releases) · [Web app](http://64.188.66.249:7777/app) · [Account](http://64.188.66.249:7777/account)
+[**me-agent.ru**](https://me-agent.ru) · [Releases](https://github.com/Gl1ch5/Me-agent/releases) · [Web app](https://me-agent.ru/app) · [Account](https://me-agent.ru/account)
 
 </div>
 
 ```sh
-curl -fsSL http://64.188.66.249:7777/i | sh       # macOS · Linux · Android (Termux)
-irm http://64.188.66.249:7777/i.ps1 | iex         # Windows
+curl -fsSL https://me-agent.ru/i | sh       # macOS · Linux · Android (Termux)
+irm https://me-agent.ru/i.ps1 | iex         # Windows
 ```
 
-> Domain `me-agent.ru` with HTTPS replaces the IP as soon as `.ru` delegation propagates.
 
 ---
 
