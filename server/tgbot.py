@@ -15,6 +15,7 @@ class Bot:
         self.offset = 0
         self.codes = {}  # code -> (uid, expires)
         self.state = {}  # chat_id -> {"worker": id, "session": sid, "ws": wid}
+        self.asks = {}  # chat_id -> pending agent question: {"id", "worker", "options", "t"}
         self.thread = None
 
     # ─── telegram api ───
@@ -63,6 +64,43 @@ class Bot:
     def stop(self):
         self.stopped = True
         self.token = None
+
+    # ─── agent questions: the sandbox waits for an answer, so Telegram must answer or time out ───
+    ASK_TIMEOUT = 600
+
+    def on_ask(self, w, e):
+        """A linked chat is driving worker w: show its question and remember that the next reply answers it."""
+        options = [str(o) for o in (e.get("options") or [])][:8]
+        for chat, st in list(self.state.items()):
+            if st.get("worker") != w.id:
+                continue
+            self.asks[chat] = {"id": e["id"], "worker": w, "options": options, "t": time.time()}
+            kw = {"reply_markup": {"inline_keyboard": [[{"text": o[:60], "callback_data": f"a:{i}"}] for i, o in enumerate(options)]}} if options else {}
+            hint = "" if options else f"\n\nReply with your answer (you have {self.ASK_TIMEOUT // 60} min)."
+            self.send(chat, "❓ " + (e.get("text") or "The agent has a question.") + hint, **kw)
+            t = threading.Timer(self.ASK_TIMEOUT, self._ask_timeout, args=(chat, e["id"]))
+            t.daemon = True
+            t.start()
+            return True
+        return False
+
+    def answer(self, chat, text):
+        """Route a reply to the pending question of this chat. False if nothing is waiting."""
+        a = self.asks.pop(chat, None)
+        if not a:
+            return False
+        try:
+            a["worker"].send({"type": "answer", "id": a["id"], "text": text})
+        except Exception:
+            pass
+        return True
+
+    def _ask_timeout(self, chat, aid):
+        a = self.asks.get(chat)
+        if a and a["id"] == aid:
+            self.asks.pop(chat, None)
+            a["worker"].send({"type": "answer", "id": aid, "text": ""})
+            self.send(chat, "No answer in time — the agent continues without it.")
 
     def edit(self, chat, mid, text):
         try:
@@ -142,7 +180,11 @@ class Bot:
             if not text:
                 return
             if text.startswith("/"):
+                if text.split()[0] == "/stop":
+                    self.asks.pop(chat, None)
                 return self.command(chat, uid, text)
+            if self.answer(chat, text):
+                return self.send(chat, "✓ answer sent")
             self.run(chat, uid, text)
         except Exception as e:
             try:
@@ -252,6 +294,12 @@ class Bot:
             return
         kind, _, val = q["data"].partition(":")
         st = self.state.setdefault(chat, {})
+        if kind == "a":  # answer to an agent question from its buttons
+            a = self.asks.get(chat)
+            if a and val.isdigit() and int(val) < len(a["options"]):
+                self.answer(chat, a["options"][int(val)])
+                return self.send(chat, "✓ " + a["options"][int(val)])
+            return self.send(chat, "that question is no longer open")
         if kind == "s":
             st["session"] = val
             st.pop("worker", None)

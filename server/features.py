@@ -267,6 +267,13 @@ _texts = {}  # worker id -> final answer text of the current turn
 
 def on_worker_event(w, e):
     t = e.get("type")
+    if t == "ask":  # the sandbox is blocked until someone answers: offer the question in every linked Telegram chat
+        for b in (bots.get(w.uid), global_bot):
+            if b and b.token:
+                try:
+                    b.on_ask(w, e)
+                except Exception:
+                    pass
     if t == "turn_start":
         _texts[w.id] = ""
     elif t == "text":
