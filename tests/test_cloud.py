@@ -48,6 +48,26 @@ for _ in range(50):
 assert got and me.jload(b.cfg_path)["prompt"] == "be terse", "watch did not deliver"
 print("ok   instant sync via long-poll")
 
+# live session sync: an agent turn on device a shows up on device b by itself
+a.on_change = ca.autosync
+ag = me.Agent(a, lambda e: None)
+ag.run("hi")
+sid = ag.session["id"]
+for _ in range(60):
+    if b.session_path(sid).exists():
+        break
+    time.sleep(0.1)
+assert b.session_path(sid).exists(), "session did not reach device b"
+agb = me.Agent(b, lambda e: None)
+agb.load(sid)
+ag.run("hi again")
+for _ in range(60):
+    if agb.refresh_from_disk():
+        break
+    time.sleep(0.1)
+assert len(agb.session["messages"]) == len(ag.session["messages"]), "device b did not pick up the new turn"
+print("ok   live session sync between devices")
+
 # workspace: a pushes a project, b pulls it
 proj = Path(tempfile.mkdtemp()) / "proj"
 proj.mkdir()
