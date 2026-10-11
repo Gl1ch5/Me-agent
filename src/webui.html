@@ -402,7 +402,12 @@ mic.addEventListener("pointerdown", e => { e.preventDefault(); recStart(); });
 let spaceT = 0;
 inp.addEventListener("keydown", e => { if (e.code === "Space" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });
 inp.addEventListener("keyup", e => { if (e.code === "Space") recStop(); });
-$("wsPill").onclick = () => { if (MODE === "cloud") location.href = "/account#workspaces"; };
+$("wsPill").onclick = async () => {
+  if (MODE === "cloud") return location.href = "/account#workspaces";
+  const p = prompt("Project folder for the local agent", state.cwd || "");
+  if (!p) return;
+  try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = "New chat"; } catch (e) { alert(e.message); }
+};
 A.boot().then(s => s && apply(s)).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));
 </script>
 </body>

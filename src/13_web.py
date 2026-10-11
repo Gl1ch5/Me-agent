@@ -85,6 +85,14 @@ class WebSession:
         if path == "/load":
             a.load(body["id"])
             return self.state()
+        if path == "/cwd":
+            d = os.path.abspath(os.path.expanduser(body["path"]))
+            if not os.path.isdir(d):
+                raise ValueError(f"no such folder: {d}")
+            os.chdir(d)
+            a.session = new_session(d)
+            a.ctx_used = 0
+            return self.state()
         if path == "/model":
             self.s.config["model"] = body["name"]
             self.s.save()

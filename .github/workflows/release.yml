@@ -1,0 +1,57 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python build.py --check
+      - run: pip install pywebview==5.3.2 pyinstaller==6.11.1
+      - run: copy me.py apps\desktop\me.py
+      - run: pyinstaller --noconfirm --onefile --windowed --name me-desktop --paths apps/desktop --hidden-import me apps/desktop/me_desktop.py
+      - uses: actions/upload-artifact@v4
+        with: {name: windows, path: dist/me-desktop.exe}
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: "8.9"}
+      - name: build apk
+        working-directory: apps/android
+        run: |
+          VERSION_NAME=$(grep -m1 '^VERSION = ' ../../me.py | cut -d'"' -f2) VERSION_CODE=${{ github.run_number }} gradle assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../me-android.apk
+      - uses: actions/upload-artifact@v4
+        with: {name: android, path: me-android.apk}
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {path: dist, merge-multiple: true}
+      - id: v
+        run: echo "tag=${GITHUB_REF_NAME:-}" >> $GITHUB_OUTPUT && [ "${GITHUB_REF_TYPE}" = "tag" ] || echo "tag=v$(grep -m1 '^VERSION = ' me.py | cut -d'"' -f2)" >> $GITHUB_OUTPUT
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: me ${{ steps.v.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            me.py
+            dist/me-desktop.exe
+            dist/me-android.apk

@@ -1,0 +1,8 @@
+<resources>
+    <style name="MeTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorAccent">@color/accent</item>
+    </style>
+    <color name="bg">#0B0C10</color>
+    <color name="accent">#8B7CFF</color>
+</resources>

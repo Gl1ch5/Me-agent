@@ -1,0 +1,16 @@
+plugins { id "com.android.application" }
+
+android {
+    namespace "ru.meagent"
+    compileSdk 34
+    defaultConfig {
+        applicationId "ru.meagent"
+        minSdk 26
+        targetSdk 34
+        versionCode((System.getenv("VERSION_CODE") ?: "1") as int)
+        versionName System.getenv("VERSION_NAME") ?: "0.3.0"
+        buildConfigField "String", "ME_SERVER", "\"${project.findProperty('meServer')}\""
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
