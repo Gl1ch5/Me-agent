@@ -16,6 +16,36 @@ irm https://me-agent.ru/i.ps1 | iex         # Windows
 
 ---
 
+## Trust
+
+me is built on trust, not on secrecy. Everything is open: the client (`me.py`, built from `src/`), the web UI, the server (`server/`) and the deploy files. Anyone can read them, and anyone can run the server part on their own machine (`server/` with the FastAPI app and `server/deploy/` for systemd and nginx), then point the client at it with `ME_SERVER`. Nothing in the code is hidden from you.
+
+What the hosted server at me-agent.ru holds, stated plainly:
+- your login, a hashed password and hashed session tokens;
+- your synced config, including provider API keys, and your chats and project files, stored **unencrypted** on the server. Its operator can read them. If that is not acceptable for you, self-host, or keep the keys you care about out of the cloud config;
+- nothing is shared between accounts.
+
+Before you trust a marketplace skill, read its code: skills run on your machine and can install Python packages. Only install what you have read.
+
+Found a security problem? Open a GitHub issue marked security, or contact the maintainer through the repository.
+
+---
+
+## Доверие
+
+me построен на доверии, а не на секретности. Всё открыто: клиент (`me.py`, собирается из `src/`), веб-интерфейс, сервер (`server/`) и файлы развёртывания. Код можно прочитать, а серверную часть может запустить у себя любой (`server/install.sh`, затем укажите `ME_SERVER` на свой сервер). В коде ничего не спрятано.
+
+Что хранит размещённый сервер me-agent.ru, без обходных формулировок:
+- ваш логин, пароль в виде хеша и токены сессий в виде хеша;
+- синхронизированный конфиг, включая ключи API провайдеров, а также чаты и файлы проектов, которые хранятся на сервере **без шифрования**. Владелец сервера может их прочитать. Если это вас не устраивает, поднимите свой сервер или не храните в облачном конфиге ключи, которые вам важны;
+- данные аккаунтов не пересекаются между собой.
+
+Прежде чем доверять навыку из маркетплейса, прочитайте его код: навыки работают на вашей машине и могут ставить Python-пакеты. Устанавливайте только то, что прочитали.
+
+Нашли проблему безопасности? Откройте issue в GitHub с пометкой security или свяжитесь с мейнтейнером через репозиторий.
+
+---
+
 ## Why
 
 Every agent makes you rebuild your setup on each machine. **me** keeps your models, API keys, prompt, skills, plugins, themes, agents, chats **and project files** in your account. Open a terminal, a browser tab, the phone app or Telegram — you continue exactly where you left off, live.
