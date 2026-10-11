@@ -66,8 +66,15 @@ def voice(out, stand, work, S, cfg, total):
     t.key("enter", 0.9)
     base._welcome(t)
     t.pump(0.8)
-    t.hold(2.6)  # hold space: recording starts after three quick spaces, stops after release
-    t.wait_for(S["voice_word"], timeout=40)
+    for attempt in range(3):  # the hold is timing-sensitive on a slow runner: retry the gesture if nothing lands
+        t.hold(2.6)  # hold space: recording starts after three quick spaces, stops after release
+        try:
+            t.wait_for(S["voice_word"], timeout=15)
+            break
+        except AssertionError:
+            if attempt == 2:
+                raise
+            t.pump(1.0)
     t.pump(1.6)
     t.finish(total)
     return t

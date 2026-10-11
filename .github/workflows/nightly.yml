@@ -101,9 +101,15 @@ jobs:
           cp me.py release/
           [ -f dist-in/me-desktop.exe ] && cp dist-in/me-desktop.exe release/ || true
           [ -f dist-in/me-android.apk ] && cp dist-in/me-android.apk release/ || true
-          if [ "${{ needs.promo.result }}" = "success" ]; then
-            cp dist-in/promo-*.mp4 dist-in/promo-*.webp dist-in/me-*.mp4 dist-in/me-*.webp release/
-            PROMO="promo: ✓ short clips and the full-length video (RU/EN × 16:9/9:16) attached"
+          # judge by the files, not by the job result: promo runs with continue-on-error
+          if ls dist-in/promo-*.mp4 >/dev/null 2>&1; then
+            cp dist-in/promo-*.mp4 dist-in/promo-*.webp release/
+            if ls dist-in/me-*.mp4 >/dev/null 2>&1; then
+              cp dist-in/me-*.mp4 dist-in/me-*.webp release/
+              PROMO="promo: ✓ short clips and the full-length video (RU/EN × 16:9/9:16) attached"
+            else
+              PROMO="promo: ✓ short clips attached · full-length video failed (see the promo job log)"
+            fi
           else
             PROMO="promo failed — no clips in this nightly (see the promo job log)"
           fi
