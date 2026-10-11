@@ -677,6 +677,15 @@ def account(req: Request):
     return page("account.html", req)
 
 
+@app.get("/shots/{name}")
+def shot(name: str):
+    """README / landing screenshots (docs/screenshots/*.webp in the repo)."""
+    f = HERE.parent / "docs" / "screenshots" / name
+    if not re.fullmatch(r"[a-z0-9-]+\.webp", name) or not f.is_file():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="image/webp", headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/favicon.svg")
 def favicon():
     return FileResponse(HERE / "site" / "favicon.svg", media_type="image/svg+xml")

@@ -87,6 +87,16 @@ nav .links{align-items:center}
 .lang:has(button[data-l="ru"].on):before{transform:translateX(100%)}
 .lang button{position:relative;z-index:1;font:700 12px var(--mono);background:none;border:none;color:var(--dim);padding:6px 12px;min-width:42px;border-radius:999px;cursor:pointer;transition:color .2s}
 .lang button.on{background:none;color:var(--on-a,#0b0c10)}
+.shots{display:grid;grid-template-columns:repeat(6,1fr);gap:16px}
+.shots figure{grid-column:span 3;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--bg2)}
+.shots figure.wide{grid-column:span 6}.shots figure.half{grid-column:span 2}
+.shots img{display:block;width:100%;height:auto;background:var(--bg2)}
+.shots figcaption{padding:12px 14px;font-size:13px;color:var(--dim);line-height:1.5}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.cols>div{border:1px solid var(--line);border-radius:14px;padding:22px;background:var(--bg2)}
+.cols h3{font:600 15px var(--mono);margin-bottom:12px;color:var(--a)}
+.cols ul{list-style:none}.cols li{color:var(--dim);font-size:14px;line-height:1.5;padding:6px 0;border-top:1px solid var(--line)}.cols li:first-child{border-top:none}
+@media (max-width:760px){.shots figure,.shots figure.half{grid-column:span 6}.shots figure.wide{grid-column:span 6}}
 </style>
 </head>
 <body>
@@ -95,6 +105,7 @@ nav .links{align-items:center}
   <a class="logo" href="/"><i></i>me</a>
   <div class="links">
     <a class="hide" href="#features" data-i18n="nav_features">features</a>
+    <a class="hide" href="#tour" data-i18n="nav_tour">screens</a>
     <a class="hide" href="#skills" data-i18n="nav_skills">skills</a>
     <a class="hide" href="#open" data-i18n="nav_open">open source</a>
     <a class="hide" href="#commands" data-i18n="nav_commands">commands</a>
@@ -147,6 +158,32 @@ nav .links{align-items:center}
     <div><h3><em>10</em><span data-i18n="f10h">plugins and voice</span></h3><p data-i18n="f10p">Plugins change me itself: commands, tools, keys, themes. Hold space to dictate with Groq Whisper.</p></div>
     <div><h3><em>11</em><span data-i18n="f11h">your own Telegram bot</span></h3><p data-i18n="f11p">Every account sets its own bot. The agent's <code>notify</code> tool sends you messages and files.</p></div>
     <div><h3><em>12</em><span data-i18n="f12h">2FA if you want</span></h3><p data-i18n="f12p">Username and password by default. Attach Google Authenticator, Aegis or 1Password in one command.</p></div>
+  </div>
+</section>
+
+<section id="tour">
+  <h2 data-i18n="t_h">see it</h2>
+  <p class="sub" data-i18n="t_sub">The same agent in the browser, on your phone and in your account. These are real screens.</p>
+  <div class="shots">
+    <figure class="wide"><img data-shot="app-chat-{l}-1280" alt="" loading="lazy"><figcaption data-i18n="t1">Web chat: goal, live todo list, tool cards, diff review.</figcaption></figure>
+    <figure><img data-shot="app-chat-{l}-360" alt="" loading="lazy"><figcaption data-i18n="t2">The same session on a phone.</figcaption></figure>
+    <figure><img data-shot="app-drawer-{l}-360" alt="" loading="lazy"><figcaption data-i18n="t3">Sessions, modes and settings in the drawer.</figcaption></figure>
+    <figure class="half"><img data-shot="account-models-{l}-1280" alt="" loading="lazy"><figcaption data-i18n="t4">Models and keys, synced to every machine.</figcaption></figure>
+    <figure class="half"><img data-shot="account-market-{l}-1280" alt="" loading="lazy"><figcaption data-i18n="t5">Marketplace: skills, plugins, themes, agents.</figcaption></figure>
+    <figure class="half"><img data-shot="account-cloud-{l}-1280" alt="" loading="lazy"><figcaption data-i18n="t6">Cloud: sandboxes, Telegram, GitHub, push, background jobs.</figcaption></figure>
+    <figure class="half"><img data-shot="themes" alt="" loading="lazy"><figcaption data-i18n="t7">Themes shared by terminal, web app and site.</figcaption></figure>
+    <figure class="half"><img data-shot="tui-commands" alt="" loading="lazy"><figcaption data-i18n="t8">The terminal UI with fuzzy slash commands.</figcaption></figure>
+    <figure class="half"><img data-shot="account-security-{l}-1280" alt="" loading="lazy"><figcaption data-i18n="t9">Security: 2FA, password, devices.</figcaption></figure>
+  </div>
+</section>
+
+<section id="all">
+  <h2 data-i18n="a_h">everything it can do</h2>
+  <p class="sub" data-i18n="a_sub">The short list above is only the start. Here is the full one.</p>
+  <div class="cols">
+    <div><h3 data-i18n="a1h">agent</h3><ul data-i18n="a1l"><li>modes: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> until done and verified, exit codes for CI</li><li>live todo list, self-check before "done"</li><li>subagents with <code>task(agent, prompt)</code></li><li>AGENTS.md always in context, <code>/init</code></li><li>checkpoint per turn, <code>/undo</code>, diff review</li><li>permissions: read-only, ask, full + allow-list</li><li>context meter, <code>/compact</code>, <code>/autocompact</code></li><li>cost per task, session and day, limits</li><li>web search and fetch built in</li></ul></div>
+    <div><h3 data-i18n="a2h">extend</h3><ul data-i18n="a2l"><li>skills: one .py file, about 15 tokens idle</li><li>plugins that change me itself</li><li>MCP servers, loaded lazily</li><li>marketplace with ratings, versions, auto-update</li><li>themes: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>custom agent modes as a .md file</li><li>any OpenAI-compatible model, reasoning effort</li></ul></div>
+    <div><h3 data-i18n="a3h">cloud</h3><ul data-i18n="a3l"><li>sync of config, keys, skills, themes and every chat</li><li>live sync between devices within a second</li><li>workspaces: project files with 3-way merge</li><li>isolated cloud sandboxes (bubblewrap)</li><li>background tasks, schedules, notifications</li><li>preview of the built site by link</li><li>GitHub: clone, branch, commit, push, PR</li><li>your own Telegram bot per account</li><li>web push, voice input, installable PWA</li><li>2FA, device list, self-hosting</li></ul></div>
   </div>
 </section>
 
@@ -272,6 +309,16 @@ const RU = {
   cta_h: "попробуйте за минуту", cta_p: "Установите, наберите <code>me</code> и продолжите ту же сессию на телефоне.",
   cta_app: "открыть веб-приложение", cta_acc: "создать аккаунт", cta_src: "исходники на GitHub",
   foot: "для тех, кто меняет машины", src: "исходник", rel: "релизы",
+  t_h: "посмотрите", t_sub: "Тот же агент в браузере, на телефоне и в аккаунте. Это настоящие экраны.",
+  t1: "Веб-чат: цель, живой список задач, карточки инструментов, просмотр диффа.", t2: "Та же сессия на телефоне.", t3: "Сессии, режимы и настройки в боковом меню.",
+  t4: "Модели и ключи, синхронизированные на все машины.", t5: "Маркетплейс: навыки, плагины, темы, агенты.", t6: "Облако: песочницы, Telegram, GitHub, push, фоновые задачи.",
+  t7: "Темы, общие для терминала, веб-приложения и сайта.", t8: "Терминальный интерфейс с нечёткими командами через /.", t9: "Безопасность: 2FA, пароль, устройства.",
+  nav_tour: "экраны",
+  a_h: "всё, что он умеет", a_sub: "Короткий список выше — только начало. Вот полный.",
+  a1h: "агент", a2h: "расширения", a3h: "облако",
+  a1l: "<li>режимы: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> до готового и проверенного результата, коды выхода для CI</li><li>живой список задач, самопроверка перед «готово»</li><li>субагенты через <code>task(agent, prompt)</code></li><li>AGENTS.md всегда в контексте, <code>/init</code></li><li>контрольная точка на каждый ход, <code>/undo</code>, просмотр диффа</li><li>разрешения: только чтение, спрашивать, полный доступ + список разрешённого</li><li>индикатор контекста, <code>/compact</code>, <code>/autocompact</code></li><li>стоимость задачи, сессии и дня, лимиты</li><li>веб-поиск и загрузка страниц встроены</li>",
+  a2l: "<li>навыки: один .py файл, около 15 токенов в простое</li><li>плагины, которые меняют сам me</li><li>MCP-серверы, загружаются лениво</li><li>маркетплейс с рейтингами, версиями и автообновлением</li><li>темы: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>свои режимы агента одним .md файлом</li><li>любая OpenAI-совместимая модель, уровень рассуждений</li>",
+  a3l: "<li>синхронизация конфига, ключей, навыков, тем и каждого чата</li><li>живая синхронизация между устройствами за секунду</li><li>рабочие области: файлы проектов с трёхсторонним слиянием</li><li>изолированные облачные песочницы (bubblewrap)</li><li>фоновые задачи, расписания, уведомления</li><li>предпросмотр собранного сайта по ссылке</li><li>GitHub: клонирование, ветки, коммиты, push, PR</li><li>свой Telegram-бот у каждого аккаунта</li><li>web push, голосовой ввод, устанавливаемое PWA</li><li>2FA, список устройств, свой сервер</li>",
   title: "me — ваш агент, везде",
   desc: "Минималистичный агент для кода в одном Python-файле. Конфиг, ключи, навыки и чаты синхронизируются через облако: установите на любой машине и вы дома.",
   demo: "добавь повторы в http-клиент и запусти тесты"
@@ -299,6 +346,7 @@ function setLang(l, save) {
   document.title = l === "ru" ? RU.title : EN_TITLE;
   document.querySelector('meta[name="description"]').content = l === "ru" ? RU.desc : EN_DESC;
   document.querySelectorAll(".lang button").forEach(b => b.classList.toggle("on", b.dataset.l === l));
+  document.querySelectorAll("img[data-shot]").forEach(i => i.src = "/shots/" + i.dataset.shot.replace("{l}", l) + ".webp");
   user = tr("demo"); t = 0;
   if (save) try { localStorage.setItem("me-lang", l); } catch (e) {}
 }
