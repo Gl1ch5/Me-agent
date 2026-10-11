@@ -237,6 +237,7 @@ class Worker:
                 pass
 
     def _tail(self):
+        (self.dir / "out").touch(exist_ok=True)
         with open(self.dir / "out", encoding="utf-8", errors="replace") as f:
             if self.proc is None:
                 f.seek(0, 2)
@@ -363,7 +364,7 @@ class Runner:
         RUN.mkdir(parents=True, exist_ok=True)
         for d in RUN.iterdir():  # reattach sandboxes that survived a server restart
             meta = me.jload(d / "meta.json")
-            if not meta or "port" not in meta:
+            if not meta or "port" not in meta or not (d / "out").exists():
                 shutil.rmtree(d, ignore_errors=True)
                 continue
             w = Worker(None, None, None, None, meta=meta)
