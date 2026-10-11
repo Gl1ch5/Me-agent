@@ -290,11 +290,23 @@ class TUIInput:
             return
         self.bg(self.agent.run, text, images)
 
+    def retheme(self, name=None):
+        apply_theme(self.s, name)
+        with self.lock:
+            for b in self.blocks:
+                b.touch()
+        self.redraw()
+
     def _on_remote_change(self, n):
         cfg = jload(self.s.cfg_path)
         if cfg:
             self.s.config = cfg
-        self.toast(f"☁ {n} updates from cloud", "ok")
+            self.retheme()
+        if self.agent.refresh_from_disk(os.getcwd()):
+            self.render_history()
+            self.toast("☁ session updated from another device", "ok")
+        else:
+            self.toast(f"☁ {n} updates from cloud", "ok")
         if not self.agent.busy:
             self.sync_ws()
 

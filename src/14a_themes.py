@@ -12,6 +12,18 @@ BUILTIN_THEMES = {
         "bg": "#fafaf8", "bg2": "#f2f2ef", "bg3": "#e9e9e4", "line": "#e2e2dc", "fg": "#1d1e24", "dim": "#62657a", "faint": "#b9bac2",
         "accent": "#6c5ce7", "accent2": "#0f9d8e", "ok": "#1f9d55", "err": "#d63a4a", "warn": "#c77700", "user": "#a3750a",
         "code_bg": "#efefea", "sel": "#e4e2f7"}},
+    "mono": {"name": "mono", "label": "mono", "dark": True, "colors": {
+        "bg": "#000000", "bg2": "#0d0d0d", "bg3": "#161616", "line": "#262626", "fg": "#ededed", "dim": "#8a8a8a", "faint": "#3d3d3d",
+        "accent": "#ffffff", "accent2": "#bdbdbd", "ok": "#d4d4d4", "err": "#ff5f5f", "warn": "#cfcfcf", "user": "#ffffff",
+        "code_bg": "#0d0d0d", "sel": "#1f1f1f"}},
+    "mono-light": {"name": "mono-light", "label": "mono light", "dark": False, "colors": {
+        "bg": "#ffffff", "bg2": "#f6f6f6", "bg3": "#ededed", "line": "#e3e3e3", "fg": "#0a0a0a", "dim": "#6b6b6b", "faint": "#c2c2c2",
+        "accent": "#0a0a0a", "accent2": "#4d4d4d", "ok": "#2b2b2b", "err": "#d32f2f", "warn": "#4d4d4d", "user": "#0a0a0a",
+        "code_bg": "#f6f6f6", "sel": "#ebebeb"}},
+    "graphite": {"name": "graphite", "label": "graphite", "dark": True, "colors": {
+        "bg": "#212121", "bg2": "#2a2a2a", "bg3": "#303030", "line": "#3a3a3a", "fg": "#ececec", "dim": "#9b9b9b", "faint": "#555555",
+        "accent": "#ececec", "accent2": "#a3a3a3", "ok": "#7fd18b", "err": "#f28b82", "warn": "#e6c07b", "user": "#ececec",
+        "code_bg": "#171717", "sel": "#3a3a3a"}},
 }
 
 

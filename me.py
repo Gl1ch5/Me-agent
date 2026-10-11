@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -2286,6 +2286,18 @@ BUILTIN_THEMES = {
         "bg": "#fafaf8", "bg2": "#f2f2ef", "bg3": "#e9e9e4", "line": "#e2e2dc", "fg": "#1d1e24", "dim": "#62657a", "faint": "#b9bac2",
         "accent": "#6c5ce7", "accent2": "#0f9d8e", "ok": "#1f9d55", "err": "#d63a4a", "warn": "#c77700", "user": "#a3750a",
         "code_bg": "#efefea", "sel": "#e4e2f7"}},
+    "mono": {"name": "mono", "label": "mono", "dark": True, "colors": {
+        "bg": "#000000", "bg2": "#0d0d0d", "bg3": "#161616", "line": "#262626", "fg": "#ededed", "dim": "#8a8a8a", "faint": "#3d3d3d",
+        "accent": "#ffffff", "accent2": "#bdbdbd", "ok": "#d4d4d4", "err": "#ff5f5f", "warn": "#cfcfcf", "user": "#ffffff",
+        "code_bg": "#0d0d0d", "sel": "#1f1f1f"}},
+    "mono-light": {"name": "mono-light", "label": "mono light", "dark": False, "colors": {
+        "bg": "#ffffff", "bg2": "#f6f6f6", "bg3": "#ededed", "line": "#e3e3e3", "fg": "#0a0a0a", "dim": "#6b6b6b", "faint": "#c2c2c2",
+        "accent": "#0a0a0a", "accent2": "#4d4d4d", "ok": "#2b2b2b", "err": "#d32f2f", "warn": "#4d4d4d", "user": "#0a0a0a",
+        "code_bg": "#f6f6f6", "sel": "#ebebeb"}},
+    "graphite": {"name": "graphite", "label": "graphite", "dark": True, "colors": {
+        "bg": "#212121", "bg2": "#2a2a2a", "bg3": "#303030", "line": "#3a3a3a", "fg": "#ececec", "dim": "#9b9b9b", "faint": "#555555",
+        "accent": "#ececec", "accent2": "#a3a3a3", "ok": "#7fd18b", "err": "#f28b82", "warn": "#e6c07b", "user": "#ececec",
+        "code_bg": "#171717", "sel": "#3a3a3a"}},
 }
 
 
@@ -3204,11 +3216,23 @@ class TUIInput:
             return
         self.bg(self.agent.run, text, images)
 
+    def retheme(self, name=None):
+        apply_theme(self.s, name)
+        with self.lock:
+            for b in self.blocks:
+                b.touch()
+        self.redraw()
+
     def _on_remote_change(self, n):
         cfg = jload(self.s.cfg_path)
         if cfg:
             self.s.config = cfg
-        self.toast(f"☁ {n} updates from cloud", "ok")
+            self.retheme()
+        if self.agent.refresh_from_disk(os.getcwd()):
+            self.render_history()
+            self.toast("☁ session updated from another device", "ok")
+        else:
+            self.toast(f"☁ {n} updates from cloud", "ok")
         if not self.agent.busy:
             self.sync_ws()
 
