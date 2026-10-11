@@ -137,9 +137,21 @@ def cloud_prompt(wid: str, p: Prompt, u=Depends(user)):
     return {"ok": True}
 
 
+class Answer(BaseModel):
+    id: str
+    text: str = ""
+    ok: bool | None = None
+
+
+@app.post("/api/cloud/{wid}/answer")
+def cloud_answer(wid: str, a: Answer, u=Depends(user)):
+    _worker(u, wid).send({"type": "answer", "id": a.id, "text": a.text})
+    return {"ok": True}
+
+
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
-    if action not in ("cancel", "new", "sync"):
+    if action not in ("cancel", "new", "sync", "compact"):
         raise HTTPException(404)
     _worker(u, wid).send({"type": action})
     return {"ok": True}
@@ -219,6 +231,42 @@ def tg_link(u=Depends(user)):
 def tg_unlink(u=Depends(user)):
     conn.execute("DELETE FROM tg_links WHERE user_id=?", (u["id"],))
     return {"ok": True}
+
+
+@app.get("/api/agents")
+def user_agents(u=Depends(user)):
+    """Built-in presets + the user's agent/*.md docs (parsed by the client's own code)."""
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        st = cloud.me.Store(d)
+        for r in conn.execute("SELECT key,content FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'agent/%'", (u["id"],)):
+            (_P(d) / "agents" / r["key"][6:]).write_text(r["content"], "utf-8")
+        ps = cloud.me.presets(st)
+    cfg = user_config(u["id"])
+    return {"current": cfg.get("agent") or "code",
+            "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", ""), "tools": p.get("tools", "")} for n, p in ps.items()]}
+
+
+# ─── themes (built-ins from the client + the user's installed theme docs) ───
+
+
+@app.get("/api/themes")
+def user_themes(u=Depends(user)):
+    out = dict(cloud.me.BUILTIN_THEMES)
+    for r in conn.execute("SELECT key,content FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'theme/%'", (u["id"],)):
+        try:
+            t = json.loads(r["content"])
+            out[t.get("name") or r["key"][6:-5]] = t
+        except ValueError:
+            pass
+    cfg = user_config(u["id"])
+    full = []
+    for n, t in out.items():
+        base = dict(cloud.me.BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
+        base.update(t.get("colors", {}))
+        full.append(dict(t, name=n, colors=base))
+    return {"current": cfg.get("theme") or "me-dark", "themes": full}
 
 
 # ─── admin ───

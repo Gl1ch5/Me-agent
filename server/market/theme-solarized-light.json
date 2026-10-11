@@ -1,0 +1,23 @@
+{
+ "name": "solarized-light",
+ "label": "Solarized Light",
+ "dark": false,
+ "description": "precision colors, light",
+ "colors": {
+  "bg": "#fdf6e3",
+  "bg2": "#eee8d5",
+  "bg3": "#e6dfc8",
+  "line": "#e0d9c1",
+  "fg": "#3a4a50",
+  "dim": "#657b83",
+  "faint": "#b5ae98",
+  "accent": "#268bd2",
+  "accent2": "#2aa198",
+  "ok": "#859900",
+  "err": "#dc322f",
+  "warn": "#cb4b16",
+  "user": "#b58900",
+  "code_bg": "#eee8d5",
+  "sel": "#e3dcc4"
+ }
+}

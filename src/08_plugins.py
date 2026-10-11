@@ -16,8 +16,8 @@ class PluginCtx:
     def progress(self, v, label="", n=None, total=None):
         self.emit({"t": "progress", "v": v, "label": label, "n": n, "total": total})
 
-    def ask(self, q):
-        return self._ask(q) if self._ask else ""
+    def ask(self, q, options=None):
+        return (self._ask(q, options) if options else self._ask(q)) if self._ask else ""
 
 
 class Plugins:
@@ -52,6 +52,11 @@ class Plugins:
             self.hooks.setdefault(event, []).append(fn)
             return fn
         return deco
+
+    def theme(self, t):
+        """Register a color theme: {"name", "label", "dark", "colors": {...}} (see THEME_TOKENS)."""
+        BUILTIN_THEMES[t["name"]] = t
+        return t
 
     def emit(self, event, *a):
         """Call hooks in order; first non-None result wins."""

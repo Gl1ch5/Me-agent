@@ -43,8 +43,20 @@ class Ctx:
             self.bar(i, total, label) if total else _emit(t="progress", v=None, label=label, n=i)
             yield x
         if total: self.bar(total, total, label)
-    def ask(self, q):
-        _emit(t="ask", text=str(q)); return sys.stdin.readline().rstrip("\n")
+    def ask(self, q, options=None):
+        _emit(t="ask", text=str(q), options=[str(o) for o in options] if options else None)
+        return sys.stdin.readline().rstrip("\n")
+    def choose(self, q, options):
+        "Let the user pick one option; returns the chosen string (or '' if dismissed)."
+        return self.ask(q, list(options))
+    def confirm(self, q):
+        return self.ask(q, ["yes", "no"]).lower().startswith("y")
+    def table(self, rows, title=""):
+        "Show rows (list of dicts or lists) in the skill card."
+        _emit(t="table", title=str(title), rows=rows[:200])
+    def md(self, text):
+        "Show markdown in the skill card."
+        _emit(t="md", text=str(text)[:20000])
 path, fn, args = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 sys.path.insert(0, os.path.join(os.path.dirname(path), ".deps"))
 g = {"__name__": "skill", "__file__": path, "action": action}
@@ -151,7 +163,7 @@ class Skills:
             if ev.get("t") == "result":
                 result = ev
             elif ev.get("t") == "ask":
-                ans = ask(ev["text"]) if ask else ""
+                ans = (ask(ev["text"], ev.get("options")) if ev.get("options") else ask(ev["text"])) if ask else ""
                 proc.stdin.write((ans or "") + "\n")
                 proc.stdin.flush()
             else:

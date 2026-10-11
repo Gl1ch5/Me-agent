@@ -1,0 +1,42 @@
+# ───────────────────────────── themes ─────────────────────────────
+# A theme is JSON: {"name", "label", "dark", "colors": {token: "#rrggbb"}}. Same tokens drive the TUI and the web UI.
+# Installed themes live in ~/.me/themes/<name>.json (synced as theme/<name>.json); config["theme"] picks one.
+
+THEME_TOKENS = ["bg", "bg2", "bg3", "line", "fg", "dim", "faint", "accent", "accent2", "ok", "err", "warn", "user", "code_bg", "sel"]
+BUILTIN_THEMES = {
+    "me-dark": {"name": "me-dark", "label": "me dark", "dark": True, "colors": {
+        "bg": "#0e0f13", "bg2": "#111319", "bg3": "#171a23", "line": "#1f2230", "fg": "#d8dae3", "dim": "#6b6f80", "faint": "#3a3d4a",
+        "accent": "#8b7cff", "accent2": "#4fd1c5", "ok": "#5ad18a", "err": "#ff6b7a", "warn": "#ffb454", "user": "#e7c66b",
+        "code_bg": "#16181f", "sel": "#262a38"}},
+    "me-light": {"name": "me-light", "label": "me light", "dark": False, "colors": {
+        "bg": "#fafaf8", "bg2": "#f2f2ef", "bg3": "#e9e9e4", "line": "#e2e2dc", "fg": "#1d1e24", "dim": "#62657a", "faint": "#b9bac2",
+        "accent": "#6c5ce7", "accent2": "#0f9d8e", "ok": "#1f9d55", "err": "#d63a4a", "warn": "#c77700", "user": "#a3750a",
+        "code_bg": "#efefea", "sel": "#e4e2f7"}},
+}
+
+
+def themes(store):
+    out = dict(BUILTIN_THEMES)
+    d = store.home / "themes"
+    for p in sorted(d.glob("*.json")) if d.exists() else []:
+        t = jload(p)
+        if isinstance(t, dict) and isinstance(t.get("colors"), dict):
+            t.setdefault("name", p.stem)
+            out[t["name"]] = t
+    return out
+
+
+def theme(store, name=None):
+    ts = themes(store)
+    t = ts.get(name or store.config.get("theme") or "me-dark") or ts["me-dark"]
+    colors = dict(BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
+    colors.update({k: v for k, v in t["colors"].items() if isinstance(v, str) and v.startswith("#")})
+    return dict(t, colors=colors)
+
+
+def apply_theme(store, name=None):
+    """Point the TUI palette at a theme (diff colors follow ok/err)."""
+    c = theme(store, name)["colors"]
+    TH.update(c)
+    TH["add"], TH["del"] = c["ok"], c["err"]
+    return c

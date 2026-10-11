@@ -307,7 +307,7 @@ def sync(r: SyncReq, u=Depends(user)):
     return {"cursor": rev, "docs": out}
 
 
-KEY_RX = r"(config|skill/[\w.-]+|plugin/[\w.-]+\.py|session/[\w.-]+)"
+KEY_RX = r"(config|skill/[\w.-]+|plugin/[\w.-]+\.py|theme/[\w.-]+\.json|agent/[\w.-]+\.md|session/[\w.-]+)"
 
 
 def put_doc(uid, key, content, deleted=False):
@@ -366,6 +366,13 @@ def sessions(u=Depends(user)):
 
 
 def skill_meta(content):
+    if content.lstrip().startswith("{"):  # theme JSON
+        try:
+            t = json.loads(content)
+            return {"name": t.get("name", ""), "description": t.get("description") or t.get("label", ""), "kind": "theme",
+                    "icon": "◐", "color": (t.get("colors") or {}).get("accent", "purple"), "default": "false"}
+        except ValueError:
+            return {}
     m = re.search(r'(?:"""|^---)\s*\n(.*?)\n---', content, re.S | re.M)
     meta = {}
     for line in (m.group(1).splitlines() if m else []):
@@ -388,7 +395,8 @@ def market(q: str = "", kind: str = ""):
 
 
 def doc_key_for(r):
-    return f"plugin/{r['name']}.py" if r["kind"] == "plugin" else f"skill/{r['name']}.{r['ext']}"
+    return {"plugin": f"plugin/{r['name']}.py", "theme": f"theme/{r['name']}.json", "agent": f"agent/{r['name']}.md"}.get(
+        r["kind"], f"skill/{r['name']}.{r['ext']}")
 
 
 def seed_user(uid):
@@ -418,7 +426,8 @@ def market_publish(p: Publish, u=Depends(user)):
     if len(p.content) > 200_000:
         raise HTTPException(400, "too big")
     ext = "md" if p.ext == "md" else "py"
-    kind = "plugin" if meta.get("kind") == "plugin" else "skill"
+    kind = meta.get("kind") if meta.get("kind") in ("plugin", "theme", "agent") else "skill"
+    ext = {"theme": "json", "agent": "md", "plugin": "py"}.get(kind, ext)
     cur = conn.execute("SELECT user_id FROM market WHERE name=?", (name,)).fetchone()
     if cur and cur["user_id"] != u["id"] and not u["admin"]:
         raise HTTPException(409, "name taken by another author")
@@ -457,7 +466,7 @@ def seed_market():
             continue
         now = time.time()
         vals = (meta.get("description", ""), meta.get("icon", "◆"), meta.get("color", "purple"), p.suffix[1:], c,
-                "plugin" if meta.get("kind") == "plugin" else "skill", int(meta.get("default") == "true"))
+                meta.get("kind") if meta.get("kind") in ("plugin", "theme", "agent") else "skill", int(meta.get("default") == "true"))
         if conn.execute("SELECT 1 FROM market WHERE name=?", (meta["name"],)).fetchone():
             conn.execute("UPDATE market SET description=?,icon=?,color=?,ext=?,content=?,kind=?,is_default=?,updated=? WHERE name=? AND user_id=0",
                          (*vals, now, meta["name"]))

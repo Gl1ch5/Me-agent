@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the single-file agent: src/NN_*.py are concatenated in order into me.py, src/webui.html is embedded as WEBUI.
+"""Build the single-file agent: src/NN_*.py are concatenated in order into me.py, src/web/ (index.html + *.css + *.js) is embedded as WEBUI.
 Edit files in src/, then run `python3 build.py`. `python3 build.py --check` fails if me.py is stale (used in CI)."""
 import ast, json, pathlib, sys
 
@@ -10,9 +10,12 @@ PLACEHOLDER = 'WEBUI = "<!-- built into me.py by build.py -->"'
 
 
 def build():
-    parts = [p.read_text("utf-8").rstrip("\n") + "\n" for p in sorted(SRC.glob("[0-9][0-9]_*.py"))]
+    parts = [p.read_text("utf-8").rstrip("\n") + "\n" for p in sorted(SRC.glob("[0-9][0-9]*_*.py"))]
     code = "\n\n".join(parts)
-    html = (SRC / "webui.html").read_text("utf-8")
+    web = SRC / "web"
+    html = (web / "index.html").read_text("utf-8")
+    html = html.replace("/*CSS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.css"))))
+    html = html.replace("/*JS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.js"))))
     assert PLACEHOLDER in code, "WEBUI placeholder missing in src"
     code = code.replace(PLACEHOLDER, "WEBUI = " + json.dumps(html))
     ast.parse(code)

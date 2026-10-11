@@ -19,11 +19,11 @@ def hl_code(line, lang):
         if t.startswith(("#", "//")) and lang not in ("css",):
             col = TH["dim"]
         elif t[0] in "\"'`":
-            col = "#a5d6a7"
+            col = TH["ok"]
         elif t[0].isdigit():
-            col = "#f5a97f"
+            col = TH["warn"]
         else:
-            col = "#c39bff"
+            col = TH["accent"]
         segs.append((t, rgb(col) + rgb(TH["code_bg"], True)))
         pos = m.end()
     if pos < len(line):

@@ -16,6 +16,7 @@ class WebSession:
         self.cond = threading.Condition()
         self.waits = {}
         self.agent = Agent(store, self.push, self.confirm, self.ask)
+        store.on_change = self.cloud.autosync
 
     def push(self, e):
         with self.cond:
@@ -44,8 +45,8 @@ class WebSession:
     def confirm(self, name, args):
         return bool(self._wait("confirm", name=name, args=args))
 
-    def ask(self, q):
-        return self._wait("ask", text=q) or ""
+    def ask(self, q, options=None):
+        return self._wait("ask", text=q, options=options) or ""
 
     def state(self):
         ses = self.agent.session
@@ -53,6 +54,8 @@ class WebSession:
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())],
+                "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
+                "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
 
     def handle(self, method, path, body):
@@ -94,6 +97,23 @@ class WebSession:
                 os.chdir(local)
                 a.relocate(local)
             return self.state()
+        if path == "/compact":
+            if a.busy:
+                raise ValueError("busy")
+            threading.Thread(target=lambda: a.compact(reason="manual") or self.push({"type": "error", "text": "nothing to compact yet"}),
+                             daemon=True).start()
+            return {"ok": True}
+        if path == "/agent":
+            self.s.config["agent"] = body["name"]
+            a.session["agent"] = body["name"]
+            self.s.save()
+            return {"ok": True}
+        if path == "/themes":
+            return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
+        if path == "/theme":
+            self.s.config["theme"] = body["name"]
+            self.s.save()
+            return {"ok": True}
         if path == "/cwd":
             d = os.path.abspath(os.path.expanduser(body["path"]))
             if not os.path.isdir(d):
@@ -196,8 +216,12 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
                 webbrowser.open(url)
         except Exception:
             pass
+    def remote(n):
+        store.config.update(jload(store.cfg_path) or {})
+        if ws.agent.refresh_from_disk(os.getcwd()):
+            ws.push({"type": "reload"})
     if store.auth.get("token"):
-        ws.cloud.watch(lambda n: store.config.update(jload(store.cfg_path) or {}))
+        ws.cloud.watch(remote)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

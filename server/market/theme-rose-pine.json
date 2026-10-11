@@ -1,0 +1,23 @@
+{
+ "name": "rose-pine",
+ "label": "Ros\u00e9 Pine",
+ "dark": true,
+ "description": "all natural pine, faux fur and soho vibes",
+ "colors": {
+  "bg": "#191724",
+  "bg2": "#1f1d2e",
+  "bg3": "#26233a",
+  "line": "#26233a",
+  "fg": "#e0def4",
+  "dim": "#908caa",
+  "faint": "#524f67",
+  "accent": "#c4a7e7",
+  "accent2": "#9ccfd8",
+  "ok": "#31748f",
+  "err": "#eb6f92",
+  "warn": "#f6c177",
+  "user": "#ebbcba",
+  "code_bg": "#1f1d2e",
+  "sel": "#403d52"
+ }
+}

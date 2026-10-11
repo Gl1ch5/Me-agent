@@ -71,6 +71,10 @@ class Cloud:
             docs["session/" + p.stem] = p
         for p in (self.s.home / "plugins").glob("*.py"):
             docs["plugin/" + p.name] = p
+        for p in (self.s.home / "themes").glob("*.json"):
+            docs["theme/" + p.name] = p
+        for p in (self.s.home / "agents").glob("*.md"):
+            docs["agent/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -79,7 +83,8 @@ class Cloud:
         kind, _, name = key.partition("/")
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
-        return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+        return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "theme": self.s.home / "themes" / name,
+                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
 
     def sync(self):
         if not self.online:
@@ -162,6 +167,17 @@ class Cloud:
                     if n:
                         on_change(n)
         threading.Thread(target=loop, daemon=True, name="me-watch").start()
+
+    def autosync(self, delay=0.7, done=None):
+        """Debounced background sync — call on every local change."""
+        if not self.online:
+            return
+        t = getattr(self, "_timer", None)
+        if t:
+            t.cancel()
+        self._timer = threading.Timer(delay, lambda: self.sync_bg(done))
+        self._timer.daemon = True
+        self._timer.start()
 
     def sync_bg(self, done=None):
         def run():

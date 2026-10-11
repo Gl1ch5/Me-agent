@@ -44,20 +44,41 @@ class Agent:
     def system_prompt(self):
         sks = self.skills.enabled()
         skills = ("\nSkills (load via skill tool):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
-        project = ""
-        for name in ("ME.md", "AGENTS.md", "CLAUDE.md"):
-            p = Path(self.session["cwd"]) / name
-            if p.exists():
-                project = f"\n\n# {name}\n" + p.read_text("utf-8", "replace")[:8000]
-                break
+        project, budget = "", 24000
+        for name in self.context_files():
+            text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
+            budget -= len(text)
+            project += f"\n\n# {name}\n{text}"
+        if "AGENTS.md" in self.context_files():
+            project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
+        else:
+            project += ("\n\nNo AGENTS.md here yet. Once you understand the project, create a concise AGENTS.md "
+                        "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
+        pr = self.preset()
+        if pr.get("prompt"):
+            project += "\n\n" + pr["prompt"]
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              skills=skills, project=project, user=user)
 
+    def preset(self):
+        return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
+
+    def context_files(self):
+        cwd = Path(self.session.get("cwd") or ".")
+        return [n for n in CONTEXT_FILES if (cwd / n).is_file()]
+
+    def tool_schemas(self):
+        allowed = preset_tools(self.preset())
+        return [t for t in TOOLS if t["name"] in allowed] + PLUGINS.tool_schemas()
+
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion."""
-        m = self.s.model()
+        pr = self.preset()
+        m = self.s.model(pr.get("model") or None)
+        if m and pr.get("effort"):
+            m = dict(m, effort=pr["effort"])
         if not m:
             self.emit({"type": "error", "text": "no model configured — use /provider then /models"})
             return
@@ -68,11 +89,14 @@ class Agent:
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
         t0, tin, tout = time.time(), 0, 0
-        self.emit({"type": "turn_start"})
+        self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
         try:
             while True:
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], TOOLS + PLUGINS.tool_schemas(), self.emit, self.cancel)
+                limit = self.compact_threshold(m)
+                if limit and self.ctx_used > limit:
+                    self.compact(reason="auto")
+                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel)
                 tin += usage["in"]
                 tout += usage["out"]
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
@@ -80,6 +104,7 @@ class Agent:
                 self.session["usage"]["out"] = self.session["usage"].get("out", 0) + usage["out"]
                 self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout})
                 self.session["messages"].append(msg)
+                self.checkpoint()
                 if not msg.get("tool_calls"):
                     break
                 imgs = []
@@ -98,6 +123,10 @@ class Agent:
                     t1 = time.time()
                     if args is None:
                         ok, out, img = False, "error: arguments were not valid JSON", None
+                    elif name not in {t["name"] for t in self.tool_schemas()}:
+                        ok, out, img = False, f"error: tool {name} is not available in the {pr['name']} agent", None
+                    elif name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+                        ok, out, img = False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
                     elif isinstance(PLUGINS.emit("before_tool", name, args), str):
                         ok, out, img = False, PLUGINS.emit("before_tool", name, args), None
                     elif self.tools.needs_confirm(name, args) and not self.confirm(name, args):
@@ -114,6 +143,7 @@ class Agent:
                         imgs.append(img)
                     self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": out})
                     self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": out, "time": time.time() - t1})
+                    self.checkpoint()
                     if self.cancel.is_set():
                         raise Cancelled()
                 if imgs and m.get("vision", True):
@@ -141,6 +171,74 @@ class Agent:
                     if tc["id"] not in have:
                         msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": "cancelled"})
                 break
+
+    COMPACT_PROMPT = ("Summarize this coding session so work can continue without it. Keep: the user's goals and preferences, "
+                      "decisions made, files created/changed (paths), commands that matter, current state, open problems, next steps. "
+                      "Dense bullet points, no filler.")
+
+    def compact_threshold(self, m):
+        """Tokens at which history is compacted: settings.autocompact % of the model context (default 80%), never above 1M. 0 = off."""
+        pct = self.s.config["settings"].get("autocompact", 80)
+        if not pct:
+            return 0
+        ctx = int(m.get("context") or 128000)
+        return min(int(ctx * float(pct) / 100), 1_000_000)
+
+    def compact(self, keep_turns=2, reason="manual"):
+        """Replace older history with a model-written summary; keep the last `keep_turns` user turns verbatim."""
+        msgs = self.session["messages"]
+        starts = [i for i, m in enumerate(msgs) if m["role"] == "user" and isinstance(m.get("content"), str)
+                  and not m["content"].startswith(("[interrupted", "[Summary"))]
+        if len(starts) <= keep_turns:
+            return False
+        cut = starts[-keep_turns]
+        lines = []
+        for m in msgs[:cut]:
+            c = m.get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+            if m["role"] == "tool":
+                lines.append(f"[tool result] {str(c)[:600]}")
+            else:
+                if c:
+                    lines.append(f"[{m['role']}] {str(c)[:4000]}")
+                for tc in m.get("tool_calls") or []:
+                    lines.append(f"[tool call] {tc['function']['name']} {tc['function']['arguments'][:300]}")
+        m = self.s.model()
+        self.emit({"type": "compacting", "reason": reason})
+        msg, usage = Provider(m, self.s.provider(m)).stream(self.COMPACT_PROMPT, [{"role": "user", "content": "\n".join(lines)[-400000:]}],
+                                                            None, lambda e: None, self.cancel)
+        summary = (msg.get("content") or "").strip()
+        if not summary:
+            return False
+        before = len(msgs)
+        self.session["messages"] = [{"role": "user", "content": "[Summary of the earlier conversation]\n" + summary},
+                                    {"role": "assistant", "content": "Understood — continuing from this summary."}] + msgs[cut:]
+        self.session["compactions"] = self.session.get("compactions", 0) + 1
+        self.ctx_used = len(json.dumps(self.session["messages"], ensure_ascii=False)) // 4
+        self.emit({"type": "compacted", "before": before, "after": len(self.session["messages"]), "ctx": self.ctx_used,
+                   "reason": reason, "summary": summary[:2000]})
+        self.s.save_session(self.session)
+        return True
+
+    def checkpoint(self, every=1.0):
+        """Save mid-turn (throttled) so other devices see each step live."""
+        if time.time() - getattr(self, "_saved", 0) >= every:
+            self._saved = time.time()
+            self.s.save_session(self.session)
+
+    def refresh_from_disk(self, cwd=None):
+        """Another device advanced this session: adopt the newer copy (only while idle). Returns True if reloaded."""
+        if self.busy:
+            return False
+        d = jload(self.s.session_path(self.session["id"]))
+        if not d or d.get("updated", 0) <= self.session.get("updated", 0) + 0.01:
+            return False
+        d.setdefault("usage", {"in": 0, "out": 0})
+        self.session = d
+        if cwd and os.path.abspath(cwd) != d.get("cwd"):
+            self.relocate(cwd)
+        return True
 
     def relocate(self, new_cwd):
         """Session moved to another machine/sandbox: map every earlier project root to the new one,

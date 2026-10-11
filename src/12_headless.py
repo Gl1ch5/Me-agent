@@ -24,7 +24,11 @@ def run_headless(store, prompt, yolo):
         sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N] ")
         return input().strip().lower().startswith("y")
 
-    ag = Agent(store, emit, confirm, lambda q: input(q + " "))
+    def ask(q, options=None):
+        if not sys.stdin.isatty():
+            return ""
+        return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
+    ag = Agent(store, emit, confirm, ask)
     ag.run(prompt)
     print()
 
@@ -57,9 +61,17 @@ def run_rpc(store):
             threading.Thread(target=cloud.sync, daemon=True).start()
 
     ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: bool(wait("confirm", name=n, args=a))),
-               lambda q: wait("ask", text=q) or "")
+               lambda q, options=None: wait("ask", text=q, options=options) or "")
     if os.environ.get("ME_WS_ID"):
         ag.session["ws"] = os.environ["ME_WS_ID"]
+    store.on_change = cloud.autosync  # every checkpoint reaches other devices within ~1s
+
+    def remote(n):
+        store.config.update(jload(store.cfg_path) or {})
+        if ag.refresh_from_disk(os.getcwd()):
+            emit({"type": "reload", "session": ag.session["id"]})
+    if cloud.online:
+        cloud.watch(remote)
     emit({"type": "ready", "version": VERSION, "session": ag.session["id"]})
     for line in sys.stdin:
         try:
@@ -87,6 +99,8 @@ def run_rpc(store):
             if os.environ.get("ME_WS_ID"):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"]})
+        elif t == "compact" and not ag.busy:
+            threading.Thread(target=ag.compact, daemon=True).start()
         elif t == "sync":
             cloud.sync()
             store.config = jload(store.cfg_path) or store.config

@@ -1,0 +1,23 @@
+{
+ "name": "paper",
+ "label": "Paper",
+ "dark": false,
+ "description": "black ink on white, minimal",
+ "colors": {
+  "bg": "#ffffff",
+  "bg2": "#f5f5f5",
+  "bg3": "#ececec",
+  "line": "#e5e5e5",
+  "fg": "#111111",
+  "dim": "#666666",
+  "faint": "#bdbdbd",
+  "accent": "#111111",
+  "accent2": "#555555",
+  "ok": "#0a7d32",
+  "err": "#c62828",
+  "warn": "#a15c00",
+  "user": "#111111",
+  "code_bg": "#f5f5f5",
+  "sel": "#e8e8e8"
+ }
+}

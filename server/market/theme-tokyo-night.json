@@ -1,0 +1,23 @@
+{
+ "name": "tokyo-night",
+ "label": "Tokyo Night",
+ "dark": true,
+ "description": "neon city at night",
+ "colors": {
+  "bg": "#1a1b26",
+  "bg2": "#1f2335",
+  "bg3": "#24283b",
+  "line": "#292e42",
+  "fg": "#c0caf5",
+  "dim": "#7982a9",
+  "faint": "#3b4261",
+  "accent": "#7aa2f7",
+  "accent2": "#bb9af7",
+  "ok": "#9ece6a",
+  "err": "#f7768e",
+  "warn": "#e0af68",
+  "user": "#e0af68",
+  "code_bg": "#1f2335",
+  "sel": "#2e3c64"
+ }
+}

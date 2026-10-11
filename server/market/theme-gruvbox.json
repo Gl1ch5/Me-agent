@@ -1,0 +1,23 @@
+{
+ "name": "gruvbox",
+ "label": "Gruvbox",
+ "dark": true,
+ "description": "retro groove, warm",
+ "colors": {
+  "bg": "#282828",
+  "bg2": "#32302f",
+  "bg3": "#3c3836",
+  "line": "#504945",
+  "fg": "#ebdbb2",
+  "dim": "#a89984",
+  "faint": "#665c54",
+  "accent": "#fabd2f",
+  "accent2": "#8ec07c",
+  "ok": "#b8bb26",
+  "err": "#fb4934",
+  "warn": "#fe8019",
+  "user": "#d3869b",
+  "code_bg": "#32302f",
+  "sel": "#504945"
+ }
+}

@@ -4,6 +4,8 @@ DEFAULT_CONFIG = {
     "providers": {},  # name -> {base_url, api_key}
     "models": [],  # [{name, id, provider, api, context, max_out, effort, temperature, vision}]
     "model": None,  # current model name
+    "theme": "me-dark",
+    "agent": "",  # active agent preset ("" = default)
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
     "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
@@ -15,7 +17,7 @@ DEFAULT_CONFIG = {
 class Store:
     def __init__(self, home=HOME):
         self.home = Path(home)
-        for d in ("skills", "sessions", "plugins"):
+        for d in ("skills", "sessions", "plugins", "themes", "agents"):
             (self.home / d).mkdir(parents=True, exist_ok=True)
         self.cfg_path = self.home / "config.json"
         self.config = jload(self.cfg_path) or json.loads(json.dumps(DEFAULT_CONFIG))

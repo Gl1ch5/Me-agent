@@ -1,0 +1,23 @@
+{
+ "name": "catppuccin",
+ "label": "Catppuccin Mocha",
+ "dark": true,
+ "description": "soothing pastel",
+ "colors": {
+  "bg": "#1e1e2e",
+  "bg2": "#181825",
+  "bg3": "#313244",
+  "line": "#313244",
+  "fg": "#cdd6f4",
+  "dim": "#a6adc8",
+  "faint": "#585b70",
+  "accent": "#cba6f7",
+  "accent2": "#94e2d5",
+  "ok": "#a6e3a1",
+  "err": "#f38ba8",
+  "warn": "#fab387",
+  "user": "#f9e2af",
+  "code_bg": "#181825",
+  "sel": "#45475a"
+ }
+}

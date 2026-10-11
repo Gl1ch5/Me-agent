@@ -1,0 +1,32 @@
+# ───────────────────────────── TUI ─────────────────────────────
+
+COMMANDS = [
+    ("help", "show commands & keys"), ("agent", "switch mode: code, design, plan, review…"), ("init", "create AGENTS.md for this project"), ("model", "switch model"), ("models", "add / edit / sync models"),
+    ("provider", "add / edit API providers"), ("effort", "reasoning effort: none…xhigh"), ("prompt", "edit your system prompt"),
+    ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
+    ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("autocompact", "auto-compact at N% of context (off)"),
+    ("yolo", "toggle auto-approve tools"), ("sync", "sync with cloud now"), ("login", "log in / register"),
+    ("2fa", "authenticator (TOTP) on/off"), ("logout", "log out of cloud"), ("config", "settings"), ("update", "update me"),
+    ("theme", "color theme (installable)"), ("exit", "quit"), ("quit", "quit"),
+]
+LOGO = ["█▀▄▀█ █▀▀", "█ ▀ █ ██▄"]
+
+
+class Block:
+    """Transcript item. Renders to Lines for a width; cached."""
+
+    def __init__(self, kind, **kw):
+        self.kind, self.__dict__["data"] = kind, kw
+        self.text = kw.get("text", "")
+        self.t0 = time.time()
+        self.done = False
+        self.collapsed = kw.get("collapsed", False)
+        self.events = []
+        self.progress = None
+        self.status = ""
+        self.ok = None
+        self.elapsed = 0
+        self._cache = None
+
+    def touch(self):
+        self._cache = None

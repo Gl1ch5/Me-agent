@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 SERVER = os.environ.get("ME_SERVER", "http://64.188.66.249:7777")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -65,6 +65,8 @@ DEFAULT_CONFIG = {
     "providers": {},  # name -> {base_url, api_key}
     "models": [],  # [{name, id, provider, api, context, max_out, effort, temperature, vision}]
     "model": None,  # current model name
+    "theme": "me-dark",
+    "agent": "",  # active agent preset ("" = default)
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
     "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
@@ -76,7 +78,7 @@ DEFAULT_CONFIG = {
 class Store:
     def __init__(self, home=HOME):
         self.home = Path(home)
-        for d in ("skills", "sessions", "plugins"):
+        for d in ("skills", "sessions", "plugins", "themes", "agents"):
             (self.home / d).mkdir(parents=True, exist_ok=True)
         self.cfg_path = self.home / "config.json"
         self.config = jload(self.cfg_path) or json.loads(json.dumps(DEFAULT_CONFIG))
@@ -208,6 +210,10 @@ class Cloud:
             docs["session/" + p.stem] = p
         for p in (self.s.home / "plugins").glob("*.py"):
             docs["plugin/" + p.name] = p
+        for p in (self.s.home / "themes").glob("*.json"):
+            docs["theme/" + p.name] = p
+        for p in (self.s.home / "agents").glob("*.md"):
+            docs["agent/" + p.name] = p
         return docs
 
     def _path(self, key):
@@ -216,7 +222,8 @@ class Cloud:
         kind, _, name = key.partition("/")
         if not name or "/" in name or "\\" in name or name.startswith("."):
             return None
-        return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
+        return {"skill": self.s.home / "skills" / name, "plugin": self.s.home / "plugins" / name, "theme": self.s.home / "themes" / name,
+                "agent": self.s.home / "agents" / name, "session": self.s.home / "sessions" / (name + ".json")}.get(kind)
 
     def sync(self):
         if not self.online:
@@ -299,6 +306,17 @@ class Cloud:
                     if n:
                         on_change(n)
         threading.Thread(target=loop, daemon=True, name="me-watch").start()
+
+    def autosync(self, delay=0.7, done=None):
+        """Debounced background sync — call on every local change."""
+        if not self.online:
+            return
+        t = getattr(self, "_timer", None)
+        if t:
+            t.cancel()
+        self._timer = threading.Timer(delay, lambda: self.sync_bg(done))
+        self._timer.daemon = True
+        self._timer.start()
 
     def sync_bg(self, done=None):
         def run():
@@ -765,8 +783,20 @@ class Ctx:
             self.bar(i, total, label) if total else _emit(t="progress", v=None, label=label, n=i)
             yield x
         if total: self.bar(total, total, label)
-    def ask(self, q):
-        _emit(t="ask", text=str(q)); return sys.stdin.readline().rstrip("\n")
+    def ask(self, q, options=None):
+        _emit(t="ask", text=str(q), options=[str(o) for o in options] if options else None)
+        return sys.stdin.readline().rstrip("\n")
+    def choose(self, q, options):
+        "Let the user pick one option; returns the chosen string (or '' if dismissed)."
+        return self.ask(q, list(options))
+    def confirm(self, q):
+        return self.ask(q, ["yes", "no"]).lower().startswith("y")
+    def table(self, rows, title=""):
+        "Show rows (list of dicts or lists) in the skill card."
+        _emit(t="table", title=str(title), rows=rows[:200])
+    def md(self, text):
+        "Show markdown in the skill card."
+        _emit(t="md", text=str(text)[:20000])
 path, fn, args = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 sys.path.insert(0, os.path.join(os.path.dirname(path), ".deps"))
 g = {"__name__": "skill", "__file__": path, "action": action}
@@ -873,7 +903,7 @@ class Skills:
             if ev.get("t") == "result":
                 result = ev
             elif ev.get("t") == "ask":
-                ans = ask(ev["text"]) if ask else ""
+                ans = (ask(ev["text"], ev.get("options")) if ev.get("options") else ask(ev["text"])) if ask else ""
                 proc.stdin.write((ans or "") + "\n")
                 proc.stdin.flush()
             else:
@@ -974,8 +1004,8 @@ class PluginCtx:
     def progress(self, v, label="", n=None, total=None):
         self.emit({"t": "progress", "v": v, "label": label, "n": n, "total": total})
 
-    def ask(self, q):
-        return self._ask(q) if self._ask else ""
+    def ask(self, q, options=None):
+        return (self._ask(q, options) if options else self._ask(q)) if self._ask else ""
 
 
 class Plugins:
@@ -1010,6 +1040,11 @@ class Plugins:
             self.hooks.setdefault(event, []).append(fn)
             return fn
         return deco
+
+    def theme(self, t):
+        """Register a color theme: {"name", "label", "dark", "colors": {...}} (see THEME_TOKENS)."""
+        BUILTIN_THEMES[t["name"]] = t
+        return t
 
     def emit(self, event, *a):
         """Call hooks in order; first non-None result wins."""
@@ -1275,6 +1310,81 @@ class ToolBox:
         return ok, clip(out, 30000), None
 
 
+# ───────────────────────────── agent presets ─────────────────────────────
+# A preset = its own system prompt + its own tool catalog (+ optional write scope, model, effort). The model stays the same.
+# Built-ins below; ~/.me/agents/<name>.md (synced as agent/<name>.md, installable from the marketplace) override or add more:
+#   ---
+#   name: design
+#   label: design
+#   description: one line
+#   tools: read, write, edit, bash, ls, grep, web_search, web_fetch, skill
+#   writes: *            (glob of paths it may write; "*.md" = docs only; empty = read-only)
+#   model:               (optional model name)   effort: (optional)
+#   ---
+#   prompt…
+
+ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill"
+READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill"
+
+BUILTIN_PRESETS = {
+    "code": {"label": "code", "description": "default engineer: build, fix, refactor", "tools": ALL_TOOLS, "writes": "*", "prompt": ""},
+    "design": {"label": "design", "description": "UI/UX designer: DESIGN.md first, then pixel-perfect UI", "tools": ALL_TOOLS, "writes": "*",
+               "prompt": """Mode: DESIGN. You are a senior product designer who also ships front-end code.
+1. Before any UI code, create or update DESIGN.md: product goal and audience, design principles, tokens (palette: neutral + one accent + one semantic; type scale; spacing scale 4/8; radii; shadows), components and their states (default/hover/active/disabled/empty/loading/error), layout grid and breakpoints (mobile first), motion rules, accessibility (contrast >= 4.5:1, focus rings, hit areas >= 44px), and the folder structure (tokens/, components/, pages/, assets/icons/).
+2. Implement from DESIGN.md exactly; tokens as CSS variables; light and dark.
+3. No emoji. Icons: custom inline SVG, one stroke width. No stock gradients or generic templates.
+4. Check every screen at 360px and 1280px widths; fix overflow, alignment and spacing before finishing.
+Keep DESIGN.md in sync with what you build."""},
+    "plan": {"label": "plan", "description": "architect: explore, then write PLAN.md — no code changes", "tools": READ_TOOLS + ", write", "writes": "*.md",
+             "prompt": """Mode: PLAN. You are a software architect. Do not change code.
+Explore the project, then write PLAN.md: goal, constraints, current architecture, proposed design (modules, data flow, interfaces), step-by-step tasks small enough to do one at a time, risks and how to verify each step. Prefer the simplest design that leaves room to grow."""},
+    "review": {"label": "review", "description": "code reviewer: finds real bugs, read-only", "tools": READ_TOOLS + ", bash", "writes": "",
+               "prompt": """Mode: REVIEW. Review the changes (git diff, or the files named). Report only real problems: bugs, security issues, data loss, race conditions, broken edge cases, missing tests for risky logic. For each: file:line, what breaks, a concrete fix. Skip style nitpicks. You may run tests and read-only commands; do not modify files."""},
+    "debug": {"label": "debug", "description": "debugger: reproduce, find root cause, fix, prove", "tools": ALL_TOOLS, "writes": "*",
+              "prompt": """Mode: DEBUG. 1) Reproduce the failure and show it. 2) Form hypotheses, test them with the cheapest experiment. 3) Fix the root cause, not the symptom. 4) Prove it: rerun the reproduction and the tests. Add a regression test when practical."""},
+    "docs": {"label": "docs", "description": "technical writer: READMEs, guides, API docs", "tools": READ_TOOLS + ", write, edit, bash", "writes": "*.md",
+             "prompt": """Mode: DOCS. Write clear, accurate documentation from the real code: short intro, quick start that actually works (verify commands), reference sections, examples. Plain words, no marketing."""},
+    "research": {"label": "research", "description": "researcher: web search + sources, writes notes", "tools": "web_search, web_fetch, read, write", "writes": "*.md",
+                 "prompt": """Mode: RESEARCH. Search broadly, open primary sources, cross-check facts, note dates and versions. Answer with a concise synthesis and a list of sources; save longer findings to a .md file when asked."""},
+}
+
+
+def presets(store):
+    out = {k: dict(v, name=k) for k, v in BUILTIN_PRESETS.items()}
+    d = store.home / "agents"
+    for p in sorted(d.glob("*.md")) if d.exists() else []:
+        text = p.read_text("utf-8", "replace")
+        m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
+        meta, body = {}, text
+        if m:
+            for line in m.group(1).splitlines():
+                k, _, v = line.partition(":")
+                if k.strip():
+                    meta[k.strip()] = v.strip()
+            body = m.group(2)
+        name = meta.get("name") or p.stem
+        base = out.get(name, {"tools": ALL_TOOLS, "writes": "*"})
+        out[name] = dict(base, **{k: v for k, v in meta.items() if v != ""}, name=name, prompt=body.strip(), custom=True)
+    return out
+
+
+def preset(store, name=None):
+    ps = presets(store)
+    return ps.get(name or store.config.get("agent") or "code") or ps["code"]
+
+
+def preset_tools(p):
+    return {t.strip() for t in str(p.get("tools") or ALL_TOOLS).split(",") if t.strip()}
+
+
+def may_write(p, path):
+    globs = [g.strip() for g in str(p.get("writes", "*")).split(",") if g.strip()]
+    return any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch(os.path.basename(path), g) for g in globs)
+
+
+CONTEXT_FILES = ("AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md")
+
+
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
@@ -1321,20 +1431,41 @@ class Agent:
     def system_prompt(self):
         sks = self.skills.enabled()
         skills = ("\nSkills (load via skill tool):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
-        project = ""
-        for name in ("ME.md", "AGENTS.md", "CLAUDE.md"):
-            p = Path(self.session["cwd"]) / name
-            if p.exists():
-                project = f"\n\n# {name}\n" + p.read_text("utf-8", "replace")[:8000]
-                break
+        project, budget = "", 24000
+        for name in self.context_files():
+            text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
+            budget -= len(text)
+            project += f"\n\n# {name}\n{text}"
+        if "AGENTS.md" in self.context_files():
+            project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
+        else:
+            project += ("\n\nNo AGENTS.md here yet. Once you understand the project, create a concise AGENTS.md "
+                        "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
+        pr = self.preset()
+        if pr.get("prompt"):
+            project += "\n\n" + pr["prompt"]
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              skills=skills, project=project, user=user)
 
+    def preset(self):
+        return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
+
+    def context_files(self):
+        cwd = Path(self.session.get("cwd") or ".")
+        return [n for n in CONTEXT_FILES if (cwd / n).is_file()]
+
+    def tool_schemas(self):
+        allowed = preset_tools(self.preset())
+        return [t for t in TOOLS if t["name"] in allowed] + PLUGINS.tool_schemas()
+
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion."""
-        m = self.s.model()
+        pr = self.preset()
+        m = self.s.model(pr.get("model") or None)
+        if m and pr.get("effort"):
+            m = dict(m, effort=pr["effort"])
         if not m:
             self.emit({"type": "error", "text": "no model configured — use /provider then /models"})
             return
@@ -1345,11 +1476,14 @@ class Agent:
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
         t0, tin, tout = time.time(), 0, 0
-        self.emit({"type": "turn_start"})
+        self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
         try:
             while True:
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], TOOLS + PLUGINS.tool_schemas(), self.emit, self.cancel)
+                limit = self.compact_threshold(m)
+                if limit and self.ctx_used > limit:
+                    self.compact(reason="auto")
+                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel)
                 tin += usage["in"]
                 tout += usage["out"]
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
@@ -1357,6 +1491,7 @@ class Agent:
                 self.session["usage"]["out"] = self.session["usage"].get("out", 0) + usage["out"]
                 self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout})
                 self.session["messages"].append(msg)
+                self.checkpoint()
                 if not msg.get("tool_calls"):
                     break
                 imgs = []
@@ -1375,6 +1510,10 @@ class Agent:
                     t1 = time.time()
                     if args is None:
                         ok, out, img = False, "error: arguments were not valid JSON", None
+                    elif name not in {t["name"] for t in self.tool_schemas()}:
+                        ok, out, img = False, f"error: tool {name} is not available in the {pr['name']} agent", None
+                    elif name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+                        ok, out, img = False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
                     elif isinstance(PLUGINS.emit("before_tool", name, args), str):
                         ok, out, img = False, PLUGINS.emit("before_tool", name, args), None
                     elif self.tools.needs_confirm(name, args) and not self.confirm(name, args):
@@ -1391,6 +1530,7 @@ class Agent:
                         imgs.append(img)
                     self.session["messages"].append({"role": "tool", "tool_call_id": tid, "content": out})
                     self.emit({"type": "tool_end", "id": tid, "ok": ok, "output": out, "time": time.time() - t1})
+                    self.checkpoint()
                     if self.cancel.is_set():
                         raise Cancelled()
                 if imgs and m.get("vision", True):
@@ -1418,6 +1558,74 @@ class Agent:
                     if tc["id"] not in have:
                         msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": "cancelled"})
                 break
+
+    COMPACT_PROMPT = ("Summarize this coding session so work can continue without it. Keep: the user's goals and preferences, "
+                      "decisions made, files created/changed (paths), commands that matter, current state, open problems, next steps. "
+                      "Dense bullet points, no filler.")
+
+    def compact_threshold(self, m):
+        """Tokens at which history is compacted: settings.autocompact % of the model context (default 80%), never above 1M. 0 = off."""
+        pct = self.s.config["settings"].get("autocompact", 80)
+        if not pct:
+            return 0
+        ctx = int(m.get("context") or 128000)
+        return min(int(ctx * float(pct) / 100), 1_000_000)
+
+    def compact(self, keep_turns=2, reason="manual"):
+        """Replace older history with a model-written summary; keep the last `keep_turns` user turns verbatim."""
+        msgs = self.session["messages"]
+        starts = [i for i, m in enumerate(msgs) if m["role"] == "user" and isinstance(m.get("content"), str)
+                  and not m["content"].startswith(("[interrupted", "[Summary"))]
+        if len(starts) <= keep_turns:
+            return False
+        cut = starts[-keep_turns]
+        lines = []
+        for m in msgs[:cut]:
+            c = m.get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+            if m["role"] == "tool":
+                lines.append(f"[tool result] {str(c)[:600]}")
+            else:
+                if c:
+                    lines.append(f"[{m['role']}] {str(c)[:4000]}")
+                for tc in m.get("tool_calls") or []:
+                    lines.append(f"[tool call] {tc['function']['name']} {tc['function']['arguments'][:300]}")
+        m = self.s.model()
+        self.emit({"type": "compacting", "reason": reason})
+        msg, usage = Provider(m, self.s.provider(m)).stream(self.COMPACT_PROMPT, [{"role": "user", "content": "\n".join(lines)[-400000:]}],
+                                                            None, lambda e: None, self.cancel)
+        summary = (msg.get("content") or "").strip()
+        if not summary:
+            return False
+        before = len(msgs)
+        self.session["messages"] = [{"role": "user", "content": "[Summary of the earlier conversation]\n" + summary},
+                                    {"role": "assistant", "content": "Understood — continuing from this summary."}] + msgs[cut:]
+        self.session["compactions"] = self.session.get("compactions", 0) + 1
+        self.ctx_used = len(json.dumps(self.session["messages"], ensure_ascii=False)) // 4
+        self.emit({"type": "compacted", "before": before, "after": len(self.session["messages"]), "ctx": self.ctx_used,
+                   "reason": reason, "summary": summary[:2000]})
+        self.s.save_session(self.session)
+        return True
+
+    def checkpoint(self, every=1.0):
+        """Save mid-turn (throttled) so other devices see each step live."""
+        if time.time() - getattr(self, "_saved", 0) >= every:
+            self._saved = time.time()
+            self.s.save_session(self.session)
+
+    def refresh_from_disk(self, cwd=None):
+        """Another device advanced this session: adopt the newer copy (only while idle). Returns True if reloaded."""
+        if self.busy:
+            return False
+        d = jload(self.s.session_path(self.session["id"]))
+        if not d or d.get("updated", 0) <= self.session.get("updated", 0) + 0.01:
+            return False
+        d.setdefault("usage", {"in": 0, "out": 0})
+        self.session = d
+        if cwd and os.path.abspath(cwd) != d.get("cwd"):
+            self.relocate(cwd)
+        return True
 
     def relocate(self, new_cwd):
         """Session moved to another machine/sandbox: map every earlier project root to the new one,
@@ -1478,7 +1686,11 @@ def run_headless(store, prompt, yolo):
         sys.stderr.write(f"allow {name}: {json.dumps(a, ensure_ascii=False)[:200]} [y/N] ")
         return input().strip().lower().startswith("y")
 
-    ag = Agent(store, emit, confirm, lambda q: input(q + " "))
+    def ask(q, options=None):
+        if not sys.stdin.isatty():
+            return ""
+        return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
+    ag = Agent(store, emit, confirm, ask)
     ag.run(prompt)
     print()
 
@@ -1511,9 +1723,17 @@ def run_rpc(store):
             threading.Thread(target=cloud.sync, daemon=True).start()
 
     ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: bool(wait("confirm", name=n, args=a))),
-               lambda q: wait("ask", text=q) or "")
+               lambda q, options=None: wait("ask", text=q, options=options) or "")
     if os.environ.get("ME_WS_ID"):
         ag.session["ws"] = os.environ["ME_WS_ID"]
+    store.on_change = cloud.autosync  # every checkpoint reaches other devices within ~1s
+
+    def remote(n):
+        store.config.update(jload(store.cfg_path) or {})
+        if ag.refresh_from_disk(os.getcwd()):
+            emit({"type": "reload", "session": ag.session["id"]})
+    if cloud.online:
+        cloud.watch(remote)
     emit({"type": "ready", "version": VERSION, "session": ag.session["id"]})
     for line in sys.stdin:
         try:
@@ -1541,6 +1761,8 @@ def run_rpc(store):
             if os.environ.get("ME_WS_ID"):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"]})
+        elif t == "compact" and not ag.busy:
+            threading.Thread(target=ag.compact, daemon=True).start()
         elif t == "sync":
             cloud.sync()
             store.config = jload(store.cfg_path) or store.config
@@ -1549,7 +1771,7 @@ def run_rpc(store):
 
 # ───────────────────────────── web ui server ─────────────────────────────
 
-WEBUI = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"theme-color\" content=\"#0b0c10\">\n<title>me</title>\n<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E\">\n<style>\n:root{--bg:#0b0c10;--bg2:#111319;--bg3:#171a23;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--warn:#ffb454;--user:#e7c66b;\n  --mono:ui-monospace,\"JetBrains Mono\",SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif}\n:root[data-theme=\"light\"]{--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}\n@media (prefers-color-scheme: light){:root:not([data-theme=\"dark\"]){--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}}\n*{box-sizing:border-box;margin:0;padding:0}\nhtml,body{height:100%;background:var(--bg);color:var(--fg);font:14.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}\nbutton{font:inherit;color:inherit;background:none;border:none;cursor:pointer}\nsvg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}\n.app{display:grid;grid-template-columns:260px 1fr;height:100%}\naside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n.brand{display:flex;align-items:center;gap:10px;padding:16px;font:700 17px var(--mono)}\n.brand i{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}\n.brand small{font:500 11px var(--mono);color:var(--dim);margin-left:auto;padding:2px 7px;border:1px solid var(--line);border-radius:6px}\n.newbtn{margin:0 12px 10px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--fg)}\n.newbtn:hover{background:var(--bg2)}\n.slist{flex:1;overflow:auto;padding:0 8px 12px}\n.slist .lbl{font:11px var(--mono);color:var(--dim);padding:10px 8px 6px;text-transform:uppercase;letter-spacing:.5px}\n.si{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}\n.si:hover{background:var(--bg2);color:var(--fg)}.si.on{background:var(--bg3);color:var(--fg)}\n.side-foot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}\n.side-foot a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px}\nmain{display:flex;flex-direction:column;min-width:0;min-height:0}\nheader{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);min-height:52px}\nheader .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}\n.ib.menu{display:none}\n.pill{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:5px 9px;white-space:nowrap}\n.pill:hover{color:var(--fg)}\n#chat{flex:1;overflow:auto;scroll-behavior:smooth}\n.inner{max-width:820px;margin:0 auto;padding:22px 18px 30px}\n.empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--dim)}\n.empty h2{font:700 34px var(--mono);letter-spacing:-1.5px;color:var(--fg);margin-bottom:6px}\n.empty h2 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}\n.msg{margin:18px 0}\n.msg.user{display:flex;justify-content:flex-end}\n.msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}\n.md{word-break:break-word}\n.md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}\n.md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}\n.md code{font:12.5px var(--mono);background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--b)}\n.md pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.md pre .bar{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line)}\n.md pre code{display:block;background:none;border:none;padding:12px;overflow-x:auto;color:var(--fg);white-space:pre}\n.md a{color:var(--a)}.md blockquote{border-left:3px solid var(--faint);padding-left:12px;color:var(--dim)}\n.md table{border-collapse:collapse;margin:8px 0;font-size:13.5px}.md td,.md th{border:1px solid var(--line);padding:5px 9px}\n.think{font-size:13px;color:var(--dim);margin:6px 0}\n.think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;font-style:italic}\n.think pre{white-space:pre-wrap;font:12.5px/1.55 var(--sans);font-style:italic;margin:6px 0 0 22px;max-height:240px;overflow:auto}\n.tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}\n.tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}\n.tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}\n.tool .h .t{color:var(--faint)}\n.tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}\n.tool.closed .body,.tool .body:empty{display:none}\n.tool .st{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.tool .log{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.add{color:var(--ok)}.del{color:var(--err)}\n.pbar{height:6px;border-radius:4px;background:var(--line);margin:0 12px 10px;overflow:hidden}\n.pbar i{display:block;height:100%;background:var(--sk,var(--a));transition:width .2s}\n.pbar.ind i{width:30%!important;animation:ind 1.1s ease-in-out infinite}\n@keyframes ind{0%{margin-left:-30%}100%{margin-left:100%}}\n.skill{border-color:color-mix(in srgb,var(--sk) 45%,var(--line))}\n.skill .h b{color:var(--sk)}\n.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--a);border-radius:50%;animation:sp .8s linear infinite;flex-shrink:0}\n@keyframes sp{to{transform:rotate(360deg)}}\n.stats{font:12px var(--mono);color:var(--dim);display:flex;align-items:center;gap:6px;margin:4px 0 22px}\n.stats svg{color:var(--ok)}\n.info{font:12.5px var(--mono);color:var(--dim);margin:8px 0}.info.err{color:var(--err)}.info.warn{color:var(--warn)}\n.confirm{border:1px solid var(--warn);border-radius:10px;padding:12px;margin:10px 0}\n.confirm pre{font:12px var(--mono);white-space:pre-wrap;color:var(--dim);margin:8px 0;max-height:200px;overflow:auto}\n.confirm .btns{display:flex;gap:8px}\n.btn{padding:7px 13px;border-radius:8px;font:500 12.5px var(--mono);background:var(--a);color:#fff}\n.btn.ghost{background:none;color:var(--dim);border:1px solid var(--line)}\n.working{display:flex;align-items:center;gap:8px;font:12.5px var(--mono);color:var(--dim);margin:10px 0}\n.shimmer{background:linear-gradient(90deg,var(--dim) 30%,var(--fg) 50%,var(--dim) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}\n@keyframes sh{from{background-position:150% 0}to{background-position:-50% 0}}\n.composer{padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}\n.box{max-width:820px;margin:0 auto;border:1px solid var(--line);border-radius:14px;background:var(--bg2);transition:border-color .15s}\n.box:focus-within{border-color:var(--a)}\ntextarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--fg);font:15px/1.5 var(--sans);padding:12px 14px 4px;max-height:220px}\n.row{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}\n.ib{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--dim)}\n.ib:hover{background:var(--bg3);color:var(--fg)}\n.ib.rec{background:var(--err);color:#fff;animation:pulse 1s infinite}\n@keyframes pulse{50%{opacity:.6}}\n.send{background:var(--a);color:#fff}.send:hover{background:var(--a);filter:brightness(1.1);color:#fff}\n.send:disabled{opacity:.35;cursor:default}\n.spacer{flex:1}\n.status{max-width:820px;margin:8px auto 0;display:flex;gap:14px;align-items:center;font:11.5px var(--mono);color:var(--dim);flex-wrap:wrap}\n.ctx{display:flex;align-items:center;gap:6px}.ctx .bar{width:70px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}.ctx .bar i{display:block;height:100%;background:var(--ok)}\n.popup{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;padding:16px;z-index:20}\n.popup>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:8px;width:min(420px,100%);max-height:70vh;overflow:auto}\n.popup button{display:flex;width:100%;text-align:left;padding:9px 12px;border-radius:8px;gap:10px;align-items:center}\n.popup button:hover{background:var(--bg2)}.popup .d{color:var(--dim);font-size:12px;margin-left:auto}\n.hidden{display:none!important}\n@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:fixed;inset:0 25% 0 0;z-index:15;transform:translateX(-102%);transition:transform .2s;box-shadow:0 0 60px rgba(0,0,0,.5)}\n  aside.open{transform:none}.ib.menu{display:grid}.inner{padding:16px 14px}.composer{padding:0 10px 10px}}\n</style>\n</head>\n<body>\n<div class=\"app\">\n<aside id=\"side\">\n  <div class=\"brand\"><i></i>me<small id=\"mode\"></small></div>\n  <button class=\"newbtn\" onclick=\"newChat()\"><svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>New chat</button>\n  <div class=\"slist\" id=\"slist\"></div>\n  <div class=\"side-foot\"><a id=\"acct\" href=\"/account\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg><span id=\"who\">account</span></a>\n    <span class=\"spacer\"></span><button class=\"ib\" onclick=\"toggleTheme()\" title=\"theme\"><svg viewBox=\"0 0 24 24\"><path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/></svg></button></div>\n</aside>\n<main>\n  <header>\n    <button class=\"ib menu\" onclick=\"side.classList.toggle('open')\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 12h16M4 17h16\"/></svg></button>\n    <div class=\"title\" id=\"title\">New chat</div>\n    <button class=\"pill\" id=\"wsPill\" title=\"workspace\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg><span id=\"ws\">\u2014</span></button>\n  </header>\n  <div id=\"chat\"><div class=\"inner\" id=\"log\"></div></div>\n  <div class=\"composer\">\n    <div class=\"box\">\n      <textarea id=\"input\" rows=\"1\" placeholder=\"Ask anything\u2026\"></textarea>\n      <div class=\"row\">\n        <button class=\"pill\" id=\"modelBtn\" onclick=\"pickModel()\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2\"/></svg><span id=\"model\">model</span></button>\n        <span class=\"spacer\"></span>\n        <button class=\"ib\" id=\"mic\" title=\"hold to talk\"><svg viewBox=\"0 0 24 24\"><rect x=\"9\" y=\"3\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5 11a7 7 0 0 0 14 0M12 18v3\"/></svg></button>\n        <button class=\"ib send\" id=\"send\" onclick=\"sendOrStop()\" disabled><svg viewBox=\"0 0 24 24\" id=\"sendIcon\"><path d=\"M12 19V5M5 12l7-7 7 7\"/></svg></button>\n      </div>\n    </div>\n    <div class=\"status\"><span class=\"ctx\" id=\"ctx\"></span><span id=\"tok\"></span><span id=\"sync\"></span></div>\n  </div>\n</main>\n</div>\n<div class=\"popup hidden\" id=\"popup\" onclick=\"if(event.target===this)this.classList.add('hidden')\"><div id=\"pbody\"></div></div>\n<script>\nconst MODE = \"__MODE__\";\nconst $ = id => document.getElementById(id);\nconst side = $(\"side\");\nconst esc = s => String(s ?? \"\").replace(/[&<>\"]/g, c => ({\"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\"})[c]);\nconst human = n => !n ? \"0\" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(\".0\", \"\") + \"k\" : (n / 1e6).toFixed(1).replace(\".0\", \"\") + \"M\";\nconst dur = s => s < 60 ? s.toFixed(1) + \"s\" : Math.floor(s / 60) + \"m\" + String(Math.floor(s % 60)).padStart(2, \"0\") + \"s\";\nconst COLORS = {red:\"#ff6b7a\",green:\"#5ad18a\",blue:\"#6ba6ff\",magenta:\"#d27cff\",cyan:\"#4fd1c5\",yellow:\"#e7c66b\",orange:\"#ffb454\",purple:\"#8b7cff\",pink:\"#ff8fc7\"};\nconst I = {\n  check: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--ok)\"><path d=\"M5 12l5 5 9-11\"/></svg>',\n  x: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--err)\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg>',\n  stop: '<path d=\"M7 7h10v10H7z\" fill=\"currentColor\"/>', up: '<path d=\"M12 19V5M5 12l7-7 7 7\"/>',\n  think: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z\"/></svg>',\n};\nlet token = localStorage.getItem(\"me_token\") || \"\", base = \"\", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;\n\n// \u2500\u2500\u2500 transport: identical endpoints for local (`me web`) and cloud (/app) \u2500\u2500\u2500\nasync function api(path, body, method) {\n  const h = {\"Content-Type\": \"application/json\"};\n  if (token) h.Authorization = \"Bearer \" + token;\n  const r = await fetch(path, {method: method || (body !== undefined ? \"POST\" : \"GET\"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});\n  const j = await r.json().catch(() => ({}));\n  if (r.status === 401 && MODE === \"cloud\") { location.href = \"/account#cloud\"; throw new Error(\"login\"); }\n  if (!r.ok) throw new Error(j.detail || r.statusText);\n  return j;\n}\nconst A = {\n  async boot() {\n    if (MODE === \"local\") {\n      const k = new URLSearchParams(location.search).get(\"k\"); if (k) { token = k; localStorage.setItem(\"me_token\", k); }\n      base = \"/api/agent\"; return api(base + \"/state\");\n    }\n    if (!token) { location.href = \"/account#cloud\"; return; }\n    const q = new URLSearchParams(location.search);\n    let w;\n    if (q.get(\"s\") || q.get(\"ws\")) w = await api(\"/api/cloud\", {session: q.get(\"s\"), ws: q.get(\"ws\")});\n    else w = (await api(\"/api/cloud\"))[0] || await api(\"/api/cloud\", {});\n    return A.attach(w);\n  },\n  async attach(w) { base = \"/api/cloud/\" + w.id; after = 0; return A.state(w); },\n  async state(w) {\n    if (MODE === \"local\") return api(base + \"/state\");\n    const [cfg, sessions, me] = await Promise.all([api(\"/api/doc?key=config\").then(d => JSON.parse(d.content)).catch(() => ({})), api(\"/api/sessions\"), api(\"/api/me\")]);\n    let session = null;\n    if (w && w.session) session = await api(\"/api/doc?key=\" + encodeURIComponent(\"session/\" + w.session)).then(d => JSON.parse(d.content)).catch(() => null);\n    return {mode: \"cloud\", user: me.username, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w};\n  },\n  async load(id) {\n    if (MODE === \"local\") { await api(base + \"/load\", {id}); return api(base + \"/state\"); }\n    const w = await api(\"/api/cloud\", {session: id}); return A.attach(w);\n  },\n  async newChat() { await api(base + \"/new\", {}); return A.state(state.worker); },\n  async setModel(name) {\n    if (MODE === \"local\") return api(base + \"/model\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.model = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  voice: (blob) => fetch(MODE === \"local\" ? \"/api/agent/voice\" : \"/api/voice\", {method: \"POST\", headers: {\"Content-Type\": blob.type, ...(token ? {Authorization: \"Bearer \" + token} : {})}, body: blob}).then(r => r.json()),\n};\n\n// \u2500\u2500\u2500 markdown \u2500\u2500\u2500\nfunction md(src) {\n  const blocks = [];\n  src = src.replace(/```(\\w*)\\n?([\\s\\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\\u0000${blocks.length - 1}\\u0000`; });\n  let h = esc(src)\n    .replace(/^### (.*)$/gm, \"<h3>$1</h3>\").replace(/^## (.*)$/gm, \"<h2>$1</h2>\").replace(/^# (.*)$/gm, \"<h1>$1</h1>\")\n    .replace(/^&gt; (.*)$/gm, \"<blockquote>$1</blockquote>\")\n    .replace(/`([^`\\n]+)`/g, \"<code>$1</code>\").replace(/\\*\\*([^*]+)\\*\\*/g, \"<b>$1</b>\").replace(/(^|\\W)\\*([^*\\n]+)\\*/g, \"$1<i>$2</i>\")\n    .replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  h = h.replace(/(?:^|\\n)((?:[-*] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ul>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.slice(2) + \"</li>\").join(\"\") + \"</ul>\\n\");\n  h = h.replace(/(?:^|\\n)((?:\\d+[.)] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ol>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.replace(/^\\d+[.)] /, \"\") + \"</li>\").join(\"\") + \"</ol>\\n\");\n  h = h.split(/\\n{2,}/).map(p => /^\\s*<(h\\d|ul|ol|blockquote|\\u0000)/.test(p) || p.startsWith(\"\\u0000\") ? p : \"<p>\" + p.replace(/\\n/g, \"<br>\") + \"</p>\").join(\"\");\n  return h.replace(/\\u0000(\\d+)\\u0000/g, (_, i) => `<pre><div class=\"bar\"><span>${esc(blocks[i][0] || \"code\")}</span><button onclick=\"navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)\">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);\n}\n\n// \u2500\u2500\u2500 rendering \u2500\u2500\u2500\nconst log = $(\"log\"), chat = $(\"chat\");\nlet stick = true;\nchat.addEventListener(\"scroll\", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);\nfunction scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }\nlet workEl = null;\nfunction el(html) { const d = document.createElement(\"div\"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }\nfunction clearLog() { log.innerHTML = \"\"; live = {}; cur = {}; workEl = null; }\nfunction emptyState() {\n  log.innerHTML = `<div class=\"empty\" style=\"min-height:60vh\"><div><h2>what are we <span>building?</span></h2><p>${MODE === \"cloud\" ? \"Runs in your cloud sandbox \u00b7 files sync to all your machines\" : \"Running locally on this machine\"}</p></div></div>`;\n}\nfunction userMsg(t) { if (log.querySelector(\".empty\")) log.innerHTML = \"\"; el(`<div class=\"msg user\"><div class=\"bub\">${esc(t)}</div></div>`); }\nfunction toolCard(name, label, args, skill) {\n  const isSkill = name === \"skill\" && args && args.action;\n  const color = isSkill ? (COLORS[skill?.color] || \"var(--a)\") : \"var(--a)\";\n  const title = isSkill ? `${esc(args.name)} \u00b7 ${esc(args.action)}` : esc(name);\n  return el(`<div class=\"tool ${isSkill ? \"skill\" : \"\"} closed\" style=\"--sk:${color}\"><div class=\"h\" onclick=\"this.parentNode.classList.toggle('closed')\"><span class=\"ic\"><span class=\"spin\"></span></span><b>${title}</b><span class=\"lab\">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class=\"t\"></span></div><div class=\"st hidden\"></div><div class=\"pbar hidden\"><i></i></div><div class=\"log hidden\"></div><div class=\"body\"></div></div>`);\n}\nfunction diffHtml(t) { return t.split(\"\\n\").map(l => `<span class=\"${l[0] === \"+\" ? \"add\" : l[0] === \"-\" ? \"del\" : \"\"}\">${esc(l)}</span>`).join(\"\\n\"); }\nfunction onEvent(e) {\n  const t = e.type;\n  if (t === \"user\") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }\n  if (t === \"turn_start\") { busy = true; turnT0 = Date.now(); setBusy(); return; }\n  if (t === \"reasoning\") {\n    if (!cur.think) { cur.think = el(`<details class=\"think\"><summary>${I.think}<span class=\"shimmer\">thinking\u2026</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }\n    cur.think.querySelector(\"pre\").textContent += e.text; scroll(); return;\n  }\n  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector(\"summary span\").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };\n  if (t === \"text\") {\n    endThink();\n    if (!cur.text) { cur.text = el(`<div class=\"msg md\"></div>`); cur.raw = \"\"; }\n    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;\n  }\n  if (t === \"tool_start\") {\n    endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;\n    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;\n  }\n  if (t === \"tool_event\") {\n    const c = live[e.id]; if (!c) return;\n    if (e.t === \"status\") { const s = c.querySelector(\".st\"); s.classList.remove(\"hidden\"); s.textContent = e.text; }\n    else if (e.t === \"progress\") { const p = c.querySelector(\".pbar\"); p.classList.remove(\"hidden\"); p.classList.toggle(\"ind\", e.v == null); if (e.v != null) p.firstChild.style.width = Math.round(e.v * 100) + \"%\"; }\n    else if (e.t === \"diff\" && e.text.trim()) { c.querySelector(\".body\").innerHTML = diffHtml(e.text); c.classList.remove(\"closed\"); }\n    else { const l = c.querySelector(\".log\"); l.classList.remove(\"hidden\"); l.textContent = (\"\u203a \" + e.text + \"\\n\" + l.textContent).split(\"\\n\").slice(0, 3).join(\"\\n\"); }\n    scroll(); return;\n  }\n  if (t === \"tool_end\") {\n    const c = live[e.id]; if (!c) return; delete live[e.id];\n    c.querySelector(\".ic\").innerHTML = e.ok ? I.check : I.x; c.querySelector(\".t\").textContent = dur(e.time);\n    c.querySelectorAll(\".st,.pbar,.log\").forEach(x => x.classList.add(\"hidden\"));\n    const b = c.querySelector(\".body\"); if (!b.innerHTML) b.textContent = (e.output || \"\").slice(0, 20000);\n    if (!e.ok) c.classList.remove(\"closed\");\n    return;\n  }\n  if (t === \"confirm\") {\n    const c = el(`<div class=\"confirm\"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class=\"btns\"><button class=\"btn\">allow</button><button class=\"btn ghost\">deny</button></div></div>`);\n    const [y, n] = c.querySelectorAll(\"button\");\n    y.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: true}); c.remove(); };\n    n.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: false}); c.remove(); };\n    return;\n  }\n  if (t === \"usage\") { state.ctx = e.ctx; renderStatus(e.in, e.out); return; }\n  if (t === \"error\") { el(`<div class=\"info ${e.text === \"interrupted\" ? \"warn\" : \"err\"}\">${esc(e.text)}</div>`); return; }\n  if (t === \"turn_end\") {\n    endThink(); busy = false; cur = {}; setBusy();\n    el(`<div class=\"stats\">${I.check}${dur(e.time)} \u00b7 \u2191 ${human(e.in)} \u2193 ${human(e.out)} \u00b7 ${human(e.in + e.out)} tokens</div>`);\n    state.ctx = e.ctx; renderStatus(); refreshSessions(); return;\n  }\n  if (t === \"loaded\" && e.title) $(\"title\").textContent = e.title;\n  if (t === \"exit\") { el(`<div class=\"info warn\">sandbox stopped \u2014 send a message to restart</div>`); busy = false; setBusy(); }\n}\nfunction renderHistory(s) {\n  clearLog();\n  if (!s || !s.messages || !s.messages.length) return emptyState();\n  const txt = c => Array.isArray(c) ? c.filter(x => x.type === \"text\").map(x => x.text).join(\" \") : (c || \"\");\n  const outs = {};\n  s.messages.forEach(m => { if (m.role === \"tool\") outs[m.tool_call_id] = m.content; });\n  s.messages.forEach(m => {\n    if (m.role === \"user\" && txt(m.content) !== \"(images from read)\") userMsg(txt(m.content));\n    else if (m.role === \"assistant\") {\n      if (m.content) el(`<div class=\"msg md\">${md(m.content)}</div>`);\n      (m.tool_calls || []).forEach(tc => {\n        let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}\n        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || \"\", a);\n        c.querySelector(\".ic\").innerHTML = I.check; c.querySelector(\".body\").textContent = String(outs[tc.id] || \"\").slice(0, 8000);\n      });\n    }\n  });\n  $(\"title\").textContent = s.title || \"Chat\";\n  setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);\n}\nfunction renderStatus(tin, tout) {\n  const m = (state.config?.models || []).find(x => x.name === state.config?.model);\n  $(\"model\").textContent = m ? m.name + (m.effort ? \" \u00b7 \" + m.effort : \"\") : \"no model\";\n  const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;\n  const col = f < .6 ? \"var(--ok)\" : f < .85 ? \"var(--warn)\" : \"var(--err)\";\n  $(\"ctx\").innerHTML = ctx ? `ctx <span class=\"bar\"><i style=\"width:${(f * 100).toFixed(1)}%;background:${col}\"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;\n  const u = state.session?.usage || {};\n  $(\"tok\").textContent = tin !== undefined ? `this task \u2191${human(tin)} \u2193${human(tout)}` : `session \u2191${human(u.in)} \u2193${human(u.out)}`;\n  $(\"ws\").textContent = state.ws || (MODE === \"local\" ? (state.cwd || \"local\").split(/[\\\\/]/).pop() : \"cloud\");\n}\nfunction renderSessions() {\n  const ss = state.sessions || [], sid = state.session?.id;\n  const groups = {};\n  ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;\n    const g = age < 1 ? \"Today\" : age < 7 ? \"This week\" : \"Older\"; (groups[g] ??= []).push(s); });\n  $(\"slist\").innerHTML = Object.entries(groups).map(([g, l]) => `<div class=\"lbl\">${g}</div>` + l.map(s =>\n    `<button class=\"si ${s.id === sid ? \"on\" : \"\"}\" onclick=\"loadSession('${esc(s.id)}')\" title=\"${esc(s.cwd || \"\")}\">${esc(s.title || \"(untitled)\")}</button>`).join(\"\")).join(\"\") || '<div class=\"lbl\">no chats yet</div>';\n}\nasync function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }\nfunction setBusy() {\n  $(\"sendIcon\").innerHTML = busy ? I.stop : I.up;\n  $(\"send\").disabled = !busy && !$(\"input\").value.trim();\n  if (busy && (!workEl || workEl.parentNode !== log)) {\n    workEl = document.createElement(\"div\"); workEl.className = \"working\";\n    workEl.innerHTML = '<span class=\"spin\"></span><span class=\"shimmer\">working\u2026</span><span class=\"el\"></span>'; log.appendChild(workEl); scroll();\n  }\n  if (!busy && workEl) { workEl.remove(); workEl = null; }\n}\nsetInterval(() => { const w = document.querySelector(\".working .el\"); if (w && busy) w.textContent = dur((Date.now() - turnT0) / 1000); }, 200);\n\n// \u2500\u2500\u2500 actions \u2500\u2500\u2500\nasync function poll() {\n  const my = ++polling;\n  while (my === polling) {\n    try {\n      const r = await api(`${base}/events?after=${after}`);\n      if (my !== polling) return;\n      for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }\n      if (r.state) { busy = r.state.busy; setBusy(); }\n    } catch (e) {\n      if (MODE === \"cloud\" && /no such cloud session/.test(e.message)) { const w = await api(\"/api/cloud\", {session: state.session?.id}); await A.attach(w); continue; }\n      await new Promise(r => setTimeout(r, 2000));\n    }\n  }\n}\nasync function apply(s, history = true) {\n  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();\n  $(\"mode\").textContent = MODE === \"cloud\" ? \"cloud\" : \"local\";\n  $(\"who\").textContent = s.user || (MODE === \"local\" ? \"local\" : \"account\");\n  after = s.after ?? after;\n  if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }\n  (s.pending || []).forEach(onEvent);\n  poll();\n}\nasync function send() {\n  const t = $(\"input\").value.trim(); if (!t || busy) return;\n  $(\"input\").value = \"\"; grow(); userMsg(t);\n  if ($(\"title\").textContent === \"New chat\") $(\"title\").textContent = t.split(\"\\n\")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;\n  try { await api(base + \"/prompt\", {text: t}); } catch (e) { el(`<div class=\"info err\">${esc(e.message)}</div>`); busy = false; setBusy(); }\n}\nfunction sendOrStop() { busy ? api(base + \"/cancel\", {}) : send(); }\nasync function newChat() { side.classList.remove(\"open\"); await apply(await A.newChat()); history.replaceState(null, \"\", location.pathname); $(\"title\").textContent = \"New chat\"; }\nasync function loadSession(id) { side.classList.remove(\"open\"); polling++; await apply(await A.load(id)); if (MODE === \"cloud\") history.replaceState(null, \"\", \"?s=\" + id); }\nfunction pickModel() {\n  const ms = state.config?.models || [];\n  $(\"pbody\").innerHTML = ms.map(m => `<button onclick=\"setModel('${esc(m.name)}')\"><span>${m.name === state.config.model ? \"\u25cf\" : \"\u25cb\"}</span>${esc(m.name)}<span class=\"d\">${esc(m.id)}</span></button>`).join(\"\") || '<p style=\"padding:12px;color:var(--dim)\">No models \u2014 add one in your account or with /models.</p>';\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setModel(n) { $(\"popup\").classList.add(\"hidden\"); await A.setModel(n); state.config.model = n; renderStatus(); }\nfunction toggleTheme() { const r = document.documentElement, d = r.dataset.theme === \"dark\" || (!r.dataset.theme && matchMedia(\"(prefers-color-scheme: dark)\").matches); r.dataset.theme = d ? \"light\" : \"dark\"; localStorage.setItem(\"me_theme\", r.dataset.theme); }\nif (localStorage.getItem(\"me_theme\")) document.documentElement.dataset.theme = localStorage.getItem(\"me_theme\");\nconst inp = $(\"input\");\nfunction grow() { inp.style.height = \"auto\"; inp.style.height = Math.min(220, inp.scrollHeight) + \"px\"; setBusy(); }\ninp.addEventListener(\"input\", grow);\ninp.addEventListener(\"keydown\", e => { if (e.key === \"Enter\" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === \"Escape\" && busy) api(base + \"/cancel\", {}); });\n// voice: hold the mic button (or hold space in an empty input)\nlet rec = null, chunks = [];\nasync function recStart() {\n  if (rec) return;\n  try {\n    const stream = await navigator.mediaDevices.getUserMedia({audio: true});\n    rec = new MediaRecorder(stream); chunks = [];\n    rec.ondataavailable = e => chunks.push(e.data);\n    rec.onstop = async () => {\n      stream.getTracks().forEach(t => t.stop()); $(\"mic\").classList.remove(\"rec\");\n      const blob = new Blob(chunks, {type: rec.mimeType || \"audio/webm\"}); rec = null;\n      if (blob.size < 2000) return;\n      inp.placeholder = \"transcribing\u2026\";\n      try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(\" \") ? \" \" : \"\") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }\n      finally { inp.placeholder = \"Ask anything\u2026\"; }\n    };\n    rec.start(); $(\"mic\").classList.add(\"rec\");\n  } catch (e) { alert(\"microphone: \" + e.message); }\n}\nfunction recStop() { if (rec && rec.state === \"recording\") rec.stop(); }\nconst mic = $(\"mic\");\nmic.addEventListener(\"pointerdown\", e => { e.preventDefault(); recStart(); });\n[\"pointerup\", \"pointerleave\", \"pointercancel\"].forEach(ev => mic.addEventListener(ev, recStop));\nlet spaceT = 0;\ninp.addEventListener(\"keydown\", e => { if (e.code === \"Space\" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });\ninp.addEventListener(\"keyup\", e => { if (e.code === \"Space\") recStop(); });\n$(\"wsPill\").onclick = async () => {\n  if (MODE === \"cloud\") return location.href = \"/account#workspaces\";\n  const p = prompt(\"Project folder for the local agent\", state.cwd || \"\");\n  if (!p) return;\n  try { await apply(await api(base + \"/cwd\", {path: p})); $(\"title\").textContent = \"New chat\"; } catch (e) { alert(e.message); }\n};\nA.boot().then(s => s && apply(s)).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`));\n</script>\n</body>\n</html>\n"
+WEBUI = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n<meta name=\"theme-color\" content=\"#0b0c10\">\n<title>me</title>\n<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0c10'/%3E%3Crect x='9' y='9' width='14' height='14' rx='3.5' fill='%238b7cff'/%3E%3C/svg%3E\">\n<style>:root{--bg:#0b0c10;--bg2:#111319;--bg3:#171a23;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--err:#ff6b7a;--warn:#ffb454;--user:#e7c66b;\n  --mono:ui-monospace,\"JetBrains Mono\",SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif}\n:root[data-theme=\"light\"]{--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}\n@media (prefers-color-scheme: light){:root:not([data-theme=\"dark\"]){--bg:#fafaf8;--bg2:#f2f2ef;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c4c5cc}}\n*{box-sizing:border-box;margin:0;padding:0}\nhtml,body{height:100%;background:var(--bg);color:var(--fg);font:14.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}\nbutton{font:inherit;color:inherit;background:none;border:none;cursor:pointer}\nsvg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}\n.app{display:grid;grid-template-columns:260px 1fr;height:100%}\naside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--bg)}\n.brand{display:flex;align-items:center;gap:10px;padding:16px;font:700 17px var(--mono)}\n.brand i{width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b))}\n.brand small{font:500 11px var(--mono);color:var(--dim);margin-left:auto;padding:2px 7px;border:1px solid var(--line);border-radius:6px}\n.newbtn{margin:0 12px 10px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;color:var(--fg)}\n.newbtn:hover{background:var(--bg2)}\n.slist{flex:1;overflow:auto;padding:0 8px 12px}\n.slist .lbl{font:11px var(--mono);color:var(--dim);padding:10px 8px 6px;text-transform:uppercase;letter-spacing:.5px}\n.si{display:block;width:100%;text-align:left;padding:8px 10px;border-radius:8px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}\n.si:hover{background:var(--bg2);color:var(--fg)}.si.on{background:var(--bg3);color:var(--fg)}\n.side-foot{border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--dim)}\n.side-foot a{color:inherit;text-decoration:none;display:flex;align-items:center;gap:6px}\nmain{display:flex;flex-direction:column;min-width:0;min-height:0}\nheader{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);min-height:52px}\nheader .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}\n.ib.menu{display:none}\n.pill{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:8px;padding:5px 9px;white-space:nowrap}\n.pill:hover{color:var(--fg)}\n#chat{flex:1;overflow:auto;scroll-behavior:smooth}\n.inner{max-width:820px;margin:0 auto;padding:22px 18px 30px}\n.empty{height:100%;display:grid;place-items:center;text-align:center;color:var(--dim)}\n.empty h2{font:700 34px var(--mono);letter-spacing:-1.5px;color:var(--fg);margin-bottom:6px}\n.empty h2 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}\n.msg{margin:18px 0}\n.msg.user{display:flex;justify-content:flex-end}\n.msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}\n.md{word-break:break-word}\n.md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}\n.md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}\n.md code{font:12.5px var(--mono);background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--b)}\n.md pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}\n.md pre .bar{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line)}\n.md pre code{display:block;background:none;border:none;padding:12px;overflow-x:auto;color:var(--fg);white-space:pre}\n.md a{color:var(--a)}.md blockquote{border-left:3px solid var(--faint);padding-left:12px;color:var(--dim)}\n.md table{border-collapse:collapse;margin:8px 0;font-size:13.5px}.md td,.md th{border:1px solid var(--line);padding:5px 9px}\n.think{font-size:13px;color:var(--dim);margin:6px 0}\n.think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;font-style:italic}\n.think pre{white-space:pre-wrap;font:12.5px/1.55 var(--sans);font-style:italic;margin:6px 0 0 22px;max-height:240px;overflow:auto}\n.tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}\n.tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}\n.tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}\n.tool .h .t{color:var(--faint)}\n.tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}\n.tool.closed .body,.tool .body:empty{display:none}\n.tool .st{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.tool .log{font:12px var(--mono);color:var(--dim);padding:0 12px 8px}\n.add{color:var(--ok)}.del{color:var(--err)}\n.pbar{height:6px;border-radius:4px;background:var(--line);margin:0 12px 10px;overflow:hidden}\n.pbar i{display:block;height:100%;background:var(--sk,var(--a));transition:width .2s}\n.pbar.ind i{width:30%!important;animation:ind 1.1s ease-in-out infinite}\n@keyframes ind{0%{margin-left:-30%}100%{margin-left:100%}}\n.skill{border-color:color-mix(in srgb,var(--sk) 45%,var(--line))}\n.skill .h b{color:var(--sk)}\n.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--a);border-radius:50%;animation:sp .8s linear infinite;flex-shrink:0}\n@keyframes sp{to{transform:rotate(360deg)}}\n.stats{font:12px var(--mono);color:var(--dim);display:flex;align-items:center;gap:6px;margin:4px 0 22px}\n.stats svg{color:var(--ok)}\n.info{font:12.5px var(--mono);color:var(--dim);margin:8px 0}.info.err{color:var(--err)}.info.warn{color:var(--warn)}\n.confirm{border:1px solid var(--warn);border-radius:10px;padding:12px;margin:10px 0}\n.confirm pre{font:12px var(--mono);white-space:pre-wrap;color:var(--dim);margin:8px 0;max-height:200px;overflow:auto}\n.confirm .btns{display:flex;gap:8px}\n.btn{padding:7px 13px;border-radius:8px;font:500 12.5px var(--mono);background:var(--a);color:#fff}\n.btn.ghost{background:none;color:var(--dim);border:1px solid var(--line)}\n.working{display:flex;align-items:center;gap:8px;font:12.5px var(--mono);color:var(--dim);margin:10px 0}\n.shimmer{background:linear-gradient(90deg,var(--dim) 30%,var(--fg) 50%,var(--dim) 70%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:sh 1.6s linear infinite}\n@keyframes sh{from{background-position:150% 0}to{background-position:-50% 0}}\n.composer{padding:0 18px 12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}\n.box{max-width:820px;margin:0 auto;border:1px solid var(--line);border-radius:14px;background:var(--bg2);transition:border-color .15s}\n.box:focus-within{border-color:var(--a)}\ntextarea{width:100%;background:none;border:none;outline:none;resize:none;color:var(--fg);font:15px/1.5 var(--sans);padding:12px 14px 4px;max-height:220px}\n.row{display:flex;align-items:center;gap:6px;padding:6px 8px 8px}\n.ib{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--dim)}\n.ib:hover{background:var(--bg3);color:var(--fg)}\n.ib.rec{background:var(--err);color:#fff;animation:pulse 1s infinite}\n@keyframes pulse{50%{opacity:.6}}\n.send{background:var(--a);color:#fff}.send:hover{background:var(--a);filter:brightness(1.1);color:#fff}\n.send:disabled{opacity:.35;cursor:default}\n.spacer{flex:1}\n.status{max-width:820px;margin:8px auto 0;display:flex;gap:14px;align-items:center;font:11.5px var(--mono);color:var(--dim);flex-wrap:wrap}\n.ctx{display:flex;align-items:center;gap:6px}.ctx .bar{width:70px;height:5px;border-radius:3px;background:var(--line);overflow:hidden}.ctx .bar i{display:block;height:100%;background:var(--ok)}\n.popup{position:fixed;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center;padding:16px;z-index:20}\n.popup>div{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:8px;width:min(420px,100%);max-height:70vh;overflow:auto}\n.popup button{display:flex;width:100%;text-align:left;padding:9px 12px;border-radius:8px;gap:10px;align-items:center}\n.popup button:hover{background:var(--bg2)}.popup .d{color:var(--dim);font-size:12px;margin-left:auto}\n.hidden{display:none!important}\n@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:fixed;inset:0 25% 0 0;z-index:15;transform:translateX(-102%);transition:transform .2s;box-shadow:0 0 60px rgba(0,0,0,.5)}\n  aside.open{transform:none}.ib.menu{display:grid}.inner{padding:16px 14px}.composer{padding:0 10px 10px}}\n.sw{width:30px;height:20px;border-radius:6px;border:1px solid;display:flex;gap:3px;align-items:center;justify-content:center;flex-shrink:0}\n.sw i{width:7px;height:7px;border-radius:50%}\n.popup .more{display:block;padding:10px 12px;font-size:12.5px;color:var(--a);text-decoration:none}\n.panel{padding:4px 12px 10px;font-size:13px;overflow-x:auto}\n.panel table{border-collapse:collapse;font:12px var(--mono);margin-top:6px}\n.panel td,.panel th{border:1px solid var(--line);padding:4px 8px;text-align:left;white-space:nowrap}\n.panel th{color:var(--dim);font-weight:500}\n.tool.closed .panel{display:block}\n.askin{flex:1;min-width:160px;background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:7px 10px;font:inherit;outline:none}\n.pill.mode{color:var(--a);border-color:color-mix(in srgb,var(--a) 40%,var(--line))}\n.cf{color:var(--faint)}.cf.on{color:var(--ok)}\n.popup button b{font-weight:600;white-space:nowrap}.popup .d{text-align:right}\n.row .pill{min-width:0}\n#modelBtn{flex:0 1 auto;overflow:hidden}#modelBtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n#agentBtn,.ib{flex-shrink:0}\n@media (max-width:760px){.status{gap:8px;font-size:10.5px}.ctx .bar{width:44px}header{padding:8px 10px}}\n</style>\n</head>\n<body>\n<div class=\"app\">\n<aside id=\"side\">\n  <div class=\"brand\"><i></i>me<small id=\"mode\"></small></div>\n  <button class=\"newbtn\" onclick=\"newChat()\"><svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>New chat</button>\n  <div class=\"slist\" id=\"slist\"></div>\n  <div class=\"side-foot\"><a id=\"acct\" href=\"/account\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg><span id=\"who\">account</span></a>\n    <span class=\"spacer\"></span><button class=\"ib\" onclick=\"pickTheme()\" title=\"theme\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 3a9 9 0 0 0 0 18z\" fill=\"currentColor\"/></svg></button></div>\n</aside>\n<main>\n  <header>\n    <button class=\"ib menu\" onclick=\"side.classList.toggle('open')\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16M4 12h16M4 17h16\"/></svg></button>\n    <div class=\"title\" id=\"title\">New chat</div>\n    <button class=\"pill\" id=\"wsPill\" title=\"workspace\"><svg viewBox=\"0 0 24 24\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg><span id=\"ws\">\u2014</span></button>\n  </header>\n  <div id=\"chat\"><div class=\"inner\" id=\"log\"></div></div>\n  <div class=\"composer\">\n    <div class=\"box\">\n      <textarea id=\"input\" rows=\"1\" placeholder=\"Ask anything\u2026\"></textarea>\n      <div class=\"row\">\n        <button class=\"pill\" id=\"modelBtn\" onclick=\"pickModel()\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2\"/></svg><span id=\"model\">model</span></button>\n        <button class=\"pill mode\" id=\"agentBtn\" onclick=\"pickAgent()\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 7h10M4 12h16M4 17h7\"/><circle cx=\"18\" cy=\"7\" r=\"2\"/><circle cx=\"15\" cy=\"17\" r=\"2\"/></svg><span id=\"agentName\">code</span></button>\n        <span class=\"spacer\"></span>\n        <button class=\"ib\" id=\"mic\" title=\"hold to talk\"><svg viewBox=\"0 0 24 24\"><rect x=\"9\" y=\"3\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5 11a7 7 0 0 0 14 0M12 18v3\"/></svg></button>\n        <button class=\"ib send\" id=\"send\" onclick=\"sendOrStop()\" disabled><svg viewBox=\"0 0 24 24\" id=\"sendIcon\"><path d=\"M12 19V5M5 12l7-7 7 7\"/></svg></button>\n      </div>\n    </div>\n    <div class=\"status\"><span id=\"ctxfiles\"></span><span class=\"ctx\" id=\"ctx\"></span><span id=\"tok\"></span><span id=\"sync\"></span></div>\n  </div>\n</main>\n</div>\n<div class=\"popup hidden\" id=\"popup\" onclick=\"if(event.target===this)this.classList.add('hidden')\"><div id=\"pbody\"></div></div>\n<script>const MODE = \"__MODE__\";\nconst $ = id => document.getElementById(id);\nconst side = $(\"side\");\nconst esc = s => String(s ?? \"\").replace(/[&<>\"]/g, c => ({\"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\"})[c]);\nconst human = n => !n ? \"0\" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(\".0\", \"\") + \"k\" : (n / 1e6).toFixed(1).replace(\".0\", \"\") + \"M\";\nconst dur = s => s < 60 ? s.toFixed(1) + \"s\" : Math.floor(s / 60) + \"m\" + String(Math.floor(s % 60)).padStart(2, \"0\") + \"s\";\nconst COLORS = {red:\"#ff6b7a\",green:\"#5ad18a\",blue:\"#6ba6ff\",magenta:\"#d27cff\",cyan:\"#4fd1c5\",yellow:\"#e7c66b\",orange:\"#ffb454\",purple:\"#8b7cff\",pink:\"#ff8fc7\"};\nconst I = {\n  check: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--ok)\"><path d=\"M5 12l5 5 9-11\"/></svg>',\n  x: '<svg viewBox=\"0 0 24 24\" style=\"color:var(--err)\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg>',\n  stop: '<path d=\"M7 7h10v10H7z\" fill=\"currentColor\"/>', up: '<path d=\"M12 19V5M5 12l7-7 7 7\"/>',\n  think: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5V16h8v-2.5A6 6 0 0 0 12 3z\"/></svg>',\n};\nlet token = localStorage.getItem(\"me_token\") || \"\", base = \"\", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;\n\n// \u2500\u2500\u2500 transport: identical endpoints for local (`me web`) and cloud (/app) \u2500\u2500\u2500\nasync function api(path, body, method) {\n  const h = {\"Content-Type\": \"application/json\"};\n  if (token) h.Authorization = \"Bearer \" + token;\n  const r = await fetch(path, {method: method || (body !== undefined ? \"POST\" : \"GET\"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});\n  const j = await r.json().catch(() => ({}));\n  if (r.status === 401 && MODE === \"cloud\") { location.href = \"/account#cloud\"; throw new Error(\"login\"); }\n  if (!r.ok) throw new Error(j.detail || r.statusText);\n  return j;\n}\nconst A = {\n  async boot() {\n    if (MODE === \"local\") {\n      const k = new URLSearchParams(location.search).get(\"k\"); if (k) { token = k; localStorage.setItem(\"me_token\", k); }\n      base = \"/api/agent\"; return api(base + \"/state\");\n    }\n    if (!token) { location.href = \"/account#cloud\"; return; }\n    const q = new URLSearchParams(location.search);\n    let w;\n    if (q.get(\"s\") || q.get(\"ws\")) w = await api(\"/api/cloud\", {session: q.get(\"s\"), ws: q.get(\"ws\")});\n    else w = (await api(\"/api/cloud\"))[0] || await api(\"/api/cloud\", {});\n    return A.attach(w);\n  },\n  async attach(w) { base = \"/api/cloud/\" + w.id; const st = await A.state(w); st.after = w.seq || 0; return st; },\n  async state(w) {\n    if (MODE === \"local\") return api(base + \"/state\");\n    const [cfg, sessions, me] = await Promise.all([api(\"/api/doc?key=config\").then(d => JSON.parse(d.content)).catch(() => ({})), api(\"/api/sessions\"), api(\"/api/me\")]);\n    let session = null;\n    if (w && w.session) session = await api(\"/api/doc?key=\" + encodeURIComponent(\"session/\" + w.session)).then(d => JSON.parse(d.content)).catch(() => null);\n    const [ag, man] = await Promise.all([api(\"/api/agents\").catch(() => ({agents: [], current: \"code\"})),\n      w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);\n    const context = [\"AGENTS.md\", \"ME.md\", \"CLAUDE.md\", \"DESIGN.md\", \"PLAN.md\"].filter(f => f in man.files);\n    return {mode: \"cloud\", user: me.username, config: {model: cfg.model, models: cfg.models || []}, sessions, session, ws: w && w.ws, worker: w,\n            agent: session?.agent || ag.current, agents: ag.agents, context};\n  },\n  async load(id) {\n    if (MODE === \"local\") { await api(base + \"/load\", {id}); return api(base + \"/state\"); }\n    const w = await api(\"/api/cloud\", {session: id}); return A.attach(w);\n  },\n  async newChat() { await api(base + \"/new\", {}); return A.state(state.worker); },\n  async setAgent(name) {\n    if (MODE === \"local\") return api(base + \"/agent\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.agent = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  async setModel(name) {\n    if (MODE === \"local\") return api(base + \"/model\", {name});\n    const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.model = name;\n    await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\"); await api(base + \"/sync\", {});\n  },\n  voice: (blob) => fetch(MODE === \"local\" ? \"/api/agent/voice\" : \"/api/voice\", {method: \"POST\", headers: {\"Content-Type\": blob.type, ...(token ? {Authorization: \"Bearer \" + token} : {})}, body: blob}).then(r => r.json()),\n};\n\n// \u2500\u2500\u2500 markdown \u2500\u2500\u2500\nfunction md(src) {\n  const blocks = [];\n  src = src.replace(/```(\\w*)\\n?([\\s\\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\\u0000${blocks.length - 1}\\u0000`; });\n  let h = esc(src)\n    .replace(/^### (.*)$/gm, \"<h3>$1</h3>\").replace(/^## (.*)$/gm, \"<h2>$1</h2>\").replace(/^# (.*)$/gm, \"<h1>$1</h1>\")\n    .replace(/^&gt; (.*)$/gm, \"<blockquote>$1</blockquote>\")\n    .replace(/`([^`\\n]+)`/g, \"<code>$1</code>\").replace(/\\*\\*([^*]+)\\*\\*/g, \"<b>$1</b>\").replace(/(^|\\W)\\*([^*\\n]+)\\*/g, \"$1<i>$2</i>\")\n    .replace(/\\[([^\\]]+)\\]\\((https?:[^)]+)\\)/g, '<a href=\"$2\" target=\"_blank\" rel=\"noopener\">$1</a>');\n  h = h.replace(/(?:^|\\n)((?:[-*] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ul>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.slice(2) + \"</li>\").join(\"\") + \"</ul>\\n\");\n  h = h.replace(/(?:^|\\n)((?:\\d+[.)] .*(?:\\n|$))+)/g, (_, l) => \"\\n<ol>\" + l.trim().split(\"\\n\").map(x => \"<li>\" + x.replace(/^\\d+[.)] /, \"\") + \"</li>\").join(\"\") + \"</ol>\\n\");\n  h = h.split(/\\n{2,}/).map(p => /^\\s*<(h\\d|ul|ol|blockquote|\\u0000)/.test(p) || p.startsWith(\"\\u0000\") ? p : \"<p>\" + p.replace(/\\n/g, \"<br>\") + \"</p>\").join(\"\");\n  return h.replace(/\\u0000(\\d+)\\u0000/g, (_, i) => `<pre><div class=\"bar\"><span>${esc(blocks[i][0] || \"code\")}</span><button onclick=\"navigator.clipboard.writeText(this.closest('pre').querySelector('code').innerText)\">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);\n}\n\n// \u2500\u2500\u2500 rendering \u2500\u2500\u2500\nconst log = $(\"log\"), chat = $(\"chat\");\nlet stick = true;\nchat.addEventListener(\"scroll\", () => stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80);\nfunction scroll() { if (stick) chat.scrollTop = chat.scrollHeight; }\nlet workEl = null;\nfunction el(html) { const d = document.createElement(\"div\"); d.innerHTML = html.trim(); const n = d.firstChild; workEl && workEl.parentNode === log ? log.insertBefore(n, workEl) : log.appendChild(n); scroll(); return n; }\nfunction clearLog() { log.innerHTML = \"\"; live = {}; cur = {}; workEl = null; }\nfunction emptyState() {\n  log.innerHTML = `<div class=\"empty\" style=\"min-height:60vh\"><div><h2>what are we <span>building?</span></h2><p>${MODE === \"cloud\" ? \"Runs in your cloud sandbox \u00b7 files sync to all your machines\" : \"Running locally on this machine\"}</p></div></div>`;\n}\nfunction userMsg(t) { if (log.querySelector(\".empty\")) log.innerHTML = \"\"; el(`<div class=\"msg user\"><div class=\"bub\">${esc(t)}</div></div>`); }\nfunction toolCard(name, label, args, skill) {\n  const isSkill = name === \"skill\" && args && args.action;\n  const color = isSkill ? (COLORS[skill?.color] || \"var(--a)\") : \"var(--a)\";\n  const title = isSkill ? `${esc(args.name)} \u00b7 ${esc(args.action)}` : esc(name);\n  return el(`<div class=\"tool ${isSkill ? \"skill\" : \"\"} closed\" style=\"--sk:${color}\"><div class=\"h\" onclick=\"this.parentNode.classList.toggle('closed')\"><span class=\"ic\"><span class=\"spin\"></span></span><b>${title}</b><span class=\"lab\">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class=\"t\"></span></div><div class=\"st hidden\"></div><div class=\"pbar hidden\"><i></i></div><div class=\"log hidden\"></div><div class=\"body\"></div></div>`);\n}\nfunction diffHtml(t) { return t.split(\"\\n\").map(l => `<span class=\"${l[0] === \"+\" ? \"add\" : l[0] === \"-\" ? \"del\" : \"\"}\">${esc(l)}</span>`).join(\"\\n\"); }\nfunction onEvent(e) {\n  const t = e.type;\n  if (t === \"user\") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }\n  if (t === \"turn_start\") { if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }\n  if (t === \"reasoning\") {\n    if (!cur.think) { cur.think = el(`<details class=\"think\"><summary>${I.think}<span class=\"shimmer\">thinking\u2026</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }\n    cur.think.querySelector(\"pre\").textContent += e.text; scroll(); return;\n  }\n  const endThink = () => { if (cur.think && !cur.thinkDone) { cur.think.querySelector(\"summary span\").outerHTML = `<span>thought for ${dur((Date.now() - cur.thinkT) / 1000)}</span>`; cur.thinkDone = true; } };\n  if (t === \"text\") {\n    endThink();\n    if (!cur.text) { cur.text = el(`<div class=\"msg md\"></div>`); cur.raw = \"\"; }\n    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;\n  }\n  if (t === \"tool_start\") {\n    endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;\n    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;\n  }\n  if (t === \"tool_event\") {\n    const c = live[e.id]; if (!c) return;\n    if (e.t === \"status\") { const s = c.querySelector(\".st\"); s.classList.remove(\"hidden\"); s.textContent = e.text; }\n    else if (e.t === \"progress\") { const p = c.querySelector(\".pbar\"); p.classList.remove(\"hidden\"); p.classList.toggle(\"ind\", e.v == null); if (e.v != null) p.firstChild.style.width = Math.round(e.v * 100) + \"%\"; }\n    else if (e.t === \"table\") {\n      const rows = e.rows || []; if (!rows.length) return;\n      const cols = Array.isArray(rows[0]) ? null : Object.keys(rows[0]);\n      const tr = r => \"<tr>\" + (cols ? cols.map(k => `<td>${esc(r[k])}</td>`) : r.map(x => `<td>${esc(x)}</td>`)).join(\"\") + \"</tr>\";\n      const p = document.createElement(\"div\"); p.className = \"panel\";\n      p.innerHTML = (e.title ? `<b>${esc(e.title)}</b>` : \"\") + `<table>${cols ? \"<tr>\" + cols.map(k => `<th>${esc(k)}</th>`).join(\"\") + \"</tr>\" : \"\"}${rows.map(tr).join(\"\")}</table>`;\n      c.insertBefore(p, c.querySelector(\".body\"));\n    }\n    else if (e.t === \"md\") { const p = document.createElement(\"div\"); p.className = \"panel md\"; p.innerHTML = md(e.text); c.insertBefore(p, c.querySelector(\".body\")); }\n    else if (e.t === \"diff\" && e.text.trim()) { c.querySelector(\".body\").innerHTML = diffHtml(e.text); c.classList.remove(\"closed\"); }\n    else { const l = c.querySelector(\".log\"); l.classList.remove(\"hidden\"); l.textContent = (\"\u203a \" + e.text + \"\\n\" + l.textContent).split(\"\\n\").slice(0, 3).join(\"\\n\"); }\n    scroll(); return;\n  }\n  if (t === \"tool_end\") {\n    const c = live[e.id]; if (!c) return; delete live[e.id];\n    c.querySelector(\".ic\").innerHTML = e.ok ? I.check : I.x; c.querySelector(\".t\").textContent = dur(e.time);\n    c.querySelectorAll(\".st,.pbar,.log\").forEach(x => x.classList.add(\"hidden\"));\n    if (c.querySelector(\".panel\")) c.classList.add(\"haspanel\");\n    const b = c.querySelector(\".body\"); if (!b.innerHTML) b.textContent = (e.output || \"\").slice(0, 20000);\n    if (!e.ok) c.classList.remove(\"closed\");\n    return;\n  }\n  if (t === \"ask\") {\n    const opts = e.options || [];\n    const c = el(`<div class=\"confirm ask\"><b>${esc(e.text)}</b><div class=\"btns\" style=\"margin-top:10px;flex-wrap:wrap\">${opts.length\n      ? opts.map((o, i) => `<button class=\"btn ${i ? \"ghost\" : \"\"}\" data-v=\"${esc(o)}\">${esc(o)}</button>`).join(\"\")\n      : `<input class=\"askin\" placeholder=\"answer\u2026\"><button class=\"btn\" data-in=\"1\">send</button>`}</div></div>`);\n    const send = v => { api(base + \"/answer\", {id: e.id, text: v}); c.innerHTML = `<span class=\"dim\">${esc(e.text)} \u2192 <b>${esc(v || \"\u2014\")}</b></span>`; c.className = \"info\"; };\n    c.querySelectorAll(\"button\").forEach(b => b.onclick = () => send(b.dataset.in ? c.querySelector(\"input\").value : b.dataset.v));\n    c.querySelector(\"input\")?.addEventListener(\"keydown\", ev => ev.key === \"Enter\" && send(ev.target.value));\n    return;\n  }\n  if (t === \"confirm\") {\n    const c = el(`<div class=\"confirm\"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class=\"btns\"><button class=\"btn\">allow</button><button class=\"btn ghost\">deny</button></div></div>`);\n    const [y, n] = c.querySelectorAll(\"button\");\n    y.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: true}); c.remove(); };\n    n.onclick = () => { api(base + \"/confirm\", {id: e.id, ok: false}); c.remove(); };\n    return;\n  }\n  if (t === \"compacting\") { el(`<div class=\"info\">compacting history\u2026</div>`); return; }\n  if (t === \"compacted\") { state.ctx = e.ctx; renderStatus(); el(`<div class=\"info\">compacted ${e.before} \u2192 ${e.after} messages \u00b7 ~${human(e.ctx)} tokens</div>`); return; }\n  if (t === \"usage\") { state.ctx = e.ctx; renderStatus(e.in, e.out); return; }\n  if (t === \"error\") { cur.failed = true; el(`<div class=\"info ${e.text === \"interrupted\" ? \"warn\" : \"err\"}\">${esc(e.text)}</div>`); return; }\n  if (t === \"turn_end\") {\n    const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();\n    el(`<div class=\"stats\">${failed ? I.x : I.check}${dur(e.time)} \u00b7 \u2191 ${human(e.in)} \u2193 ${human(e.out)} \u00b7 ${human(e.in + e.out)} tokens</div>`);\n    state.ctx = e.ctx; renderStatus(); refreshSessions(); return;\n  }\n  if (t === \"loaded\" && e.title) $(\"title\").textContent = e.title;\n  if (t === \"reload\") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }\n  if (t === \"exit\") { busy = false; setBusy(); restartSandbox(); }\n}\nfunction renderHistory(s) {\n  clearLog();\n  if (!s || !s.messages || !s.messages.length) return emptyState();\n  const txt = c => Array.isArray(c) ? c.filter(x => x.type === \"text\").map(x => x.text).join(\" \") : (c || \"\");\n  const outs = {};\n  s.messages.forEach(m => { if (m.role === \"tool\") outs[m.tool_call_id] = m.content; });\n  s.messages.forEach(m => {\n    if (m.role === \"user\" && txt(m.content) !== \"(images from read)\") userMsg(txt(m.content));\n    else if (m.role === \"assistant\") {\n      if (m.content) el(`<div class=\"msg md\">${md(m.content)}</div>`);\n      (m.tool_calls || []).forEach(tc => {\n        let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}\n        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || \"\", a);\n        c.querySelector(\".ic\").innerHTML = I.check; c.querySelector(\".body\").textContent = String(outs[tc.id] || \"\").slice(0, 8000);\n      });\n    }\n  });\n  $(\"title\").textContent = s.title || \"Chat\";\n  setTimeout(() => chat.scrollTop = chat.scrollHeight, 0);\n}\nfunction renderStatus(tin, tout) {\n  const m = (state.config?.models || []).find(x => x.name === state.config?.model);\n  $(\"model\").textContent = m ? m.name + (m.effort ? \" \u00b7 \" + m.effort : \"\") : \"no model\";\n  const ctx = m?.context || 0, used = state.ctx || 0, f = ctx ? Math.min(1, used / ctx) : 0;\n  const col = f < .6 ? \"var(--ok)\" : f < .85 ? \"var(--warn)\" : \"var(--err)\";\n  $(\"ctx\").innerHTML = ctx ? `ctx <span class=\"bar\"><i style=\"width:${(f * 100).toFixed(1)}%;background:${col}\"></i></span> ${human(used)}/${human(ctx)} ${Math.round(f * 100)}%` : `ctx ${human(used)}`;\n  const u = state.session?.usage || {};\n  $(\"tok\").textContent = tin !== undefined ? `this task \u2191${human(tin)} \u2193${human(tout)}` : `session \u2191${human(u.in)} \u2193${human(u.out)}`;\n  const ag = (state.agents || []).find(a => a.name === state.agent);\n  $(\"agentName\").textContent = ag ? ag.label : (state.agent || \"code\");\n  const cf = state.context || [];\n  $(\"ctxfiles\").innerHTML = cf.length ? `<span class=\"cf on\" title=\"loaded into every turn\">\u25c6 ${cf.map(esc).join(\" \u00b7 \")}</span>` : `<span class=\"cf\" title=\"ask the agent to create it, or /init in the terminal\">\u25c7 no AGENTS.md</span>`;\n  $(\"ws\").textContent = state.ws || (MODE === \"local\" ? (state.cwd || \"local\").split(/[\\\\/]/).pop() : \"cloud\");\n}\nfunction renderSessions() {\n  const ss = state.sessions || [], sid = state.session?.id;\n  const groups = {};\n  ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;\n    const g = age < 1 ? \"Today\" : age < 7 ? \"This week\" : \"Older\"; (groups[g] ??= []).push(s); });\n  $(\"slist\").innerHTML = Object.entries(groups).map(([g, l]) => `<div class=\"lbl\">${g}</div>` + l.map(s =>\n    `<button class=\"si ${s.id === sid ? \"on\" : \"\"}\" onclick=\"loadSession('${esc(s.id)}')\" title=\"${esc(s.cwd || \"\")}\">${esc(s.title || \"(untitled)\")}</button>`).join(\"\")).join(\"\") || '<div class=\"lbl\">no chats yet</div>';\n}\nasync function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }\nfunction setBusy() {\n  $(\"sendIcon\").innerHTML = busy ? I.stop : I.up;\n  $(\"send\").disabled = !busy && !$(\"input\").value.trim();\n  if (busy && (!workEl || workEl.parentNode !== log)) {\n    workEl = document.createElement(\"div\"); workEl.className = \"working\";\n    workEl.innerHTML = '<span class=\"spin\"></span><span class=\"shimmer\">working\u2026</span><span class=\"el\"></span>'; log.appendChild(workEl); scroll();\n  }\n  if (!busy && workEl) { workEl.remove(); workEl = null; }\n}\nsetInterval(() => { const w = document.querySelector(\".working .el\"); if (w && busy) w.textContent = dur((Date.now() - turnT0) / 1000); }, 200);\n\n// \u2500\u2500\u2500 actions \u2500\u2500\u2500\nasync function poll() {\n  const my = ++polling;\n  while (my === polling) {\n    try {\n      const r = await api(`${base}/events?after=${after}`);\n      if (my !== polling) return;\n      for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }\n      if (r.state) { busy = r.state.busy; setBusy(); }\n    } catch (e) {\n      if (MODE === \"cloud\" && /no such cloud session/.test(e.message)) { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); state.worker = w; base = \"/api/cloud/\" + w.id; after = w.seq || 0; continue; }\n      await new Promise(r => setTimeout(r, 2000));\n    }\n  }\n}\nasync function restartSandbox() {\n  if (MODE !== \"cloud\") return;\n  el(`<div class=\"info warn\">sandbox restarted \u2014 your session and files are safe</div>`);\n  try { const w = await api(\"/api/cloud\", {session: state.session?.id, ws: state.ws}); polling++; apply(await A.attach(w), false); } catch (e) {}\n}\nasync function apply(s, history = true) {\n  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();\n  $(\"mode\").textContent = MODE === \"cloud\" ? \"cloud\" : \"local\";\n  $(\"who\").textContent = s.user || (MODE === \"local\" ? \"local\" : \"account\");\n  after = s.after ?? after;\n  if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }\n  (s.pending || []).forEach(onEvent);\n  poll();\n}\nasync function send() {\n  const t = $(\"input\").value.trim(); if (!t || busy) return;\n  if (t === \"/compact\") { $(\"input\").value = \"\"; grow(); return api(base + \"/compact\", {}).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`)); }\n  $(\"input\").value = \"\"; grow(); userMsg(t);\n  if ($(\"title\").textContent === \"New chat\") $(\"title\").textContent = t.split(\"\\n\")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;\n  try { await api(base + \"/prompt\", {text: t}); } catch (e) { el(`<div class=\"info err\">${esc(e.message)}</div>`); busy = false; setBusy(); }\n}\nfunction sendOrStop() { busy ? api(base + \"/cancel\", {}) : send(); }\nasync function newChat() { side.classList.remove(\"open\"); await apply(await A.newChat()); history.replaceState(null, \"\", location.pathname); $(\"title\").textContent = \"New chat\"; }\nasync function loadSession(id) { side.classList.remove(\"open\"); polling++; await apply(await A.load(id)); if (MODE === \"cloud\") history.replaceState(null, \"\", \"?s=\" + id); }\nfunction pickModel() {\n  const ms = state.config?.models || [];\n  $(\"pbody\").innerHTML = ms.map(m => `<button onclick=\"setModel('${esc(m.name)}')\"><span>${m.name === state.config.model ? \"\u25cf\" : \"\u25cb\"}</span>${esc(m.name)}<span class=\"d\">${esc(m.id)}</span></button>`).join(\"\") || '<p style=\"padding:12px;color:var(--dim)\">No models \u2014 add one in your account or with /models.</p>';\n  $(\"popup\").classList.remove(\"hidden\");\n}\nfunction pickAgent() {\n  $(\"pbody\").innerHTML = (state.agents || []).map(a => `<button onclick=\"setAgent('${esc(a.name)}')\"><span>${a.name === state.agent ? \"\u25cf\" : \"\u25cb\"}</span><b>${esc(a.label)}</b><span class=\"d\">${esc(a.description)}</span></button>`).join(\"\")\n    + (MODE === \"cloud\" ? `<a class=\"more\" href=\"/account#market\">more agents in the marketplace \u2192</a>` : \"\");\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setAgent(n) { $(\"popup\").classList.add(\"hidden\"); state.agent = n; renderStatus(); await A.setAgent(n); }\nasync function setModel(n) { $(\"popup\").classList.add(\"hidden\"); await A.setModel(n); state.config.model = n; renderStatus(); }\nconst inp = $(\"input\");\nfunction grow() { inp.style.height = \"auto\"; inp.style.height = Math.min(220, inp.scrollHeight) + \"px\"; setBusy(); }\ninp.addEventListener(\"input\", grow);\ninp.addEventListener(\"keydown\", e => { if (e.key === \"Enter\" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === \"Escape\" && busy) api(base + \"/cancel\", {}); });\n// voice: hold the mic button (or hold space in an empty input)\nlet rec = null, chunks = [];\nasync function recStart() {\n  if (rec) return;\n  try {\n    const stream = await navigator.mediaDevices.getUserMedia({audio: true});\n    rec = new MediaRecorder(stream); chunks = [];\n    rec.ondataavailable = e => chunks.push(e.data);\n    rec.onstop = async () => {\n      stream.getTracks().forEach(t => t.stop()); $(\"mic\").classList.remove(\"rec\");\n      const blob = new Blob(chunks, {type: rec.mimeType || \"audio/webm\"}); rec = null;\n      if (blob.size < 2000) return;\n      inp.placeholder = \"transcribing\u2026\";\n      try { const r = await A.voice(blob); if (r.text) { inp.value += (inp.value && !inp.value.endsWith(\" \") ? \" \" : \"\") + r.text; grow(); inp.focus(); } else if (r.detail) alert(r.detail); }\n      finally { inp.placeholder = \"Ask anything\u2026\"; }\n    };\n    rec.start(); $(\"mic\").classList.add(\"rec\");\n  } catch (e) { alert(\"microphone: \" + e.message); }\n}\nfunction recStop() { if (rec && rec.state === \"recording\") rec.stop(); }\nconst mic = $(\"mic\");\nmic.addEventListener(\"pointerdown\", e => { e.preventDefault(); recStart(); });\n[\"pointerup\", \"pointerleave\", \"pointercancel\"].forEach(ev => mic.addEventListener(ev, recStop));\nlet spaceT = 0;\ninp.addEventListener(\"keydown\", e => { if (e.code === \"Space\" && !inp.value && e.repeat) { e.preventDefault(); if (!rec) recStart(); } });\ninp.addEventListener(\"keyup\", e => { if (e.code === \"Space\") recStop(); });\n$(\"wsPill\").onclick = async () => {\n  if (MODE === \"cloud\") return location.href = \"/account#workspaces\";\n  const p = prompt(\"Project folder for the local agent\", state.cwd || \"\");\n  if (!p) return;\n  try { await apply(await api(base + \"/cwd\", {path: p})); $(\"title\").textContent = \"New chat\"; } catch (e) { alert(e.message); }\n};\nA.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class=\"info err\">${esc(e.message)}</div>`));\n\n// \u2500\u2500\u2500 themes: same tokens as the terminal (see 14a_themes.py) \u2500\u2500\u2500\nconst THEME_VARS = {bg: \"--bg\", bg2: \"--bg2\", bg3: \"--bg3\", line: \"--line\", fg: \"--fg\", dim: \"--dim\", faint: \"--faint\", accent: \"--a\", accent2: \"--b\", ok: \"--ok\", err: \"--err\", warn: \"--warn\", user: \"--user\"};\nlet themeList = [];\nfunction applyTheme(t) {\n  if (!t) return;\n  const r = document.documentElement;\n  for (const [k, v] of Object.entries(THEME_VARS)) if (t.colors[k]) r.style.setProperty(v, t.colors[k]);\n  r.style.colorScheme = t.dark === false ? \"light\" : \"dark\";\n  document.querySelector('meta[name=\"theme-color\"]')?.setAttribute(\"content\", t.colors.bg);\n  try { localStorage.setItem(\"me_theme_cache\", JSON.stringify(t)); } catch (e) {}\n}\ntry { applyTheme(JSON.parse(localStorage.getItem(\"me_theme_cache\"))); } catch (e) {}\nasync function loadThemes() {\n  const r = await api(MODE === \"local\" ? \"/api/agent/themes\" : \"/api/themes\");\n  themeList = r.themes; applyTheme(themeList.find(t => t.name === r.current));\n}\nfunction pickTheme() {\n  $(\"pbody\").innerHTML = themeList.map(t => `<button onclick=\"setTheme('${esc(t.name)}')\"><span class=\"sw\" style=\"background:${t.colors.bg};border-color:${t.colors.line}\"><i style=\"background:${t.colors.accent}\"></i><i style=\"background:${t.colors.accent2}\"></i></span>${esc(t.label || t.name)}<span class=\"d\">${t.dark === false ? \"light\" : \"dark\"}</span></button>`).join(\"\")\n    + `<a class=\"more\" href=\"${MODE === \"cloud\" ? \"/account#market\" : \"#\"}\" onclick=\"${MODE === \"local\" ? \"alert('Install more with /theme in the terminal or the marketplace on the site');return false\" : \"\"}\">more themes in the marketplace \u2192</a>`;\n  $(\"popup\").classList.remove(\"hidden\");\n}\nasync function setTheme(name) {\n  applyTheme(themeList.find(t => t.name === name)); $(\"popup\").classList.add(\"hidden\");\n  if (MODE === \"local\") return api(\"/api/agent/theme\", {name});\n  const d = await api(\"/api/doc?key=config\"); const cfg = JSON.parse(d.content); cfg.theme = name;\n  await api(\"/api/doc\", {key: \"config\", content: JSON.stringify(cfg, null, 1)}, \"PUT\");\n}\n</script>\n</body>\n</html>\n"
 
 
 class WebSession:
@@ -1565,6 +1787,7 @@ class WebSession:
         self.cond = threading.Condition()
         self.waits = {}
         self.agent = Agent(store, self.push, self.confirm, self.ask)
+        store.on_change = self.cloud.autosync
 
     def push(self, e):
         with self.cond:
@@ -1593,8 +1816,8 @@ class WebSession:
     def confirm(self, name, args):
         return bool(self._wait("confirm", name=name, args=args))
 
-    def ask(self, q):
-        return self._wait("ask", text=q) or ""
+    def ask(self, q, options=None):
+        return self._wait("ask", text=q, options=options) or ""
 
     def state(self):
         ses = self.agent.session
@@ -1602,6 +1825,8 @@ class WebSession:
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())],
+                "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
+                "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
 
     def handle(self, method, path, body):
@@ -1643,6 +1868,23 @@ class WebSession:
                 os.chdir(local)
                 a.relocate(local)
             return self.state()
+        if path == "/compact":
+            if a.busy:
+                raise ValueError("busy")
+            threading.Thread(target=lambda: a.compact(reason="manual") or self.push({"type": "error", "text": "nothing to compact yet"}),
+                             daemon=True).start()
+            return {"ok": True}
+        if path == "/agent":
+            self.s.config["agent"] = body["name"]
+            a.session["agent"] = body["name"]
+            self.s.save()
+            return {"ok": True}
+        if path == "/themes":
+            return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
+        if path == "/theme":
+            self.s.config["theme"] = body["name"]
+            self.s.save()
+            return {"ok": True}
         if path == "/cwd":
             d = os.path.abspath(os.path.expanduser(body["path"]))
             if not os.path.isdir(d):
@@ -1745,8 +1987,12 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
                 webbrowser.open(url)
         except Exception:
             pass
+    def remote(n):
+        store.config.update(jload(store.cfg_path) or {})
+        if ws.agent.refresh_from_disk(os.getcwd()):
+            ws.push({"type": "reload"})
     if store.auth.get("token"):
-        ws.cloud.watch(lambda n: store.config.update(jload(store.cfg_path) or {}))
+        ws.cloud.watch(remote)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -2026,6 +2272,50 @@ def parse_keys(buf):
     return keys, ""
 
 
+# ───────────────────────────── themes ─────────────────────────────
+# A theme is JSON: {"name", "label", "dark", "colors": {token: "#rrggbb"}}. Same tokens drive the TUI and the web UI.
+# Installed themes live in ~/.me/themes/<name>.json (synced as theme/<name>.json); config["theme"] picks one.
+
+THEME_TOKENS = ["bg", "bg2", "bg3", "line", "fg", "dim", "faint", "accent", "accent2", "ok", "err", "warn", "user", "code_bg", "sel"]
+BUILTIN_THEMES = {
+    "me-dark": {"name": "me-dark", "label": "me dark", "dark": True, "colors": {
+        "bg": "#0e0f13", "bg2": "#111319", "bg3": "#171a23", "line": "#1f2230", "fg": "#d8dae3", "dim": "#6b6f80", "faint": "#3a3d4a",
+        "accent": "#8b7cff", "accent2": "#4fd1c5", "ok": "#5ad18a", "err": "#ff6b7a", "warn": "#ffb454", "user": "#e7c66b",
+        "code_bg": "#16181f", "sel": "#262a38"}},
+    "me-light": {"name": "me-light", "label": "me light", "dark": False, "colors": {
+        "bg": "#fafaf8", "bg2": "#f2f2ef", "bg3": "#e9e9e4", "line": "#e2e2dc", "fg": "#1d1e24", "dim": "#62657a", "faint": "#b9bac2",
+        "accent": "#6c5ce7", "accent2": "#0f9d8e", "ok": "#1f9d55", "err": "#d63a4a", "warn": "#c77700", "user": "#a3750a",
+        "code_bg": "#efefea", "sel": "#e4e2f7"}},
+}
+
+
+def themes(store):
+    out = dict(BUILTIN_THEMES)
+    d = store.home / "themes"
+    for p in sorted(d.glob("*.json")) if d.exists() else []:
+        t = jload(p)
+        if isinstance(t, dict) and isinstance(t.get("colors"), dict):
+            t.setdefault("name", p.stem)
+            out[t["name"]] = t
+    return out
+
+
+def theme(store, name=None):
+    ts = themes(store)
+    t = ts.get(name or store.config.get("theme") or "me-dark") or ts["me-dark"]
+    colors = dict(BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
+    colors.update({k: v for k, v in t["colors"].items() if isinstance(v, str) and v.startswith("#")})
+    return dict(t, colors=colors)
+
+
+def apply_theme(store, name=None):
+    """Point the TUI palette at a theme (diff colors follow ok/err)."""
+    c = theme(store, name)["colors"]
+    TH.update(c)
+    TH["add"], TH["del"] = c["ok"], c["err"]
+    return c
+
+
 # ───────────────────────────── markdown ─────────────────────────────
 
 KW = r"\b(def|class|return|if|elif|else|for|while|import|from|as|try|except|finally|with|lambda|yield|async|await|const|let|var|function|" \
@@ -2047,11 +2337,11 @@ def hl_code(line, lang):
         if t.startswith(("#", "//")) and lang not in ("css",):
             col = TH["dim"]
         elif t[0] in "\"'`":
-            col = "#a5d6a7"
+            col = TH["ok"]
         elif t[0].isdigit():
-            col = "#f5a97f"
+            col = TH["warn"]
         else:
-            col = "#c39bff"
+            col = TH["accent"]
         segs.append((t, rgb(col) + rgb(TH["code_bg"], True)))
         pos = m.end()
     if pos < len(line):
@@ -2140,13 +2430,13 @@ def render_md(text, width, indent=2):
 # ───────────────────────────── TUI ─────────────────────────────
 
 COMMANDS = [
-    ("help", "show commands & keys"), ("model", "switch model"), ("models", "add / edit / sync models"),
+    ("help", "show commands & keys"), ("agent", "switch mode: code, design, plan, review…"), ("init", "create AGENTS.md for this project"), ("model", "switch model"), ("models", "add / edit / sync models"),
     ("provider", "add / edit API providers"), ("effort", "reasoning effort: none…xhigh"), ("prompt", "edit your system prompt"),
     ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
-    ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"),
+    ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("autocompact", "auto-compact at N% of context (off)"),
     ("yolo", "toggle auto-approve tools"), ("sync", "sync with cloud now"), ("login", "log in / register"),
     ("2fa", "authenticator (TOTP) on/off"), ("logout", "log out of cloud"), ("config", "settings"), ("update", "update me"),
-    ("exit", "quit"),
+    ("theme", "color theme (installable)"), ("exit", "quit"), ("quit", "quit"),
 ]
 LOGO = ["█▀▄▀█ █▀▀", "█ ▀ █ ██▄"]
 
@@ -2171,173 +2461,10 @@ class Block:
         self._cache = None
 
 
-class TUI:
-    def __init__(self, store):
-        self.s = store
-        self.cloud = Cloud(store)
-        self.ws = Workspaces(store, self.cloud)
-        self.term = Term()
-        self.blocks = []
-        self.input, self.cur = "", 0
-        self.hist = [l for l in (self.s.home / "history").read_text("utf-8").split("\0") if l] if (self.s.home / "history").exists() else []
-        self.hpos = None
-        self.scroll = 0  # lines from bottom
-        self.sugg, self.sel = [], 0
-        self.modal = None
-        self.running = True
-        self.dirty = True
-        self.frame = 0
-        self.lock = threading.RLock()
-        self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
-        self.tools_live = {}
-        self.cur_text = None
-        self.cur_reason = None
-        self.turn_t0 = 0
-        self.turn_tokens = (0, 0)
-        self.update_avail = None
-        self.files_cache = None
-        self.notice = ("", 0)
-        store.on_change = self._schedule_sync
-        self._sync_timer = None
+# ───── TUI: rendering (mixin) ─────
 
-    # ─── plumbing ───
-    def _schedule_sync(self):
-        if not self.cloud.online:
-            return
-        if self._sync_timer:
-            self._sync_timer.cancel()
-        self._sync_timer = threading.Timer(2.0, lambda: self.cloud.sync_bg(lambda n: self.redraw()))
-        self._sync_timer.daemon = True
-        self._sync_timer.start()
 
-    def redraw(self):
-        self.dirty = True
-
-    def toast(self, msg, color="dim"):
-        self.notice = (msg, time.time(), color)
-        self.redraw()
-
-    def add(self, kind, **kw):
-        with self.lock:
-            b = Block(kind, **kw)
-            self.blocks.append(b)
-            self.redraw()
-            return b
-
-    def info(self, text, color="dim"):
-        return self.add("info", text=text, color=color)
-
-    # ─── agent events (worker thread) ───
-    def on_event(self, e):
-        with self.lock:
-            t = e["type"]
-            if t == "turn_start":
-                self.turn_t0 = time.time()
-                self.cur_text = self.cur_reason = None
-            elif t == "reasoning":
-                if self.cur_reason is None or self.cur_reason.done:
-                    self.cur_reason = self.add("reason", text="")
-                self.cur_reason.text += e["text"]
-                self.cur_reason.touch()
-            elif t == "text":
-                if self.cur_reason and not self.cur_reason.done:
-                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
-                    self.cur_reason.touch()
-                if self.cur_text is None:
-                    self.cur_text = self.add("assistant", text="")
-                self.cur_text.text += e["text"]
-                self.cur_text.touch()
-            elif t == "tool_start":
-                if self.cur_reason and not self.cur_reason.done:
-                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
-                    self.cur_reason.touch()
-                self.cur_text = None
-                self.cur_reason = None
-                kind = "skill" if e["name"] == "skill" and e["args"].get("action") else "tool"
-                b = self.add(kind, name=e["name"], args=e["args"], label=e["label"])
-                if kind == "skill":
-                    sk = self.agent.skills.all().get(e["args"].get("name"), {})
-                    b.data["color"] = SKILL_COLORS.get(sk.get("color", ""), sk.get("color") if str(sk.get("color", "")).startswith("#") else TH["accent"])
-                    b.data["icon"] = sk.get("icon", "◆")
-                self.tools_live[e["id"]] = b
-            elif t == "tool_event":
-                b = self.tools_live.get(e["id"])
-                if b:
-                    k = e.get("t")
-                    if k == "progress":
-                        b.progress = e
-                    elif k == "status":
-                        b.status = e["text"]
-                    elif k == "diff":
-                        b.data["diff"] = e["text"]
-                    else:
-                        b.events.append(e.get("text", ""))
-                    b.touch()
-            elif t == "tool_end":
-                b = self.tools_live.pop(e["id"], None)
-                if b:
-                    b.done, b.ok, b.elapsed = True, e["ok"], e["time"]
-                    b.data["output"] = e["output"]
-                    b.collapsed = True
-                    b.touch()
-            elif t == "usage":
-                self.turn_tokens = (e["in"], e["out"])
-            elif t == "error":
-                self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
-            elif t == "turn_end":
-                if self.cur_reason and not self.cur_reason.done:
-                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens")
-                self.cur_text = self.cur_reason = None
-                self.sync_ws()
-            self.redraw()
-
-    # ─── modal helpers (called from worker threads; block until answered) ───
-    def _modal(self, m):
-        m["ev"] = threading.Event()
-        m.setdefault("value", None)
-        with self.lock:
-            self.modal = m
-            self.redraw()
-        m["ev"].wait()
-        with self.lock:
-            if self.modal is m:
-                self.modal = None
-            self.redraw()
-        return m["value"]
-
-    def pick(self, title, items, hint="", current=None):
-        """items: list of (value, label, detail). Returns value or None."""
-        items = [i if isinstance(i, tuple) else (i, str(i), "") for i in items]
-        sel = 0
-        for i, it in enumerate(items):
-            if current is not None and it[0] == current:
-                sel = i
-        return self._modal({"kind": "pick", "title": title, "items": items, "sel": sel, "filter": "", "hint": hint})
-
-    def prompt(self, title, default="", secret=False, multiline=False, hint=""):
-        return self._modal({"kind": "input", "title": title, "text": str(default or ""), "cur": len(str(default or "")), "secret": secret,
-                            "multiline": multiline, "hint": hint})
-
-    def confirm_tool(self, name, a):
-        label = self.agent.tools.preview(name, a)
-        detail = ""
-        if name == "edit":
-            detail = ToolBox._diff(a.get("old", ""), a.get("new", ""), "")
-        elif name == "write":
-            detail = "\n".join(a.get("content", "").splitlines()[:12])
-        elif name == "skill":
-            detail = json.dumps(a.get("args", {}), ensure_ascii=False)
-        v = self._modal({"kind": "confirm", "title": f"{name}  {label}", "detail": detail, "sel": 0,
-                         "items": [("y", "Yes"), ("a", "Yes, don't ask again (yolo)"), ("n", "No, tell me what to do")]})
-        if v == "a":
-            self.s.config["settings"]["yolo"] = True
-            self.s.save()
-        return v in ("y", "a")
-
-    def ask_text(self, q):
-        return self.prompt(q) or ""
-
+class TUIRender:
     # ─── rendering ───
     def block_lines(self, b, width):
         if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill"):
@@ -2360,6 +2487,9 @@ class TUI:
                 out.append(segs)
             out.append(Line())
             out.append(Line().add("  ").add(f"me v{VERSION}", rgb(TH["fg"]) + CSI + "1m").add("  ·  ", dim).add(b.text, dim))
+            ctxf = self.agent.context_files()
+            out.append(Line().add("  ").add("◆ " + ", ".join(ctxf) + " loaded into this session", rgb(TH["ok"])) if ctxf else
+                       Line().add("  ").add("◇ no AGENTS.md — run /init so I remember this project", rgb(TH["warn"])))
             out.append(Line().add("  ").add("/ ", rgb(TH["accent"])).add("commands   ", dim).add("@ ", rgb(TH["accent"])).add("files   ", dim)
                        .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline", dim))
             out.append(Line())
@@ -2467,7 +2597,7 @@ class TUI:
         border = color if not b.done else (mix(color, TH["bg"], 0.45) if b.ok else TH["err"])
         if not b.done:
             pulse = (1 + __import__("math").sin(self.frame / 3)) / 2
-            border = mix(color, "#ffffff", pulse * 0.25)
+            border = mix(color, TH["fg"], pulse * 0.25)
         bc = rgb(border)
         icon = b.data.get("icon", "◆")
         t = dur(b.elapsed if b.done else time.time() - b.t0)
@@ -2476,7 +2606,8 @@ class TUI:
             summary = (b.data.get("output") or "").strip().split("\n")[0][: W - 40] if b.ok else (b.data.get("output") or "").split("\n")[0][: W - 40]
             return [Line().add("  ").add(mark[0] + " ", mark[1]).add(f"{icon} ", rgb(color)).add(name, rgb(color) + CSI + "1m")
                     .add(" · ", rgb(TH["dim"])).add(act, rgb(TH["fg"])).add(f"  {t}", rgb(TH["faint"]))
-                    .add(("  " + summary) if summary else "", rgb(TH["dim"]))]
+                    .add(("  " + summary) if summary else "", rgb(TH["dim"]))] + \
+                [Line().add("    │ ", rgb(color)).add(pl[: W - 8], rgb(TH["fg"])) for pl in b.data.get("panel", [])[:40]]
         inner = W - 6
         title = f" {icon} {name} · {act} "
         top = Line().add("  ╭─", bc).add(title, rgb(color) + CSI + "1m")
@@ -2504,6 +2635,8 @@ class TUI:
             cnt = f" {p['n']}/{p['total']}" if p.get("total") else (f" {p['n']}" if p.get("n") is not None else "")
             bw = max(10, inner - swidth(lbl) - swidth(cnt) - 6)
             out.append(row([(lbl + " ", rgb(TH["fg"]))] + self._bar(p.get("v"), bw, color) + [(cnt, rgb(TH["dim"]))]))
+        for pl in b.data.get("panel", [])[-12:]:
+            out.append(row([(pl[: inner - 2], rgb(TH["fg"]))]))
         for ev in b.events[-3:]:
             out.append(row([("› ", rgb(color)), (ev[: inner - 4], rgb(TH["dim"]))]))
         if b.done and not b.collapsed:
@@ -2522,7 +2655,7 @@ class TUI:
         pos = (self.frame * 0.7) % (len(text) + 10) - 5
         for i, ch in enumerate(text):
             t = max(0.0, 1 - abs(i - pos) / 4)
-            segs.append((ch, rgb(mix(TH["dim"], "#ffffff", t))))
+            segs.append((ch, rgb(mix(TH["dim"], TH["fg"], t))))
         return segs
 
     def input_lines(self, width):
@@ -2574,6 +2707,11 @@ class TUI:
         u = self.agent.session.get("usage", {})
         L.add("   ↑", faint).add(human(u.get("in", 0)), dim).add(" ↓", faint).add(human(u.get("out", 0)), dim)
         right = Line()
+        ctxf = self.agent.context_files()
+        if ctxf:
+            right.add("◆ " + " ".join(ctxf) + "  ", rgb(TH["ok"]))
+        else:
+            right.add("◇ no AGENTS.md (/init)  ", rgb(TH["faint"]))
         for segs in PLUGINS.collect("status", self):
             for t, c in segs:
                 right.add(t, rgb(TH.get(c, c) if not str(c).startswith("#") else c))
@@ -2601,7 +2739,10 @@ class TUI:
         bgc = rgb(TH["bg"], True)
         with self.lock:
             # input box
-            in_rows, (cr, cc) = self.input_lines(W - 2)
+            mode = self.agent.preset().get("label") or self.agent.preset()["name"]
+            pre = f" {mode} › "
+            pw = swidth(pre)
+            in_rows, (cr, cc) = self.input_lines(W - 2 - (pw - 3))
             in_rows = in_rows[-8:] if len(in_rows) > 8 else in_rows
             cr = min(cr, len(in_rows) - 1)
             busy = self.agent.busy
@@ -2609,7 +2750,11 @@ class TUI:
             bcol = rgb(TH["accent"] if not busy else TH["faint"])
             box.append(Line().add("╭" + "─" * (W - 2) + "╮", bcol))
             for i, r in enumerate(in_rows):
-                l = Line().add("│", bcol).add(" › " if i == 0 else "   ", rgb(TH["accent"]))
+                l = Line().add("│", bcol)
+                if i == 0:
+                    l.add(" " + mode, rgb(TH["accent"]) + CSI + "1m").add(" › ", rgb(TH["faint"]))
+                else:
+                    l.add(" " * pw)
                 if not self.input and i == 0:
                     l.add("ask anything, / for commands" if not busy else "queue a message…", rgb(TH["faint"]))
                 else:
@@ -2671,7 +2816,7 @@ class TUI:
                 out.append(f"{CSI}?25h")
             elif not self.modal:
                 row = H - 1 - len(box) + 1 + cr + 1
-                col = 1 + 3 + cc + 1
+                col = 1 + pw + cc + 1
                 out.append(f"{CSI}{row};{col}H{CSI}?25h")
             else:
                 out.append(f"{CSI}?25l")
@@ -2682,7 +2827,7 @@ class TUI:
         m = self.modal
         mw = min(W - 4, 90)
         x = (W - mw) // 2 + 1
-        mbg = rgb("#15171e", True)
+        mbg = rgb(TH["bg2"], True)
         bc = rgb(TH["accent"])
         rows = []
         title = m.get("title", "")
@@ -2766,6 +2911,11 @@ class TUI:
             out.append(f"{CSI}{y + 1 + r};{x + 1 + c}H")
         return "".join(out)
 
+
+# ───── TUI: keyboard + suggestions (mixin) ─────
+
+
+class TUIInput:
     # ─── input handling ───
     def handle_key(self, k):
         if self.modal:
@@ -2962,10 +3112,10 @@ class TUI:
             items = m.get("_visible", m["items"]) if m["kind"] == "pick" else m["items"]
             if k in ("esc", "ctrl-c"):
                 close(None if m["kind"] == "pick" else "n")
-            elif k == "up":
-                m["sel"] = (m["sel"] - 1) % max(1, len(items))
-            elif k == "down":
-                m["sel"] = (m["sel"] + 1) % max(1, len(items))
+            elif k in ("up", "down"):
+                m["sel"] = (m["sel"] + (1 if k == "down" else -1)) % max(1, len(items))
+                if m.get("preview") and items:
+                    m["preview"](items[m["sel"]][0])
             elif k in ("enter", "tab"):
                 if items:
                     close(items[m["sel"]][0])
@@ -3155,6 +3305,11 @@ class TUI:
             self.redraw()
         threading.Thread(target=run, daemon=True).start()
 
+
+# ───── TUI: slash commands (mixin) ─────
+
+
+class TUICommands:
     # ─── commands (run in worker thread; may block on modals) ───
     def all_commands(self):
         return COMMANDS + [(n, d) for n, (_, d) in PLUGINS.commands.items()]
@@ -3180,6 +3335,98 @@ class TUI:
 
     def cmd_exit(self, arg):
         self.running = False
+
+    cmd_quit = cmd_exit
+
+    def cmd_agent(self, arg):
+        ps = presets(self.s)
+        cur = self.agent.preset()["name"]
+        if arg in ps:
+            name = arg
+        else:
+            items = [(n, p.get("label", n), p.get("description", "") + (" · custom" if p.get("custom") else "")) for n, p in ps.items()]
+            items.append(("+market", "+ more agents", "marketplace"))
+            name = self.pick("Agent mode", items, current=cur)
+            if name == "+market":
+                name = self.install_from_market("agent")
+            if not name:
+                return
+        self.s.config["agent"] = name
+        self.agent.session["agent"] = name
+        self.s.save()
+        p = ps.get(name) or presets(self.s).get(name, {})
+        self.toast(f"mode → {p.get('label', name)} · tools: {p.get('tools', ALL_TOOLS)}", "ok")
+
+    def cmd_init(self, arg):
+        if self.agent.busy:
+            return self.toast("busy", "warn")
+        exists = Path("AGENTS.md").exists()
+        self.add("user", text="/init")
+        self.agent.run(("Update" if exists else "Create") + " AGENTS.md for this project. Explore it first (structure, manifests, scripts, README, "
+                       "tests). Write a concise file: purpose; stack; how to install/run/test/build (exact commands, verified); folder map; "
+                       "conventions; gotchas. It is loaded into every session, so keep it short and accurate.")
+
+    def cmd_compact(self, arg):
+        if self.agent.busy:
+            return self.toast("busy — wait for the turn to finish", "warn")
+        if not self.agent.compact(reason="manual"):
+            self.toast("nothing to compact yet")
+
+    def cmd_autocompact(self, arg):
+        st = self.s.config["settings"]
+        if not arg:
+            cur = st.get("autocompact", 80)
+            arg = self.pick(f"Auto-compact (now: {cur or 'off'}{'%' if cur else ''} of context, max 1M tokens)",
+                            [("50", "50%", ""), ("70", "70%", ""), ("80", "80%", "default"), ("90", "90%", ""), ("off", "off", "")])
+            if not arg:
+                return
+        st["autocompact"] = 0 if arg == "off" else max(10, min(95, int(str(arg).rstrip("%"))))
+        self.s.save()
+        m = self.s.model()
+        lim = self.agent.compact_threshold(m) if m else 0
+        self.toast(f"auto-compact {'off' if not lim else f'at {human(lim)} tokens'}", "ok")
+
+    def cmd_theme(self, arg):
+        ts = themes(self.s)
+        cur = self.s.config.get("theme") or "me-dark"
+        if arg in ts:
+            name = arg
+        else:
+            items = [(n, t.get("label", n), ("dark" if t.get("dark", True) else "light") + (" · built-in" if n in BUILTIN_THEMES else ""))
+                     for n, t in ts.items()] + [("+market", "+ get more themes", "marketplace")]
+            m = {"kind": "pick", "title": "Theme (↑↓ previews)", "items": items, "sel": next((i for i, x in enumerate(items) if x[0] == cur), 0),
+                 "filter": "", "hint": "", "preview": lambda v: v in ts and self.retheme(v)}
+            name = self._modal(m)
+            if name == "+market":
+                return self.install_from_market("theme")
+            if not name:
+                return self.retheme(cur)
+        self.s.config["theme"] = name
+        self.s.save()
+        self.retheme(name)
+        self.toast(f"theme → {name}", "ok")
+
+    def install_from_market(self, kind):
+        """Pick an item of `kind` from the marketplace and install it (synced to the account when online)."""
+        try:
+            items = self.cloud.req("GET", f"/api/market?kind={kind}", token=False)
+        except CloudError as e:
+            return self.info(f"✗ {e}", "err")
+        mid = self.pick(f"Marketplace · {kind}s", [(x["id"], x["name"], x["description"]) for x in items])
+        if not mid:
+            return None
+        x = self.cloud.req("GET", f"/api/market/{mid}", token=False)
+        folder = {"theme": "themes", "agent": "agents", "plugin": "plugins", "skill": "skills"}[kind]
+        ext = {"theme": "json", "agent": "md", "plugin": "py"}.get(kind, x.get("ext", "py"))
+        (self.s.home / folder / f"{x['name']}.{ext}").write_text(x["content"], "utf-8")
+        if self.cloud.online:
+            try:
+                self.cloud.req("POST", f"/api/market/{mid}/install", {})
+            except CloudError:
+                pass
+        self.s.save()
+        self.toast(f"installed {kind} {x['name']}", "ok")
+        return x["name"]
 
     def cmd_new(self, arg):
         if self.agent.busy:
@@ -3524,16 +3771,8 @@ class TUI:
                 (d / f"{v}.py").unlink()
                 self.s.save()
 
-    def cmd_sessions(self, arg):
-        ss = self.s.sessions()
-        if not ss:
-            return self.toast("no sessions yet")
-        sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
-                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {len(s.get('messages', []))} msgs · "
-                                            + s.get("cwd", "")) for s in ss])
-        if not sid or self.agent.busy:
-            return
-        self.agent.load(sid)
+    def render_history(self):
+        """Rebuild the transcript from the current session's messages."""
         with self.lock:
             self.blocks = []
             self.welcome()
@@ -3553,6 +3792,18 @@ class TUI:
                             a = {}
                         b = self.add("tool", name=tc["function"]["name"], args=a, label=self.agent.tools.preview(tc["function"]["name"], a))
                         b.done, b.ok, b.collapsed = True, True, True
+
+    def cmd_sessions(self, arg):
+        ss = self.s.sessions()
+        if not ss:
+            return self.toast("no sessions yet")
+        sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
+                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {len(s.get('messages', []))} msgs · "
+                                            + s.get("cwd", "")) for s in ss])
+        if not sid or self.agent.busy:
+            return
+        self.agent.load(sid)
+        self.render_history()
         wid = self.agent.session.get("ws")
         if wid and self.cloud.online:
             try:
@@ -3690,6 +3941,198 @@ class TUI:
         self.restart = True
         self.running = False
 
+
+# ───── TUI: state, agent events, modals, lifecycle ─────
+
+
+class TUI(TUIRender, TUIInput, TUICommands):
+    def __init__(self, store):
+        self.s = store
+        apply_theme(store)
+        self.cloud = Cloud(store)
+        self.ws = Workspaces(store, self.cloud)
+        self.term = Term()
+        self.blocks = []
+        self.input, self.cur = "", 0
+        self.hist = [l for l in (self.s.home / "history").read_text("utf-8").split("\0") if l] if (self.s.home / "history").exists() else []
+        self.hpos = None
+        self.scroll = 0  # lines from bottom
+        self.sugg, self.sel = [], 0
+        self.modal = None
+        self.running = True
+        self.dirty = True
+        self.frame = 0
+        self.lock = threading.RLock()
+        self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
+        self.tools_live = {}
+        self.cur_text = None
+        self.cur_reason = None
+        self.turn_t0 = 0
+        self.turn_tokens = (0, 0)
+        self.update_avail = None
+        self.files_cache = None
+        self.notice = ("", 0)
+        store.on_change = self._schedule_sync
+        self._sync_timer = None
+
+    # ─── plumbing ───
+    def _schedule_sync(self):
+        if not self.cloud.online:
+            return
+        if self._sync_timer:
+            self._sync_timer.cancel()
+        self._sync_timer = threading.Timer(0.7, lambda: self.cloud.sync_bg(lambda n: self.redraw()))
+        self._sync_timer.daemon = True
+        self._sync_timer.start()
+
+    def redraw(self):
+        self.dirty = True
+
+    def toast(self, msg, color="dim"):
+        self.notice = (msg, time.time(), color)
+        self.redraw()
+
+    def add(self, kind, **kw):
+        with self.lock:
+            b = Block(kind, **kw)
+            self.blocks.append(b)
+            self.redraw()
+            return b
+
+    def info(self, text, color="dim"):
+        return self.add("info", text=text, color=color)
+
+    # ─── agent events (worker thread) ───
+    def on_event(self, e):
+        with self.lock:
+            t = e["type"]
+            if t == "turn_start":
+                self.turn_t0 = time.time()
+                self.cur_text = self.cur_reason = None
+            elif t == "reasoning":
+                if self.cur_reason is None or self.cur_reason.done:
+                    self.cur_reason = self.add("reason", text="")
+                self.cur_reason.text += e["text"]
+                self.cur_reason.touch()
+            elif t == "text":
+                if self.cur_reason and not self.cur_reason.done:
+                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
+                    self.cur_reason.touch()
+                if self.cur_text is None:
+                    self.cur_text = self.add("assistant", text="")
+                self.cur_text.text += e["text"]
+                self.cur_text.touch()
+            elif t == "tool_start":
+                if self.cur_reason and not self.cur_reason.done:
+                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
+                    self.cur_reason.touch()
+                self.cur_text = None
+                self.cur_reason = None
+                kind = "skill" if e["name"] == "skill" and e["args"].get("action") else "tool"
+                b = self.add(kind, name=e["name"], args=e["args"], label=e["label"])
+                if kind == "skill":
+                    sk = self.agent.skills.all().get(e["args"].get("name"), {})
+                    b.data["color"] = SKILL_COLORS.get(sk.get("color", ""), sk.get("color") if str(sk.get("color", "")).startswith("#") else TH["accent"])
+                    b.data["icon"] = sk.get("icon", "◆")
+                self.tools_live[e["id"]] = b
+            elif t == "tool_event":
+                b = self.tools_live.get(e["id"])
+                if b:
+                    k = e.get("t")
+                    if k == "progress":
+                        b.progress = e
+                    elif k == "status":
+                        b.status = e["text"]
+                    elif k == "diff":
+                        b.data["diff"] = e["text"]
+                    elif k == "table":
+                        rows = e.get("rows") or []
+                        if rows and isinstance(rows[0], dict):
+                            cols = list(rows[0])
+                            rows = [cols] + [[r.get(c, "") for c in cols] for r in rows]
+                        widths = [min(30, max(len(str(r[i])) for r in rows if i < len(r))) for i in range(max(len(r) for r in rows))] if rows else []
+                        panel = b.data.setdefault("panel", [])
+                        if e.get("title"):
+                            panel.append(e["title"])
+                        for r in rows[:30]:
+                            panel.append("  ".join(str(x)[:30].ljust(widths[i]) for i, x in enumerate(r)))
+                    elif k == "md":
+                        b.data.setdefault("panel", []).extend(e["text"].splitlines()[:40])
+                    else:
+                        b.events.append(e.get("text", ""))
+                    b.touch()
+            elif t == "tool_end":
+                b = self.tools_live.pop(e["id"], None)
+                if b:
+                    b.done, b.ok, b.elapsed = True, e["ok"], e["time"]
+                    b.data["output"] = e["output"]
+                    b.collapsed = True
+                    b.touch()
+            elif t == "compacting":
+                self.add("info", text=f"◌ compacting history ({e['reason']})…", color="accent")
+            elif t == "compacted":
+                self.agent.ctx_used = e["ctx"]
+                self.add("info", text=f"✓ compacted {e['before']} → {e['after']} messages · context now ~{human(e['ctx'])} tokens", color="ok")
+            elif t == "usage":
+                self.turn_tokens = (e["in"], e["out"])
+            elif t == "error":
+                self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
+            elif t == "turn_end":
+                if self.cur_reason and not self.cur_reason.done:
+                    self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
+                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens")
+                self.cur_text = self.cur_reason = None
+                self.sync_ws()
+            self.redraw()
+
+    # ─── modal helpers (called from worker threads; block until answered) ───
+    def _modal(self, m):
+        m["ev"] = threading.Event()
+        m.setdefault("value", None)
+        with self.lock:
+            self.modal = m
+            self.redraw()
+        m["ev"].wait()
+        with self.lock:
+            if self.modal is m:
+                self.modal = None
+            self.redraw()
+        return m["value"]
+
+    def pick(self, title, items, hint="", current=None):
+        """items: list of (value, label, detail). Returns value or None."""
+        items = [i if isinstance(i, tuple) else (i, str(i), "") for i in items]
+        sel = 0
+        for i, it in enumerate(items):
+            if current is not None and it[0] == current:
+                sel = i
+        return self._modal({"kind": "pick", "title": title, "items": items, "sel": sel, "filter": "", "hint": hint})
+
+    def prompt(self, title, default="", secret=False, multiline=False, hint=""):
+        return self._modal({"kind": "input", "title": title, "text": str(default or ""), "cur": len(str(default or "")), "secret": secret,
+                            "multiline": multiline, "hint": hint})
+
+    def confirm_tool(self, name, a):
+        label = self.agent.tools.preview(name, a)
+        detail = ""
+        if name == "edit":
+            detail = ToolBox._diff(a.get("old", ""), a.get("new", ""), "")
+        elif name == "write":
+            detail = "\n".join(a.get("content", "").splitlines()[:12])
+        elif name == "skill":
+            detail = json.dumps(a.get("args", {}), ensure_ascii=False)
+        v = self._modal({"kind": "confirm", "title": f"{name}  {label}", "detail": detail, "sel": 0,
+                         "items": [("y", "Yes"), ("a", "Yes, don't ask again (yolo)"), ("n", "No, tell me what to do")]})
+        if v == "a":
+            self.s.config["settings"]["yolo"] = True
+            self.s.save()
+        return v in ("y", "a")
+
+    def ask_text(self, q, options=None):
+        if options:
+            return self.pick(q, [(o, o, "") for o in options]) or ""
+        return self.prompt(q) or ""
+
     # ─── lifecycle ───
     def welcome(self):
         self.add("welcome", text=os.getcwd().replace(str(Path.home()), "~"))
@@ -3775,6 +4218,7 @@ class TUI:
             os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
 
 
+
 def fuzzy(q, s):
     """Subsequence match score (lower = better) or None."""
     if not q:
@@ -3805,6 +4249,7 @@ requires:
 ---
 Instructions for the model, loaded only when the skill is used.
 Explain when to call which action and any gotchas.
+ctx: progress(it,label) bar(n,total) log() status() ask(q) choose(q,opts) confirm(q) table(rows) md(text) http env cwd
 """
 
 
@@ -3814,6 +4259,16 @@ def hello(ctx, who: str = "world"):
     for step in ctx.progress(range(3), "warming up"):
         ctx.log(f"step {step}")
     return f"hello, {who}!"
+
+
+@action
+def pick(ctx):
+    "Interactive example: ask the user, show a table"
+    lang = ctx.choose("Which language?", ["python", "go", "rust"])
+    if not ctx.confirm(f"Show stats for {lang}?"):
+        return "cancelled"
+    ctx.table([{"lang": lang, "typing": "static" if lang != "python" else "dynamic"}], title="stats")
+    return f"picked {lang}"
 
 
 @action(confirm=True)  # asks the user before running

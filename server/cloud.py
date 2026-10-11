@@ -225,7 +225,7 @@ class Worker:
             return [e for e in self.events if e["seq"] > after]
 
     def info(self):
-        return {"id": self.id, "session": self.session, "ws": self.wid, "busy": self.busy, "title": self.title,
+        return {"id": self.id, "seq": self.seq, "session": self.session, "ws": self.wid, "busy": self.busy, "title": self.title,
                 "started": self.started, "last": self.last, "alive": self.alive}
 
 

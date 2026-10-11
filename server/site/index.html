@@ -51,7 +51,11 @@ h2{font-family:var(--mono);font-size:26px;letter-spacing:-1px;margin-bottom:10px
 .grid p{color:var(--dim);font-size:14.5px;line-height:1.6}
 .code{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:20px;font:13px/1.65 var(--mono);overflow-x:auto;white-space:pre}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
-@media (max-width:760px){.two{grid-template-columns:1fr}nav .links a.hide{display:none}}
+@media (max-width:760px){.two{grid-template-columns:1fr}nav .links a.hide{display:none}
+  .cmd{flex-wrap:wrap;border-radius:0 10px 10px 10px}.cmd code{white-space:normal;word-break:break-all;flex-basis:calc(100% - 24px)}.copy{margin-left:auto}
+  .term pre{font-size:11px;line-height:1.5;padding:14px 12px;min-height:280px}.code{font-size:12px;padding:14px}
+  td:first-child{white-space:normal;padding-right:12px}.hero{padding:40px 0 20px}section{padding-top:56px}
+  .grid div{padding:20px}footer{padding:60px 0 36px}}
 .k{color:#c39bff}.s{color:#a5d6a7}.cm{color:var(--dim)}.fn{color:var(--b)}
 table{width:100%;border-collapse:collapse;font-size:14px}
 td{padding:10px 0;border-bottom:1px solid var(--line);vertical-align:top}
@@ -170,7 +174,14 @@ document.getElementById("cp").onclick = e => {
 const pre = document.getElementById("demo");
 const SP = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const W = 64;
+let W = 64;
+function fitDemo() {  // terminal demo width follows the screen
+  const probe = document.createElement("span"); probe.textContent = "M".repeat(10); probe.style.font = getComputedStyle(pre).font;
+  probe.style.visibility = "hidden"; probe.style.position = "absolute"; document.body.appendChild(probe);
+  const cw = probe.getBoundingClientRect().width / 10; probe.remove();
+  W = Math.max(34, Math.min(64, Math.floor((pre.clientWidth - 28) / cw) - 4));
+}
+fitDemo(); addEventListener("resize", fitDemo);
 function bar(f, w) { const n = Math.floor(f * w); return `<span class="c-m">${"█".repeat(n)}</span><span class="c-f">${"░".repeat(w - n)}</span>`; }
 const user = "add retries to the http client and run tests";
 let t = 0;
@@ -178,25 +189,27 @@ function frame() {
   t++;
   const typed = user.slice(0, Math.min(user.length, t));
   const T = t - user.length - 6;
-  let out = `<span class="c-a">  █▀▄▀█ █▀▀</span>\n<span class="c-b">  █ ▀ █ ██▄</span>   <span class="c-d">me · ~/code/api</span>\n\n`;
-  out += `<span class="c-y">›</span> ${esc(typed)}${T < 0 ? '<span class="blink">▌</span>' : ""}\n\n`;
+  let out = `  <span class="c-a">◆ me</span> <span class="c-d">v__VERSION__ · ~/code/api</span>\n  <span class="c-ok">◆ AGENTS.md loaded</span>\n\n`;
+  out += `<span class="c-y">›</span> ${esc(typed.length > W - 4 ? typed.slice(0, W - 4) + "\n  " + typed.slice(W - 4) : typed)}${T < 0 ? '<span class="blink">▌</span>' : ""}\n\n`;
   if (T > 0) out += `  <span class="c-f">∴</span> <span class="c-d"><i>thought for 1.2s</i></span>\n`;
   if (T > 4) out += `  ${T > 9 ? '<span class="c-ok">✓</span>' : '<span class="c-a">' + SP[t % 10] + '</span>'} <b>read</b> <span class="c-d">src/http.py</span>${T > 9 ? '  <span class="c-f">0.0s</span>' : ""}\n`;
   if (T > 10) out += `  ${T > 15 ? '<span class="c-ok">✓</span>' : '<span class="c-a">' + SP[t % 10] + '</span>'} <b>edit</b> <span class="c-d">src/http.py</span>\n    <span class="c-f">│</span> <span class="c-ok">+    for attempt in range(retries):</span>\n    <span class="c-f">│</span> <span class="c-ok">+        try: return self._send(req)</span>\n`;
   if (T > 16) {
     const p = Math.min(1, (T - 16) / 24);
     if (p < 1) {
-      out += `  <span class="c-m">╭─  pytest · run ${"─".repeat(36)} ${(p * 3.1).toFixed(1)}s ─╮</span>\n`;
-      out += `  <span class="c-m">│</span> tests ${bar(p, 40)} <span class="c-d">${Math.floor(p * 48)}/48</span>${" ".repeat(5)}<span class="c-m">│</span>\n`;
-      out += `  <span class="c-m">│</span> <span class="c-m">›</span> <span class="c-d">test_retry_backoff PASSED</span>${" ".repeat(27)}<span class="c-m">│</span>\n`;
-      out += `  <span class="c-m">╰${"─".repeat(56)}╯</span>\n`;
+      const iw = W - 8, bw = iw - 15;
+      out += `  <span class="c-m">╭─ pytest · run ${"─".repeat(Math.max(1, iw - 19))} ${(p * 3.1).toFixed(1)}s ─╮</span>\n`;
+      out += `  <span class="c-m">│</span> tests ${bar(p, bw)} <span class="c-d">${String(Math.floor(p * 48)).padStart(2)}/48</span> <span class="c-m">│</span>\n`;
+      out += `  <span class="c-m">│</span> <span class="c-m">›</span> <span class="c-d">${"test_retry_backoff PASSED".slice(0, iw - 3).padEnd(iw - 3)}</span><span class="c-m">│</span>\n`;
+      out += `  <span class="c-m">╰${"─".repeat(iw + 1)}╯</span>\n`;
     } else out += `  <span class="c-ok">✓</span> <span class="c-m"> pytest</span> <span class="c-d">·</span> run  <span class="c-f">3.1s</span>  <span class="c-d">48 passed</span>\n`;
   }
-  if (T > 42) out += `\n  Added retries with exponential backoff to <span class="c-b">HttpClient._send</span>.\n  All 48 tests pass.\n\n  <span class="c-ok">✓</span> <span class="c-d">6.8s  ·  ↑ 4.1k  ↓ 312  ·  4.4k tokens</span>\n`;
+  if (T > 42) out += `\n  Added retries with backoff to\n  <span class="c-b">HttpClient._send</span>. All 48 tests pass.\n\n  <span class="c-ok">✓</span> <span class="c-d">6.8s · ↑ 4.1k ↓ 312 · 4.4k tokens</span>\n`;
   const lines = out.split("\n").length;
   out += "\n".repeat(Math.max(0, 15 - lines));
-  out += `<span class="c-a">╭${"─".repeat(W)}╮</span>\n<span class="c-a">│</span> <span class="c-a">›</span> <span class="c-f">ask anything, / for commands</span>${" ".repeat(W - 32)}<span class="c-a">│</span>\n<span class="c-a">╰${"─".repeat(W)}╯</span>\n`;
-  out += ` <span class="c-b">●</span> gpt-5 <span class="c-d">· high   ctx</span> ${bar(T > 42 ? .13 : .02, 10).replace(/c-m/g, "c-ok")} <span class="c-d">4.4k/400k 1%   ↑4.1k ↓312</span>   <span class="c-ok">☁ ✓</span>`;
+  const ph = "ask anything, / for commands".slice(0, W - 10);
+  out += `<span class="c-a">╭${"─".repeat(W)}╮</span>\n<span class="c-a">│</span> <span class="c-a">code ›</span> <span class="c-f">${ph}</span>${" ".repeat(Math.max(0, W - ph.length - 9))}<span class="c-a">│</span>\n<span class="c-a">╰${"─".repeat(W)}╯</span>\n`;
+  out += ` <span class="c-b">●</span> gpt-5 <span class="c-d">· high  ctx</span> ${bar(T > 42 ? .13 : .02, 8).replace(/c-m/g, "c-ok")} <span class="c-d">${W > 50 ? "4.4k/400k 1%  ↑4.1k ↓312  " : "1%  "}</span><span class="c-ok">◆ AGENTS.md</span>`;
   pre.innerHTML = out;
   if (T > 80) t = 0;
 }

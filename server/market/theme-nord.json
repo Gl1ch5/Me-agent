@@ -1,0 +1,23 @@
+{
+ "name": "nord",
+ "label": "Nord",
+ "dark": true,
+ "description": "arctic, north-bluish",
+ "colors": {
+  "bg": "#2e3440",
+  "bg2": "#3b4252",
+  "bg3": "#434c5e",
+  "line": "#4c566a",
+  "fg": "#eceff4",
+  "dim": "#a3abbd",
+  "faint": "#616e88",
+  "accent": "#88c0d0",
+  "accent2": "#a3be8c",
+  "ok": "#a3be8c",
+  "err": "#bf616a",
+  "warn": "#ebcb8b",
+  "user": "#ebcb8b",
+  "code_bg": "#3b4252",
+  "sel": "#434c5e"
+ }
+}

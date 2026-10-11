@@ -1,37 +1,61 @@
-# me
+<div align="center">
 
-Minimal coding agent that ships as **one Python file** (`me.py`, stdlib only). Config, API keys, prompt, skills, plugins, chats and project files sync to your cloud account — continue in the terminal, the browser, the cloud sandbox or Telegram.
+# ◆ me
+
+**Your coding agent, everywhere.** One Python file. Everything synced.
+
+[**me-agent.ru**](http://64.188.66.249:7777) · [Releases](https://github.com/Gl1ch5/Me-agent/releases) · [Web app](http://64.188.66.249:7777/app) · [Account](http://64.188.66.249:7777/account)
+
+</div>
 
 ```sh
-curl -fsSL https://me-agent.ru/i | sh      # macOS / Linux / Termux
-irm https://me-agent.ru/i.ps1 | iex        # Windows
+curl -fsSL http://64.188.66.249:7777/i | sh       # macOS · Linux · Android (Termux)
+irm http://64.188.66.249:7777/i.ps1 | iex         # Windows
 ```
 
-| command | |
+> Domain `me-agent.ru` with HTTPS replaces the IP as soon as `.ru` delegation propagates.
+
+---
+
+## Why
+
+Every agent makes you rebuild your setup on each machine. **me** keeps your models, API keys, prompt, skills, plugins, themes, agents, chats **and project files** in your account. Open a terminal, a browser tab, the phone app or Telegram — you continue exactly where you left off, live.
+
+| | |
 |---|---|
-| `me` | full-screen TUI |
-| `me web [port]` | browser UI on `localhost:8080` (`--lan` for other devices) |
-| `me -p "task" [-y]` | headless one-shot |
-| `me --rpc` | JSON-lines agent over stdio (used by the cloud runner) |
+| **One file, no deps** | `me.py` is stdlib-only Python 3.8+. ~1k tokens of system prompt + tools at start. |
+| **Any model** | Any OpenAI-compatible API — chat/completions or responses, reasoning effort, model sync. |
+| **Agent modes** | `code` · `design` (DESIGN.md first) · `plan` · `review` · `debug` · `docs` · `research` + marketplace (devops, tester, security, mobile). |
+| **AGENTS.md** | Always loaded into the session and shown in the UI. `/init` writes it; the agent keeps it current. |
+| **Cloud sandbox** | Sessions run isolated on the server (bubblewrap). Start on the laptop, continue on the phone — files and history follow. |
+| **Live sync** | Every agent step is saved and pushed; other devices update within a second. |
+| **Skills** | One `.py` = guide + actions with live progress, questions (`ctx.choose`), tables. Not MCP — ~15 tokens idle. |
+| **Plugins** | Change me itself: commands, tools, keys, status bar, themes. Voice input (hold space → Groq Whisper) ships as one. |
+| **Themes** | Terminal, web app and site share one palette. Nord, Tokyo Night, Gruvbox, Catppuccin, Rosé Pine… |
+| **Search** | `web_search` via DeepSeek's built-in search (DuckDuckGo fallback) + `web_fetch`. |
+| **Everywhere** | TUI · `me web` (localhost:8080) · cloud `/app` · Windows app · Android app · Telegram bot. |
 
-## Layout
+## Use
+
+| | |
+|---|---|
+| `me` | full-screen TUI — `/` for commands |
+| `me web [port]` | browser UI with the local agent (`--lan` for other devices) |
+| `me -p "task" [-y]` | one-shot, headless |
+| `me --rpc` | JSON-lines agent over stdio (what the cloud runner uses) |
+
+Key commands: `/agent` mode · `/model` · `/theme` · `/init` · `/compact` · `/autocompact` · `/skills` · `/plugins` · `/workspace` · `/sessions` · `/login` · `/2fa` · `/quit`
+
+## Develop
 
 ```
-src/NN_*.py      the agent, split by concern — edit these
-src/webui.html   chat UI shared by `me web` and the cloud /app
-build.py         concatenates src/ → me.py (single file, committed)
-server/          FastAPI backend: accounts, TOTP, sync, workspaces, sandbox runner, Telegram bot, site
-server/market/   built-in skills & plugins published to the marketplace
-tests/           test_core.py (offline, mock LLM) · test_cloud.py (needs a running server)
+src/NN_*.py      the agent, split by concern (TUI = render / input / commands mixins)
+src/web/         web UI: index.html + style.css + NN_*.js
+build.py         src/ → me.py (single file, committed; CI checks it is fresh)
+server/          FastAPI: accounts, TOTP, sync, workspaces, sandbox runner, Telegram, site
+server/market/   built-in skills, plugins, themes and agents
+apps/            desktop (pywebview) and Android (WebView) shells
+tests/           test_core.py (offline) · test_cloud.py (needs a server)
 ```
 
-Edit `src/`, then `python3 build.py`. CI fails if `me.py` is stale.
-
-## Extending
-
-- **Skills** — one `.py` (guide + `@action` functions, run in a subprocess with live progress) or `.md` (guide only). ~15 tokens idle.
-- **Plugins** — `.py` files executed inside me: `@plugin.command`, `@plugin.tool`, `@plugin.on("key"|"event"|"tick"|"status"|"system_prompt"|"before_tool"|"startup")`, plus the whole `me` module to patch. The default `voice` plugin (hold space → Groq Whisper) is an example.
-
-## Cloud capacity (2 vCPU / 4 GB server)
-
-A sandbox is `me --rpc` in bubblewrap: ~25–35 MB RAM idle, mostly waiting on the LLM API. Limits: 1.5 GB address space, 256 processes, 200 MB per file, 100 MB per workspace, 6 sandboxes at once (2 per user), idle stop after 15 min. That comfortably serves ~10 active users; add servers by running more runners behind the same API later.
+Edit `src/`, run `python3 build.py`, then `python3 tests/test_core.py`.
