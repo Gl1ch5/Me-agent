@@ -1,0 +1,6 @@
+#!/bin/sh
+# Promo recording only: stands in for a microphone. Writes a short tone (the fake transcriber ignores it) when stopped.
+for last; do :; done
+out="$last"
+trap 'ffmpeg -loglevel quiet -y -f lavfi -i "sine=frequency=440:duration=1.5" -ac 1 -ar 16000 "$out"; exit 0' INT TERM
+while :; do sleep 0.05; done

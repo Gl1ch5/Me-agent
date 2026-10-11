@@ -1,0 +1,121 @@
+name: nightly
+# Every night (03:00 UTC) and on demand: test, record the promo clips, rebuild the `nightly` pre-release.
+# GitHub only runs schedules from the default branch; workflow_dispatch works from any branch.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python build.py --check
+      - run: python tests/test_core.py
+      - uses: actions/upload-artifact@v4
+        with: {name: me-py, path: me.py}
+
+  promo:
+    # a failing promo must not block the nightly; the release says "promo failed" instead of shipping without a note
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install fastapi uvicorn playwright pyte pillow
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: python3 -m playwright install --with-deps chromium --only-shell
+      - run: scripts/build_promo.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: promo, path: dist/promo, if-no-files-found: ignore}
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pywebview==5.3.2 pyinstaller==6.11.1
+      - run: copy me.py apps\desktop\me.py
+      - run: pyinstaller --noconfirm --onefile --windowed --name me-desktop --paths apps/desktop --hidden-import me apps/desktop/me_desktop.py
+      - uses: actions/upload-artifact@v4
+        with: {name: me-desktop, path: dist/me-desktop.exe}
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: gradle/actions/setup-gradle@v4
+        with: {gradle-version: "8.9"}
+      - name: build apk
+        working-directory: apps/android
+        run: |
+          VERSION_NAME=$(grep -m1 '^VERSION = ' ../../src/00_head.py | cut -d'"' -f2) VERSION_CODE=${{ github.run_number }} gradle assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../me-android.apk
+      - uses: actions/upload-artifact@v4
+        with: {name: me-android, path: me-android.apk}
+
+  release:
+    needs: [test, promo, windows, android]
+    if: ${{ always() && needs.test.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/download-artifact@v4
+        with: {path: dist-in, merge-multiple: true}
+        continue-on-error: true
+      - name: assemble nightly files
+        id: pack
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^VERSION = ' src/00_head.py | cut -d'"' -f2)
+          DATE=$(date -u +%Y-%m-%d)
+          mkdir -p release
+          cp me.py release/
+          [ -f dist-in/me-desktop.exe ] && cp dist-in/me-desktop.exe release/ || true
+          [ -f dist-in/me-android.apk ] && cp dist-in/me-android.apk release/ || true
+          if [ "${{ needs.promo.result }}" = "success" ]; then
+            cp dist-in/promo-*.mp4 dist-in/promo-*.webp release/
+            PROMO="promo: ✓ clips attached"
+          else
+            PROMO="promo failed — no clips in this nightly (see the promo job log)"
+          fi
+          CHANGES=$(git log --since="1 day ago" --no-merges --pretty='- %s' | head -30)
+          [ -n "$CHANGES" ] || CHANGES="- no commits in the last 24 h"
+          {
+            echo "## me v$VERSION · nightly $DATE"
+            echo
+            echo "Commit \`$(git rev-parse --short HEAD)\` · $PROMO"
+            echo
+            echo "### Changes in the last 24 h"
+            echo "$CHANGES"
+          } > NOTES.md
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          echo "tag_title=nightly · v$VERSION · $DATE" >> "$GITHUB_OUTPUT"
+      - name: publish nightly (tag recreated every day)
+        run: |
+          gh release delete nightly --cleanup-tag --yes 2>/dev/null || git push origin --delete nightly 2>/dev/null || true
+          gh release create nightly release/* --prerelease --target "$GITHUB_SHA" \
+            --title "${{ steps.pack.outputs.tag_title }}" --notes-file NOTES.md
