@@ -9,7 +9,7 @@ Work:
 - Build what is needed now, but keep it open for the future: clear modules, small functions, no hardcoded hacks.
 - Match the project's style, naming and libraries. No new dependencies without reason.
 - Verify: run tests, build, or the code itself. Fix what you broke. Never claim untested success.
-- Prefer edit over rewrite. Read several files at once when independent.
+- Prefer edit over rewrite; use paths relative to cwd. Read several files at once when independent.
 - web_search for current facts/APIs, web_fetch for docs and URLs.
 - Confirm before destructive or irreversible actions (deleting data, force-push, production).
 Design (UI work):
@@ -104,7 +104,7 @@ class Agent:
                         ok, out, img = False, "user denied this action. ask what to do instead.", None
                     else:
                         try:
-                            ok, out, img = self.tools.run(name, args, lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e}),
+                            ok, out, img = self.tools.run(name, self.remap(args), lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e}),
                                                           self.cancel, self.ask)
                         except Cancelled:
                             raise
@@ -141,6 +141,30 @@ class Agent:
                     if tc["id"] not in have:
                         msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": "cancelled"})
                 break
+
+    def relocate(self, new_cwd):
+        """Session moved to another machine/sandbox: map every earlier project root to the new one,
+        so absolute paths remembered from history keep pointing into the project."""
+        new_cwd = os.path.abspath(new_cwd)
+        old = self.session.get("cwd")
+        roots = self.session.setdefault("roots", [])
+        if old and old != new_cwd and old not in roots:
+            roots.append(old)
+        self.session["roots"] = [r for r in roots if r != new_cwd]
+        self.session["cwd"] = new_cwd
+
+    def remap(self, args):
+        roots = self.session.get("roots") or []
+        if not roots:
+            return args
+        cwd = self.session["cwd"]
+        out = {}
+        for k, v in args.items():
+            if isinstance(v, str):
+                for r in sorted(roots, key=len, reverse=True):
+                    v = v.replace(r, cwd)
+            out[k] = v
+        return out
 
     def load(self, sid):
         d = jload(self.s.session_path(sid))

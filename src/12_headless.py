@@ -78,7 +78,7 @@ def run_rpc(store):
             if not ag.load(cmd["id"]) and cloud.online:
                 cloud.sync()
                 ag.load(cmd["id"])
-            ag.session["cwd"] = os.getcwd()
+            ag.relocate(os.getcwd())
             if os.environ.get("ME_WS_ID"):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"], "title": ag.session.get("title", "")})

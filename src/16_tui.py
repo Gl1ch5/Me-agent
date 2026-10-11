@@ -1001,7 +1001,7 @@ class TUI:
         Path(path).mkdir(parents=True, exist_ok=True)
         up, down = self.ws.sync(wid)
         os.chdir(path)
-        self.agent.session["cwd"] = path
+        self.agent.relocate(path)
         self.agent.session["ws"] = wid
         self.files_cache = None
         self.toast(f"☁ {name}: ↓{down} files · cwd {path}", "ok")

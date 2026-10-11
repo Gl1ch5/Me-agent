@@ -84,6 +84,15 @@ class WebSession:
             return {"ok": True}
         if path == "/load":
             a.load(body["id"])
+            wid = a.session.get("ws")
+            local = self.ws.local_path(wid) if wid else None
+            if local and os.path.isdir(local):
+                try:
+                    self.ws.sync(wid)
+                except CloudError:
+                    pass
+                os.chdir(local)
+                a.relocate(local)
             return self.state()
         if path == "/cwd":
             d = os.path.abspath(os.path.expanduser(body["path"]))
