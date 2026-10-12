@@ -3004,7 +3004,8 @@ class Term:
             self.fd = sys.stdin.fileno()
             self.old = termios.tcgetattr(self.fd)
             tty.setraw(self.fd)
-        self.write(f"{CSI}?1049h{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
+        # ?1007l: no "alternate scroll" - otherwise the wheel is sent as up/down arrows and pages through input history
+        self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
     def set_mouse(self, on):
@@ -3012,7 +3013,7 @@ class Term:
         self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
 
     def stop(self):
-        self.write(f"{CSI}?1000l{CSI}?1006l{CSI}?2004l{CSI}?25h{CSI}?1049l")
+        self.write(f"{CSI}?1000l{CSI}?1006l{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
         if WIN:
             import ctypes
             k = ctypes.windll.kernel32
@@ -3079,10 +3080,8 @@ def parse_keys(buf):
             m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([mM])", buf[i:])
             if m:
                 b = int(m.group(1))
-                if b == 64:
-                    keys.append("wheel-up")
-                elif b == 65:
-                    keys.append("wheel-down")
+                if b & 64 and not b & 32:  # wheel, with or without shift/ctrl/alt
+                    keys.append("wheel-up" if b & 3 == 0 else "wheel-down" if b & 3 == 1 else "unknown")
                 i += m.end()
                 continue
             m = re.match(r"\x1b(\[[\d;]*[~A-Za-z]|O[A-Z])", buf[i:])
@@ -3618,11 +3617,11 @@ class TUIRender:
             right.add(("full " if pm == "full" else "read-only "), rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         cs = self.cloud.status
         if self.cloud.online:
-            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)] + " ", TH["accent"]),
-                   "error": ("☁ !", TH["err"])}.get(cs, ("☁", TH["dim"]))
+            sym = {"synced": ("≈ ✓", TH["ok"]), "syncing": ("≈ " + SPIN[self.frame % len(SPIN)] + " ", TH["accent"]),
+                   "error": ("≈ !", TH["err"])}.get(cs, ("≈", TH["dim"]))
             right.add(sym[0] + " ", rgb(sym[1])).add(self.s.auth.get("user", ""), dim)
         else:
-            right.add("☁ offline", faint)
+            right.add("≈ offline", faint)
         if self.update_avail:
             right.add(f"  ↑ v{self.update_avail} /update", rgb(TH["accent"]))
         right.add(" ")
@@ -3654,11 +3653,11 @@ class TUIRender:
         if pm != "ask":
             right.add("full " if pm == "full" else "ro ", rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         if self.cloud.online:
-            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁ !", TH["err"])}.get(
-                self.cloud.status, ("☁", TH["dim"]))
+            sym = {"synced": ("≈ ✓", TH["ok"]), "syncing": ("≈ " + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("≈ !", TH["err"])}.get(
+                self.cloud.status, ("≈", TH["dim"]))
             right.add(sym[0], rgb(sym[1]))
         else:
-            right.add("☁–", faint)
+            right.add("≈–", faint)
         if self.update_avail:
             right.add(" ↑", rgb(TH["accent"]))
         right.add(" ")
@@ -4122,7 +4121,7 @@ class TUIInput:
             return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
-            self.info(f"⏳ queued ({len(self.pending)}): {text[:100]}", "dim")
+            self.info(f"◌ queued ({len(self.pending)}): {text[:100]}", "dim")
             return
         self.dispatch(text)
 
