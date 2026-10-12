@@ -84,6 +84,7 @@ class TUIInput:
             self.cur = s
         elif k == "ctrl-l":
             self.term.write(CSI + "2J")
+            self._prev_rows = None
         elif k == "ctrl-o":
             for b in reversed(self.blocks):
                 if b.kind in ("tool", "skill", "reason") and b.done:
