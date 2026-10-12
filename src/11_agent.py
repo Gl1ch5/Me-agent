@@ -60,6 +60,7 @@ class Agent:
         self.depth = 0  # subagent nesting
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
+        self._turn_lock = threading.Lock()
         self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
 
     def system_prompt(self):
@@ -115,7 +116,11 @@ class Agent:
         return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
-        """Blocking. Runs one user turn to completion."""
+        """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""
+        with self._turn_lock:
+            return self._run(text, images)
+
+    def _run(self, text, images=()):
         pr = self.preset()
         m = self.s.model(pr.get("model") or None)
         if m and pr.get("effort"):
@@ -127,6 +132,7 @@ class Agent:
         self.cancel.clear()
         self.snap = {}
         start_idx = len(self.session["messages"])
+        self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
@@ -243,7 +249,10 @@ class Agent:
             for tc, name, args, tid, _ in prepared:
                 def work(tc=tc, name=name, args=args, tid=tid):
                     t1 = time.time()
-                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    try:
+                        results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    except Exception as e:  # incl. Cancelled: every call still gets a result
+                        results[tid] = (False, "cancelled" if isinstance(e, Cancelled) else f"error: {type(e).__name__}: {e}", None, time.time() - t1)
                 th = threading.Thread(target=work, daemon=True)
                 th.start()
                 ths.append(th)
@@ -268,8 +277,10 @@ class Agent:
     def _exec(self, name, args, tid, pr):
         """Checks + runs one tool. Returns (ok, output, image)."""
         temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
-        if args is None:
+        if not isinstance(args, dict):
             return False, "error: arguments were not valid JSON — send a JSON object", None
+        if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
+            return False, "error: path must be a string", None
         if name not in {t["name"] for t in self.tool_schemas()}:
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
         if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
@@ -412,7 +423,10 @@ class Agent:
         if not self.snap or not self.persist:
             return
         files = dict(self.snap)
-        Checkpoints(self.s, self.session["id"]).push({"msgs": start_idx, "files": files, "t": time.time()})
+        gen = self.session.get("compactions", 0)
+        # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
+        msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
+        Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
         diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
@@ -425,7 +439,7 @@ class Agent:
         if not cp:
             return {"ok": False, "text": "nothing to undo"}
         restore_files(cp["files"])
-        if 0 <= cp["msgs"] <= len(self.session["messages"]):
+        if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
         names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
@@ -531,9 +545,11 @@ class Agent:
         cwd = self.session["cwd"]
         out = {}
         for k, v in args.items():
-            if isinstance(v, str):
+            if k == "path" and isinstance(v, str):  # only the path itself: never rewrite file content or commands
                 for r in sorted(roots, key=len, reverse=True):
-                    v = v.replace(r, cwd)
+                    if v == r or v.startswith(r.rstrip("/\\") + os.sep) or v.startswith(r.rstrip("/\\") + "/"):
+                        v = cwd + v[len(r.rstrip("/\\")):]
+                        break
             out[k] = v
         return out
 

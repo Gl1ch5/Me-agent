@@ -4,9 +4,9 @@
 class TUIRender:
     # ─── rendering ───
     def block_lines(self, b, width):
-        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill"):
+        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill", "welcome"):
             return b._cache[1]
-        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats", "welcome", "assistant") and b.kind != "assistant":
+        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats"):
             return b._cache[1]
         L = self._render_block(b, width)
         b._cache = (width, L)
@@ -348,8 +348,9 @@ class TUIRender:
             pre = f" {mode} › "
             pw = swidth(pre)
             in_rows, (cr, cc) = self.input_lines(W - 2 - (pw - 3))
-            in_rows = in_rows[-8:] if len(in_rows) > 8 else in_rows
-            cr = min(cr, len(in_rows) - 1)
+            first = max(0, min(cr, len(in_rows) - 8))  # keep the cursor row inside the 8 visible rows
+            in_rows = in_rows[first:first + 8]
+            cr = max(0, min(cr - first, len(in_rows) - 1))
             busy = self.agent.busy
             box = []
             bcol = rgb(TH["accent"] if not busy else TH["faint"])
@@ -397,7 +398,7 @@ class TUIRender:
                     l.add((" ▸ " if selected else "   ") + lab.ljust(18), st + rgb(TH["accent"] if selected else TH["fg"]))
                     l.add(" " + det[: W - 30], st + rgb(TH["dim"]))
                     pop.append(l)
-            avail = H - len(bottom) - len(pop)
+            avail = max(1, H - len(bottom) - len(pop))
             # transcript
             lines = []
             for b in self.blocks:
@@ -407,7 +408,7 @@ class TUIRender:
             end = len(lines) - self.scroll
             view = lines[max(0, end - avail):end]
             view = [Line()] * (avail - len(view)) + view
-            if self.scroll:
+            if self.scroll and view:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
             out = []
