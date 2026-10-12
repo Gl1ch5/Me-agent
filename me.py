@@ -12,11 +12,11 @@ Layers (top → bottom), each usable on its own:
 Stdlib only. Python 3.8+.
 """
 import ast, base64, difflib, fnmatch, glob, hashlib, io, json, os, platform, queue, re
-import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, unicodedata
+import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.12"
+VERSION = "0.5.13"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -1911,16 +1911,21 @@ def mcp_describe(tools):
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | date: {date}
 
+Scope (most important):
+- Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
+- Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
+- Do not refactor, reformat, rename, add features, docs or tests nobody asked for. Mention worthwhile extras in one line instead of doing them.
+- If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go.
+
 Work:
-- Read the relevant code before changing it. Ask only when truly ambiguous.
-- Small steps; for 3+ steps keep a todo list current.
-- Build what is needed now, open for later: clear modules, small functions, no hacks. Match the project's style; no needless deps.
-- Before saying done, verify: run tests, build, lint or the code. Never claim untested success.
-- Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- For 3+ step tasks keep a todo list current; skip it for small ones.
+- Match the project's style; clean small functions; no hacks, no needless deps.
+- After changing code, verify it (run tests, build, lint or the code). Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
 - Confirm before destructive or irreversible actions.
 UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
-Reply: concise. Say what changed and how you verified it.{extra}{skills}{project}{user}"""
+Reply: in the user's language, concise. After changes say what changed and how you verified it.{extra}{skills}{project}{user}"""
 
 
 
@@ -1975,8 +1980,8 @@ class Agent:
         if "AGENTS.md" in self.context_files():
             project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
         else:
-            project += ("\n\nNo AGENTS.md here yet. Once you understand the project, create a concise AGENTS.md "
-                        "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
+            project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
+                        "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
         pr = self.preset()
         if pr.get("prompt"):
             project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
@@ -2993,9 +2998,7 @@ class Term:
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            # VT input for keys. Do NOT add ENABLE_MOUSE_INPUT / drop QuickEdit here: that garbled typing in cmd.exe.
-            # The wheel arrives as VT mouse sequences (?1000h/?1006h below) where the console supports them.
-            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
+            self._win_in_mode(mouse)
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty
@@ -3006,8 +3009,19 @@ class Term:
         self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
+    def _win_in_mode(self, mouse):
+        """VT input for keys; with mouse on also ENABLE_MOUSE_INPUT + QuickEdit off, so conhost reports the wheel.
+        Input is read with ReadConsoleInputW (see _readch_win), so mouse records never reach the key stream."""
+        import ctypes
+        flags = (self.old | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
+        if mouse:
+            flags = (flags | 0x0010 | 0x0080) & ~0x0040
+        ctypes.windll.kernel32.SetConsoleMode(ctypes.windll.kernel32.GetStdHandle(-10), flags)
+
     def set_mouse(self, on):
         self.mouse = on
+        if WIN and self.old is not None:
+            self._win_in_mode(on)
         self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
 
     def stop(self):
@@ -3025,15 +3039,41 @@ class Term:
         sys.stdout.write(s)
         sys.stdout.flush()
 
+    def _readch_win(self):
+        """Block for console input records; return key text (VT sequences included) plus synthesized wheel sequences."""
+        import ctypes
+        from ctypes import wintypes as w
+
+        class KEY(ctypes.Structure):
+            _fields_ = [("down", w.BOOL), ("repeat", w.WORD), ("vk", w.WORD), ("scan", w.WORD), ("ch", w.WCHAR), ("state", w.DWORD)]
+
+        class MOUSE(ctypes.Structure):
+            _fields_ = [("x", w.SHORT), ("y", w.SHORT), ("buttons", w.DWORD), ("state", w.DWORD), ("flags", w.DWORD)]
+
+        class U(ctypes.Union):
+            _fields_ = [("key", KEY), ("mouse", MOUSE), ("pad", ctypes.c_byte * 16)]
+
+        class REC(ctypes.Structure):
+            _fields_ = [("type", w.WORD), ("u", U)]
+
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)
+        recs, n = (REC * 64)(), w.DWORD()
+        if not k.ReadConsoleInputW(h, recs, 64, ctypes.byref(n)):
+            raise OSError("ReadConsoleInputW failed")
+        out = []
+        for r in recs[: n.value]:
+            if r.type == 1 and r.u.key.down and r.u.key.ch != "\x00":
+                out.append(r.u.key.ch * max(1, r.u.key.repeat))
+            elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
+                delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
+                out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+        # join surrogate halves (emoji etc.) that arrive as separate records
+        return "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
     def _readch(self):
         if WIN:
-            import msvcrt
-            c = msvcrt.getwch()
-            if c in ("\x00", "\xe0"):
-                c2 = msvcrt.getwch()
-                return {"H": "\x1b[A", "P": "\x1b[B", "K": "\x1b[D", "M": "\x1b[C", "G": "\x1b[H", "O": "\x1b[F", "S": "\x1b[3~",
-                        "I": "\x1b[5~", "Q": "\x1b[6~"}.get(c2, "")
-            return c
+            return self._readch_win()
         b = os.read(self.fd, 4096)
         return b.decode("utf-8", "replace")
 
@@ -5317,7 +5357,12 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     try:
                         self.draw()
                     except Exception as e:
-                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e}")
+                        try:  # keep the full traceback: the one-line message alone is not enough to fix it
+                            with open(self.s.home / "render-error.log", "a", encoding="utf-8") as f:
+                                f.write(f"{time.strftime('%F %T')} me {VERSION}\n{traceback.format_exc()}\n")
+                        except OSError:
+                            pass
+                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e} (details: {self.s.home / 'render-error.log'})")
                         self._prev_rows = None
                     last = now
         finally:

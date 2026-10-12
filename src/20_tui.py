@@ -299,7 +299,12 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     try:
                         self.draw()
                     except Exception as e:
-                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e}")
+                        try:  # keep the full traceback: the one-line message alone is not enough to fix it
+                            with open(self.s.home / "render-error.log", "a", encoding="utf-8") as f:
+                                f.write(f"{time.strftime('%F %T')} me {VERSION}\n{traceback.format_exc()}\n")
+                        except OSError:
+                            pass
+                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e} (details: {self.s.home / 'render-error.log'})")
                         self._prev_rows = None
                     last = now
         finally:
