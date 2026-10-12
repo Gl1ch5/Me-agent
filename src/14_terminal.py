@@ -141,6 +141,7 @@ class Term:
             h_out, h_in = k.GetStdHandle(-11), k.GetStdHandle(-10)
             mode = ctypes.c_uint32()
             k.GetConsoleMode(h_out, ctypes.byref(mode))
+            self.old_out, self.old_cp = mode.value, k.GetConsoleOutputCP()
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
@@ -177,6 +178,9 @@ class Term:
             k = ctypes.windll.kernel32
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
+            if getattr(self, "old_out", None) is not None:
+                k.SetConsoleMode(k.GetStdHandle(-11), self.old_out)
+                k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
@@ -214,8 +218,12 @@ class Term:
             elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
                 delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
                 out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
-        # join surrogate halves (emoji etc.) that arrive as separate records
-        return "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
+        s = getattr(self, "_hi_sur", "") + "".join(out)
+        self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
+        if self._hi_sur:
+            s = s[:-1]
+        return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
     def _readch(self):
         if WIN:

@@ -1,7 +1,7 @@
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
-cwd: {cwd} | os: {os} | date: {date}
+cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
 
 Scope (most important):
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
@@ -93,6 +93,7 @@ class Agent:
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
+                             shell="cmd.exe (bash tool runs Windows commands: dir, type, findstr, set; or powershell -NoProfile -Command \"...\"; no POSIX syntax)" if WIN else os.environ.get("SHELL", "/bin/sh"),
                              extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):

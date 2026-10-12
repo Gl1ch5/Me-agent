@@ -11,9 +11,17 @@ def jload(p, default=None):
 def jsave(p, data):
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
-    os.replace(tmp, p)
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=p.name + ".", suffix=".tmp")  # unique: two threads may save at once
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, indent=1))
+    for i in range(10):
+        try:
+            return os.replace(tmp, p)
+        except PermissionError:  # Windows: a reader, antivirus or OneDrive holds the file for a moment
+            if i == 9:
+                os.unlink(tmp)
+                raise
+            time.sleep(0.05 * (i + 1))
 
 
 def human(n):

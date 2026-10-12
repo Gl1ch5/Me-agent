@@ -58,6 +58,14 @@ def shell_env(secrets):
     return env
 
 
+def _decode_out(b):
+    """Command output: UTF-8, else (Windows tools writing to a pipe) the OEM code page, e.g. cp866 for Russian cmd.exe."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("oem" if WIN else "utf-8", "replace")
+
+
 def run_shell(cmd, timeout, cancel, env=None):
     kw = {} if WIN else {"start_new_session": True}
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
@@ -67,19 +75,22 @@ def run_shell(cmd, timeout, cancel, env=None):
     while proc.poll() is None:
         if cancel.is_set() or time.time() - t0 > timeout:
             try:
-                os.killpg(proc.pid, signal.SIGKILL) if not WIN else proc.kill()
+                if WIN:  # kill the whole tree: proc.kill() only ends cmd.exe and leaves its children holding the pipe
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10)
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
             except Exception:
                 proc.kill()
             proc.wait()
             if cancel.is_set():
                 raise Cancelled()
             time.sleep(0.1)
-            return f"{(out[0] if out else b'').decode('utf-8', 'replace')}\n[timed out after {timeout}s]"
+            return f"{_decode_out(out[0] if out else b'')}\n[timed out after {timeout}s]"
         time.sleep(0.05)
     time.sleep(0.05)
     for _ in range(40):
         if out:
             break
         time.sleep(0.05)
-    text = (out[0] if out else b"").decode("utf-8", "replace")
+    text = _decode_out(out[0] if out else b"")
     return clip(text, 30000) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")

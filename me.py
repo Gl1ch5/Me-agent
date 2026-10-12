@@ -36,9 +36,17 @@ def jload(p, default=None):
 def jsave(p, data):
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
-    os.replace(tmp, p)
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=p.name + ".", suffix=".tmp")  # unique: two threads may save at once
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, indent=1))
+    for i in range(10):
+        try:
+            return os.replace(tmp, p)
+        except PermissionError:  # Windows: a reader, antivirus or OneDrive holds the file for a moment
+            if i == 9:
+                os.unlink(tmp)
+                raise
+            time.sleep(0.05 * (i + 1))
 
 
 def human(n):
@@ -1004,6 +1012,14 @@ def shell_env(secrets):
     return env
 
 
+def _decode_out(b):
+    """Command output: UTF-8, else (Windows tools writing to a pipe) the OEM code page, e.g. cp866 for Russian cmd.exe."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("oem" if WIN else "utf-8", "replace")
+
+
 def run_shell(cmd, timeout, cancel, env=None):
     kw = {} if WIN else {"start_new_session": True}
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
@@ -1013,21 +1029,24 @@ def run_shell(cmd, timeout, cancel, env=None):
     while proc.poll() is None:
         if cancel.is_set() or time.time() - t0 > timeout:
             try:
-                os.killpg(proc.pid, signal.SIGKILL) if not WIN else proc.kill()
+                if WIN:  # kill the whole tree: proc.kill() only ends cmd.exe and leaves its children holding the pipe
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10)
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
             except Exception:
                 proc.kill()
             proc.wait()
             if cancel.is_set():
                 raise Cancelled()
             time.sleep(0.1)
-            return f"{(out[0] if out else b'').decode('utf-8', 'replace')}\n[timed out after {timeout}s]"
+            return f"{_decode_out(out[0] if out else b'')}\n[timed out after {timeout}s]"
         time.sleep(0.05)
     time.sleep(0.05)
     for _ in range(40):
         if out:
             break
         time.sleep(0.05)
-    text = (out[0] if out else b"").decode("utf-8", "replace")
+    text = _decode_out(out[0] if out else b"")
     return clip(text, 30000) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")
 
 
@@ -1909,7 +1928,7 @@ def mcp_describe(tools):
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
-cwd: {cwd} | os: {os} | date: {date}
+cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
 
 Scope (most important):
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
@@ -2001,6 +2020,7 @@ class Agent:
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
+                             shell="cmd.exe (bash tool runs Windows commands: dir, type, findstr, set; or powershell -NoProfile -Command \"...\"; no POSIX syntax)" if WIN else os.environ.get("SHELL", "/bin/sh"),
                              extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
@@ -3004,6 +3024,7 @@ class Term:
             h_out, h_in = k.GetStdHandle(-11), k.GetStdHandle(-10)
             mode = ctypes.c_uint32()
             k.GetConsoleMode(h_out, ctypes.byref(mode))
+            self.old_out, self.old_cp = mode.value, k.GetConsoleOutputCP()
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
@@ -3040,6 +3061,9 @@ class Term:
             k = ctypes.windll.kernel32
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
+            if getattr(self, "old_out", None) is not None:
+                k.SetConsoleMode(k.GetStdHandle(-11), self.old_out)
+                k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
@@ -3077,8 +3101,12 @@ class Term:
             elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
                 delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
                 out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
-        # join surrogate halves (emoji etc.) that arrive as separate records
-        return "".join(out).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+        # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
+        s = getattr(self, "_hi_sur", "") + "".join(out)
+        self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
+        if self._hi_sur:
+            s = s[:-1]
+        return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
     def _readch(self):
         if WIN:
