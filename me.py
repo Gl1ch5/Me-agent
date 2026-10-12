@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.10"
+VERSION = "0.5.11"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -2993,12 +2993,9 @@ class Term:
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            # VT input for keys; with mouse on, also ENABLE_MOUSE_INPUT so the wheel is reported, and QuickEdit off
-            # (QuickEdit selection in conhost swallows the wheel)
-            flags = (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
-            if mouse:
-                flags = (flags | 0x0010 | 0x0080) & ~0x0040
-            k.SetConsoleMode(h_in, flags)
+            # VT input for keys. Do NOT add ENABLE_MOUSE_INPUT / drop QuickEdit here: that garbled typing in cmd.exe.
+            # The wheel arrives as VT mouse sequences (?1000h/?1006h below) where the console supports them.
+            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty
