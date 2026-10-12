@@ -279,6 +279,89 @@ def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     assert "me" in me.presets(s)
 
 
+def test_modder_pack(tmp=Path(tempfile.mkdtemp())):
+    # the modder skills from the marketplace, run through the real skill runner on small fixtures (no network, no fal key)
+    import shutil, threading
+    from PIL import Image
+    s = make()
+    market = Path(__file__).resolve().parent.parent / "server" / "market"
+    names = ["game-recon", "mod-lint", "saves-backup", "fal-assets", "sprite-tools", "knowledge", "mod-engines", "mod-publish"]
+    for n in names:
+        src = next(market.glob(n + ".*"))
+        shutil.copy(src, s.home / "skills" / src.name)
+    sk = me.Skills(s).all()
+    assert all(n in sk for n in names), sorted(sk)
+    assert sk["fal-assets"]["env"] == "FAL_KEY" and sk["sprite-tools"]["requires"] == "pillow" and sk["mod-engines"]["body"]
+
+    def call(name, action, args):
+        return me.Skills(s).run(sk[name], action, args, lambda e: None, threading.Event())
+
+    mod = tmp / "mod"
+    game = tmp / "game"
+    mod.mkdir()
+    game.mkdir()
+    (mod / "README.md").write_text("hi")
+    (mod / "Mod.cs").write_text('// FUN_0040a1f0\nvar key = "FAL_KEY=abcdefghijklmnopqrstuvwx";\n')
+    (mod / ".env").write_text("X=1")
+    (mod / "data.pak").write_bytes(b"GAMEDATA" * 100)
+    (game / "data.pak").write_bytes(b"GAMEDATA" * 100)
+    ok, out = call("mod-lint", "check", {"folder": str(mod), "game": str(game)})
+    res = json.loads(out)
+    assert ok and res["fail"] == 3 and not res["clean"], out
+    assert "abcdefghijklmnopqrstuvwx" not in out  # keys are masked in the report
+
+    eng = tmp / "unity-game"
+    (eng / "Game_Data" / "Managed").mkdir(parents=True)
+    (eng / "UnityPlayer.dll").write_bytes(b"x")
+    (eng / "Game_Data" / "Managed" / "Assembly-CSharp.dll").write_bytes(b"x")
+    (eng / "EasyAntiCheat").mkdir()
+    ok, out = call("game-recon", "scan", {"path": str(eng)})
+    res = json.loads(out)
+    assert ok and res["engine"] == "unity-mono" and res["anti_cheat"] == ["EasyAntiCheat"] and res["playbook"] == "mod-engines#unity", out
+    assert "do not inject" in res["warning"]
+
+    saves = tmp / "saves"
+    saves.mkdir()
+    (saves / "slot1.sav").write_text("save")
+    ok, snap = call("saves-backup", "backup", {"path": str(saves), "name": "t"})
+    assert ok and Path(snap).joinpath("slot1.sav").read_text() == "save", snap
+    (saves / "slot1.sav").write_text("broken")
+    ok, msg = call("saves-backup", "restore", {"snapshot": snap, "dest": str(saves)})
+    assert ok and (saves / "slot1.sav").read_text() == "save", msg
+
+    raw = tmp / "raw.png"
+    art = Image.new("RGB", (40, 40), (255, 255, 255))
+    art.paste((200, 30, 30), (12, 12, 28, 28))
+    art.save(raw)
+    ok, cut = call("sprite-tools", "cutout", {"src": str(raw), "dst": str(tmp / "cut.png")})
+    im = Image.open(cut).convert("RGBA")
+    assert ok and im.getpixel((0, 0))[3] == 0 and im.getpixel((20, 20))[3] == 255, cut
+    ok, fit = call("sprite-tools", "fit", {"src": cut, "dst": str(tmp / "fit.png"), "width": 16, "height": 16, "anchor": "bottom"})
+    assert ok and Image.open(fit).size == (16, 16), fit
+
+    ok, msg = call("fal-assets", "price", {"endpoint": "fal-ai/x"})
+    assert not ok and "FAL_KEY is not set" in msg, msg
+
+    # knowledge: parse the index offline (same table shape as universal-modder's knowledge/INDEX.md)
+    index = ("# Knowledge base index\n\n| Game | Note | Engine | Route | Status | Agents | Date |\n|---|---|---|---|---|---|---|\n"
+             "| Terraria | [Fal Arsenal: homing missiles](games/terraria/fal-arsenal.md) | dotnet | tmodloader | working | agent | 2026-09-01 |\n"
+             "| Stardew Valley | [Crop mod](games/stardew/crop.md) | dotnet | smapi | working | agent | 2026-09-02 |\n")
+
+    class FakeHttp:
+        def get(self, url, headers=None):
+            return index
+
+    class FakeCtx:
+        http = FakeHttp()
+        env = {}
+        table = staticmethod(lambda rows, title="": None)
+
+    g = {"action": lambda f=None, **kw: f}
+    exec(compile(open(sk["knowledge"]["path"], encoding="utf-8").read(), "knowledge.py", "exec"), g)
+    hits = g["search"](FakeCtx(), "terraria")
+    assert [h["path"] for h in hits] == ["games/terraria/fal-arsenal.md"] and hits[0]["route"] == "tmodloader", hits
+
+
 def test_agent_frontmatter_keys(tmp=Path(tempfile.mkdtemp())):
     # an agent file synced from another machine may carry name/prompt in its frontmatter: must not crash the TUI render
     s = make()
