@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -5001,6 +5001,7 @@ class TUICommands:
         if not v:
             return self.info("✗ bad update payload", "err")
         if v.group(1) == VERSION and arg != "force":
+            self.update_avail = None  # the banner was stale: nothing newer on the server
             return self.toast(f"already on latest v{VERSION}", "ok")
         target = Path(os.path.abspath(__file__))
         target.write_text(src, "utf-8")
