@@ -290,10 +290,6 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.term.write(CSI + "2J")
                     self.dirty = True
                 self._last_sz = sz
-                if WIN and time.time() - getattr(self, "_heal", 0) > 1.0:  # self-heal: rewrite every row once a second
-                    self._heal = time.time()
-                    self._prev_rows = None
-                    self.dirty = True
                 if PLUGINS.emit("tick", self):
                     self.dirty = True
                 animating = self.agent.busy or self.tools_live or self.cloud.status == "syncing" or (self.notice[0] and time.time() - self.notice[1] < 4.5)

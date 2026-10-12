@@ -4,10 +4,6 @@
 class TUIInput:
     # ─── input handling ───
     def handle_key(self, k):
-        if k == "redraw":  # console resized / refocused (minimize + restore): repaint everything
-            self._prev_rows = None
-            self.term.write(CSI + "2J")
-            return
         if self.modal:
             return self.modal_key(k)
         if PLUGINS.emit("key", self, k):

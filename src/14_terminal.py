@@ -146,8 +146,7 @@ class Term:
             self.old = mode.value
             # VT input for keys; with mouse on, also ENABLE_MOUSE_INPUT so the wheel is reported, and QuickEdit off
             # (QuickEdit selection in conhost swallows the wheel)
-            # 0x0008 ENABLE_WINDOW_INPUT: report buffer resizes (minimize/restore) so the screen gets repainted
-            flags = (mode.value | 0x0200 | 0x0008) & ~(0x0001 | 0x0002 | 0x0004)
+            flags = (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
             if mouse:
                 flags = (flags | 0x0010 | 0x0080) & ~0x0040
             k.SetConsoleMode(h_in, flags)
@@ -180,53 +179,9 @@ class Term:
         sys.stdout.write(s)
         sys.stdout.flush()
 
-    def _win_wheel(self):
-        """Windows console: peek raw input records so mouse-wheel events (which msvcrt.getwch() silently drops) reach the app.
-        Returns an SGR wheel sequence for a wheel record, or None when the next record is a key press for getwch()."""
-        import ctypes
-        from ctypes import wintypes
-        if not hasattr(self, "_wrec"):
-            class KEY(ctypes.Structure):
-                _fields_ = [("down", wintypes.BOOL), ("rep", wintypes.WORD), ("vk", wintypes.WORD), ("sc", wintypes.WORD),
-                            ("ch", wintypes.WCHAR), ("ctl", wintypes.DWORD)]
-
-            class MOUSE(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short), ("btn", wintypes.DWORD), ("ctl", wintypes.DWORD),
-                            ("flags", wintypes.DWORD)]
-
-            class EV(ctypes.Union):
-                _fields_ = [("key", KEY), ("mouse", MOUSE), ("pad", ctypes.c_byte * 16)]
-
-            class REC(ctypes.Structure):
-                _fields_ = [("type", wintypes.WORD), ("ev", EV)]
-
-            self._wrec = REC
-            self._wk = ctypes.windll.kernel32
-            self._wh = self._wk.GetStdHandle(-10)
-        k, h, REC = self._wk, self._wh, self._wrec
-        rec, n = REC(), wintypes.DWORD()
-        while True:
-            k.WaitForSingleObject(h, 0xFFFFFFFF)
-            if not k.PeekConsoleInputW(h, ctypes.byref(rec), 1, ctypes.byref(n)) or not n.value:
-                continue
-            if rec.type == 1 and rec.ev.key.down and (rec.ev.key.ch != "\x00" or rec.ev.key.vk not in (0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0x90, 0x91)):
-                return None  # a real key press: let getwch() translate it
-            k.ReadConsoleInputW(h, ctypes.byref(rec), 1, ctypes.byref(n))
-            if rec.type in (4, 16):  # window buffer size / focus: repaint
-                return "\x1b[999~"
-            if rec.type == 2 and rec.ev.mouse.flags & 0x4:  # MOUSE_WHEELED
-                delta = ctypes.c_short(rec.ev.mouse.btn >> 16).value
-                return f"\x1b[<{64 if delta > 0 else 65};1;1M"
-
     def _readch(self):
         if WIN:
             import msvcrt
-            try:
-                w = self._win_wheel()
-            except Exception:
-                w = None
-            if w:
-                return w
             c = msvcrt.getwch()
             if c in ("\x00", "\xe0"):
                 c2 = msvcrt.getwch()
@@ -255,7 +210,7 @@ class Term:
 KEYMAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "[H": "home", "[F": "end", "[1~": "home", "[4~": "end",
           "[3~": "delete", "[5~": "pgup", "[6~": "pgdn", "OA": "up", "OB": "down", "OC": "right", "OD": "left", "OH": "home",
           "OF": "end", "[1;5A": "ctrl-up", "[1;5B": "ctrl-down", "[1;5C": "ctrl-right", "[1;5D": "ctrl-left", "[1;3C": "ctrl-right",
-          "[1;3D": "ctrl-left", "[Z": "shift-tab", "[999~": "redraw", "[13;2u": "newline", "[27;2;13~": "newline"}
+          "[1;3D": "ctrl-left", "[Z": "shift-tab", "[13;2u": "newline", "[27;2;13~": "newline"}
 
 
 def parse_keys(buf):
