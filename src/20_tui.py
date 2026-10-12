@@ -282,6 +282,18 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 except queue.Empty:
                     pass
                 self.drain_pending()
+                # window size is polled: resize / minimize+restore events are not delivered reliably (SIGWINCH does not exist on
+                # Windows, and Windows Terminal does not forward buffer-size records), so a stale size leaves a box wider than the window
+                sz = self.term.size()
+                if sz != getattr(self, "_last_sz", sz):
+                    self._prev_rows = None
+                    self.term.write(CSI + "2J")
+                    self.dirty = True
+                self._last_sz = sz
+                if WIN and time.time() - getattr(self, "_heal", 0) > 1.0:  # self-heal: rewrite every row once a second
+                    self._heal = time.time()
+                    self._prev_rows = None
+                    self.dirty = True
                 if PLUGINS.emit("tick", self):
                     self.dirty = True
                 animating = self.agent.busy or self.tools_live or self.cloud.status == "syncing" or (self.notice[0] and time.time() - self.notice[1] < 4.5)
