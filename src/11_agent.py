@@ -1,18 +1,23 @@
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
-cwd: {cwd} | os: {os} | date: {date}
+cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
+
+Scope (most important):
+- Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
+- Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
+- Do not refactor, reformat, rename, add features, docs or tests nobody asked for. Mention worthwhile extras in one line instead of doing them.
+- If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go.
 
 Work:
-- Read the relevant code before changing it. Ask only when truly ambiguous.
-- Small steps; for 3+ steps keep a todo list current.
-- Build what is needed now, open for later: clear modules, small functions, no hacks. Match the project's style; no needless deps.
-- Before saying done, verify: run tests, build, lint or the code. Never claim untested success.
-- Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- For 3+ step tasks keep a todo list current; skip it for small ones.
+- Match the project's style; clean small functions; no hacks, no needless deps.
+- After changing code, verify it (run tests, build, lint or the code). Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
 - Confirm before destructive or irreversible actions.
 UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
-Reply: concise. Say what changed and how you verified it.{extra}{skills}{project}{user}"""
+Reply: in the user's language, concise. After changes say what changed and how you verified it.{extra}{skills}{project}{user}"""
 
 
 
@@ -55,6 +60,8 @@ class Agent:
         self.depth = 0  # subagent nesting
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
+        self._turn_lock = threading.Lock()
+        self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -67,8 +74,8 @@ class Agent:
         if "AGENTS.md" in self.context_files():
             project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
         else:
-            project += ("\n\nNo AGENTS.md here yet. Once you understand the project, create a concise AGENTS.md "
-                        "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
+            project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
+                        "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
         pr = self.preset()
         if pr.get("prompt"):
             project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
@@ -87,6 +94,7 @@ class Agent:
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
+                             shell="cmd.exe (bash tool runs Windows commands: dir, type, findstr, set; or powershell -NoProfile -Command \"...\"; no POSIX syntax)" if WIN else os.environ.get("SHELL", "/bin/sh"),
                              extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
@@ -108,7 +116,11 @@ class Agent:
         return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
-        """Blocking. Runs one user turn to completion."""
+        """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""
+        with self._turn_lock:
+            return self._run(text, images)
+
+    def _run(self, text, images=()):
         pr = self.preset()
         m = self.s.model(pr.get("model") or None)
         if m and pr.get("effort"):
@@ -120,6 +132,7 @@ class Agent:
         self.cancel.clear()
         self.snap = {}
         start_idx = len(self.session["messages"])
+        self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
@@ -175,6 +188,11 @@ class Agent:
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
+                queued = self.take_queued() if self.depth == 0 else []
+                if queued:  # the user wrote while tools ran: hand it to the model now instead of after the whole turn
+                    self.emit({"type": "queued_sent", "texts": queued})
+                    self.session["messages"].append({"role": "user", "content": "[message from the user while you were working — take it into account]\n"
+                                                     + "\n\n".join(queued)})
         except Cancelled:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
@@ -187,6 +205,9 @@ class Agent:
             self.emit({"type": "error", "text": str(e)})
         finally:
             self.busy = False
+            todo = self.session.get("todo") or []
+            if todo and all(i["s"] == "done" for i in todo):
+                self.session["todo"] = []  # finished list: don't carry it into the next request
             self._finish_checkpoint(start_idx)
             if pr.get("name") == "me" and self.persist:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
@@ -228,7 +249,10 @@ class Agent:
             for tc, name, args, tid, _ in prepared:
                 def work(tc=tc, name=name, args=args, tid=tid):
                     t1 = time.time()
-                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    try:
+                        results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    except Exception as e:  # incl. Cancelled: every call still gets a result
+                        results[tid] = (False, "cancelled" if isinstance(e, Cancelled) else f"error: {type(e).__name__}: {e}", None, time.time() - t1)
                 th = threading.Thread(target=work, daemon=True)
                 th.start()
                 ths.append(th)
@@ -253,8 +277,10 @@ class Agent:
     def _exec(self, name, args, tid, pr):
         """Checks + runs one tool. Returns (ok, output, image)."""
         temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
-        if args is None:
+        if not isinstance(args, dict):
             return False, "error: arguments were not valid JSON — send a JSON object", None
+        if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
+            return False, "error: path must be a string", None
         if name not in {t["name"] for t in self.tool_schemas()}:
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
         if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
@@ -397,7 +423,10 @@ class Agent:
         if not self.snap or not self.persist:
             return
         files = dict(self.snap)
-        Checkpoints(self.s, self.session["id"]).push({"msgs": start_idx, "files": files, "t": time.time()})
+        gen = self.session.get("compactions", 0)
+        # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
+        msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
+        Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
         diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
@@ -410,7 +439,7 @@ class Agent:
         if not cp:
             return {"ok": False, "text": "nothing to undo"}
         restore_files(cp["files"])
-        if 0 <= cp["msgs"] <= len(self.session["messages"]):
+        if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
         names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
@@ -516,9 +545,11 @@ class Agent:
         cwd = self.session["cwd"]
         out = {}
         for k, v in args.items():
-            if isinstance(v, str):
+            if k == "path" and isinstance(v, str):  # only the path itself: never rewrite file content or commands
                 for r in sorted(roots, key=len, reverse=True):
-                    v = v.replace(r, cwd)
+                    if v == r or v.startswith(r.rstrip("/\\") + os.sep) or v.startswith(r.rstrip("/\\") + "/"):
+                        v = cwd + v[len(r.rstrip("/\\")):]
+                        break
             out[k] = v
         return out
 

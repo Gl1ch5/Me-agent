@@ -4,9 +4,9 @@
 class TUIRender:
     # ─── rendering ───
     def block_lines(self, b, width):
-        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill"):
+        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill", "welcome"):
             return b._cache[1]
-        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats", "welcome", "assistant") and b.kind != "assistant":
+        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats"):
             return b._cache[1]
         L = self._render_block(b, width)
         b._cache = (width, L)
@@ -169,10 +169,10 @@ class TUIRender:
         args = "  ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in (a.get("args") or {}).items())
         if args:
             out.append(row([(args[: inner - 2], rgb(TH["dim"]))]))
-        if b.status:
+        if b.status and not b.done:
             out.append(row([(SPIN[self.frame % len(SPIN)] + " ", rgb(color)), (b.status[: inner - 4], rgb(TH["fg"]))]))
         p = b.progress
-        if p:
+        if p and not b.done:
             lbl = (p.get("label") or "")[:24]
             cnt = f" {p['n']}/{p['total']}" if p.get("total") else (f" {p['n']}" if p.get("n") is not None else "")
             bw = max(10, inner - swidth(lbl) - swidth(cnt) - 6)
@@ -228,11 +228,12 @@ class TUIRender:
     def todo_lines(self, W, H):
         """Live checklist above the input while there is open work (the agent's todo tool)."""
         items = self.agent.session.get("todo") or []
-        if not items or (all(i["s"] == "done" for i in items) and not self.agent.busy):
+        g = self.agent.session.get("goal") or {}
+        # only while the agent works: a finished turn leaves no checklist behind, even if some items were never ticked
+        if not items or not (self.agent.busy or g.get("status") == "working"):
             return []
         done = sum(1 for i in items if i["s"] == "done")
         head = Line().add(" ").add("todo ", rgb(TH["accent"]) + CSI + "1m").add(f"{done}/{len(items)}", rgb(TH["dim"]))
-        g = self.agent.session.get("goal") or {}
         if g.get("status") == "working":
             head.add("  ◎ goal: " + g["text"][: max(10, W - 30)], rgb(TH["accent2"]))
         cap = max(2, min(7, H // 4))
@@ -347,8 +348,9 @@ class TUIRender:
             pre = f" {mode} › "
             pw = swidth(pre)
             in_rows, (cr, cc) = self.input_lines(W - 2 - (pw - 3))
-            in_rows = in_rows[-8:] if len(in_rows) > 8 else in_rows
-            cr = min(cr, len(in_rows) - 1)
+            first = max(0, min(cr, len(in_rows) - 8))  # keep the cursor row inside the 8 visible rows
+            in_rows = in_rows[first:first + 8]
+            cr = max(0, min(cr - first, len(in_rows) - 1))
             busy = self.agent.busy
             box = []
             bcol = rgb(TH["accent"] if not busy else TH["faint"])
@@ -396,7 +398,7 @@ class TUIRender:
                     l.add((" ▸ " if selected else "   ") + lab.ljust(18), st + rgb(TH["accent"] if selected else TH["fg"]))
                     l.add(" " + det[: W - 30], st + rgb(TH["dim"]))
                     pop.append(l)
-            avail = H - len(bottom) - len(pop)
+            avail = max(1, H - len(bottom) - len(pop))
             # transcript
             lines = []
             for b in self.blocks:
@@ -406,7 +408,7 @@ class TUIRender:
             end = len(lines) - self.scroll
             view = lines[max(0, end - avail):end]
             view = [Line()] * (avail - len(view)) + view
-            if self.scroll:
+            if self.scroll and view:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
             out = []

@@ -141,12 +141,11 @@ class Term:
             h_out, h_in = k.GetStdHandle(-11), k.GetStdHandle(-10)
             mode = ctypes.c_uint32()
             k.GetConsoleMode(h_out, ctypes.byref(mode))
+            self.old_out, self.old_cp = mode.value, k.GetConsoleOutputCP()
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            # VT input for keys. Do NOT add ENABLE_MOUSE_INPUT / drop QuickEdit here: that garbled typing in cmd.exe.
-            # The wheel arrives as VT mouse sequences (?1000h/?1006h below) where the console supports them.
-            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
+            self._win_in_mode(mouse)
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty
@@ -157,8 +156,19 @@ class Term:
         self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
+    def _win_in_mode(self, mouse):
+        """VT input for keys; with mouse on also ENABLE_MOUSE_INPUT + QuickEdit off, so conhost reports the wheel.
+        Input is read with ReadConsoleInputW (see _readch_win), so mouse records never reach the key stream."""
+        import ctypes
+        flags = (self.old | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
+        if mouse:
+            flags = (flags | 0x0010 | 0x0080) & ~0x0040
+        ctypes.windll.kernel32.SetConsoleMode(ctypes.windll.kernel32.GetStdHandle(-10), flags)
+
     def set_mouse(self, on):
         self.mouse = on
+        if WIN and self.old is not None:
+            self._win_in_mode(on)
         self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
 
     def stop(self):
@@ -168,6 +178,9 @@ class Term:
             k = ctypes.windll.kernel32
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
+            if getattr(self, "old_out", None) is not None:
+                k.SetConsoleMode(k.GetStdHandle(-11), self.old_out)
+                k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
@@ -176,15 +189,45 @@ class Term:
         sys.stdout.write(s)
         sys.stdout.flush()
 
+    def _readch_win(self):
+        """Block for console input records; return key text (VT sequences included) plus synthesized wheel sequences."""
+        import ctypes
+        from ctypes import wintypes as w
+
+        class KEY(ctypes.Structure):
+            _fields_ = [("down", w.BOOL), ("repeat", w.WORD), ("vk", w.WORD), ("scan", w.WORD), ("ch", w.WCHAR), ("state", w.DWORD)]
+
+        class MOUSE(ctypes.Structure):
+            _fields_ = [("x", w.SHORT), ("y", w.SHORT), ("buttons", w.DWORD), ("state", w.DWORD), ("flags", w.DWORD)]
+
+        class U(ctypes.Union):
+            _fields_ = [("key", KEY), ("mouse", MOUSE), ("pad", ctypes.c_byte * 16)]
+
+        class REC(ctypes.Structure):
+            _fields_ = [("type", w.WORD), ("u", U)]
+
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)
+        recs, n = (REC * 64)(), w.DWORD()
+        if not k.ReadConsoleInputW(h, recs, 64, ctypes.byref(n)):
+            raise OSError("ReadConsoleInputW failed")
+        out = []
+        for r in recs[: n.value]:
+            if r.type == 1 and r.u.key.down and r.u.key.ch != "\x00":
+                out.append(r.u.key.ch * max(1, r.u.key.repeat))
+            elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
+                delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
+                out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+        # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
+        s = getattr(self, "_hi_sur", "") + "".join(out)
+        self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
+        if self._hi_sur:
+            s = s[:-1]
+        return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
     def _readch(self):
         if WIN:
-            import msvcrt
-            c = msvcrt.getwch()
-            if c in ("\x00", "\xe0"):
-                c2 = msvcrt.getwch()
-                return {"H": "\x1b[A", "P": "\x1b[B", "K": "\x1b[D", "M": "\x1b[C", "G": "\x1b[H", "O": "\x1b[F", "S": "\x1b[3~",
-                        "I": "\x1b[5~", "Q": "\x1b[6~"}.get(c2, "")
-            return c
+            return self._readch_win()
         b = os.read(self.fd, 4096)
         return b.decode("utf-8", "replace")
 

@@ -595,6 +595,7 @@ class TUICommands:
                             a = json.loads(tc["function"]["arguments"])
                         except ValueError:
                             a = {}
+                        a = a if isinstance(a, dict) else {}
                         b = self.add("tool", name=tc["function"]["name"], args=a, label=self.agent.tools.preview(tc["function"]["name"], a))
                         b.done, b.ok, b.collapsed = True, True, True
 

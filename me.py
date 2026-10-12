@@ -12,11 +12,11 @@ Layers (top → bottom), each usable on its own:
 Stdlib only. Python 3.8+.
 """
 import ast, base64, difflib, fnmatch, glob, hashlib, io, json, os, platform, queue, re
-import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, unicodedata
+import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.12"
+VERSION = "0.5.13"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -36,9 +36,17 @@ def jload(p, default=None):
 def jsave(p, data):
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
-    os.replace(tmp, p)
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=p.name + ".", suffix=".tmp")  # unique: two threads may save at once
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False, indent=1))
+    for i in range(10):
+        try:
+            return os.replace(tmp, p)
+        except PermissionError:  # Windows: a reader, antivirus or OneDrive holds the file for a moment
+            if i == 9:
+                os.unlink(tmp)
+                raise
+            time.sleep(0.05 * (i + 1))
 
 
 def human(n):
@@ -1004,6 +1012,14 @@ def shell_env(secrets):
     return env
 
 
+def _decode_out(b):
+    """Command output: UTF-8, else (Windows tools writing to a pipe) the OEM code page, e.g. cp866 for Russian cmd.exe."""
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("oem" if WIN else "utf-8", "replace")
+
+
 def run_shell(cmd, timeout, cancel, env=None):
     kw = {} if WIN else {"start_new_session": True}
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
@@ -1013,21 +1029,24 @@ def run_shell(cmd, timeout, cancel, env=None):
     while proc.poll() is None:
         if cancel.is_set() or time.time() - t0 > timeout:
             try:
-                os.killpg(proc.pid, signal.SIGKILL) if not WIN else proc.kill()
+                if WIN:  # kill the whole tree: proc.kill() only ends cmd.exe and leaves its children holding the pipe
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=10)
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
             except Exception:
                 proc.kill()
             proc.wait()
             if cancel.is_set():
                 raise Cancelled()
             time.sleep(0.1)
-            return f"{(out[0] if out else b'').decode('utf-8', 'replace')}\n[timed out after {timeout}s]"
+            return f"{_decode_out(out[0] if out else b'')}\n[timed out after {timeout}s]"
         time.sleep(0.05)
     time.sleep(0.05)
     for _ in range(40):
         if out:
             break
         time.sleep(0.05)
-    text = (out[0] if out else b"").decode("utf-8", "replace")
+    text = _decode_out(out[0] if out else b"")
     return clip(text, 30000) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")
 
 
@@ -1909,18 +1928,23 @@ def mcp_describe(tools):
 # ───────────────────────────── agent ─────────────────────────────
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
-cwd: {cwd} | os: {os} | date: {date}
+cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
+
+Scope (most important):
+- Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
+- Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
+- Do not refactor, reformat, rename, add features, docs or tests nobody asked for. Mention worthwhile extras in one line instead of doing them.
+- If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go.
 
 Work:
-- Read the relevant code before changing it. Ask only when truly ambiguous.
-- Small steps; for 3+ steps keep a todo list current.
-- Build what is needed now, open for later: clear modules, small functions, no hacks. Match the project's style; no needless deps.
-- Before saying done, verify: run tests, build, lint or the code. Never claim untested success.
-- Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- For 3+ step tasks keep a todo list current; skip it for small ones.
+- Match the project's style; clean small functions; no hacks, no needless deps.
+- After changing code, verify it (run tests, build, lint or the code). Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
 - Confirm before destructive or irreversible actions.
 UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
-Reply: concise. Say what changed and how you verified it.{extra}{skills}{project}{user}"""
+Reply: in the user's language, concise. After changes say what changed and how you verified it.{extra}{skills}{project}{user}"""
 
 
 
@@ -1963,6 +1987,8 @@ class Agent:
         self.depth = 0  # subagent nesting
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
+        self._turn_lock = threading.Lock()
+        self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -1975,8 +2001,8 @@ class Agent:
         if "AGENTS.md" in self.context_files():
             project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
         else:
-            project += ("\n\nNo AGENTS.md here yet. Once you understand the project, create a concise AGENTS.md "
-                        "(purpose, stack, run/test commands, structure, conventions) — it is loaded into every future session.")
+            project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
+                        "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
         pr = self.preset()
         if pr.get("prompt"):
             project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
@@ -1995,6 +2021,7 @@ class Agent:
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
+                             shell="cmd.exe (bash tool runs Windows commands: dir, type, findstr, set; or powershell -NoProfile -Command \"...\"; no POSIX syntax)" if WIN else os.environ.get("SHELL", "/bin/sh"),
                              extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
@@ -2016,7 +2043,11 @@ class Agent:
         return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
-        """Blocking. Runs one user turn to completion."""
+        """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""
+        with self._turn_lock:
+            return self._run(text, images)
+
+    def _run(self, text, images=()):
         pr = self.preset()
         m = self.s.model(pr.get("model") or None)
         if m and pr.get("effort"):
@@ -2028,6 +2059,7 @@ class Agent:
         self.cancel.clear()
         self.snap = {}
         start_idx = len(self.session["messages"])
+        self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
@@ -2083,6 +2115,11 @@ class Agent:
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
+                queued = self.take_queued() if self.depth == 0 else []
+                if queued:  # the user wrote while tools ran: hand it to the model now instead of after the whole turn
+                    self.emit({"type": "queued_sent", "texts": queued})
+                    self.session["messages"].append({"role": "user", "content": "[message from the user while you were working — take it into account]\n"
+                                                     + "\n\n".join(queued)})
         except Cancelled:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
@@ -2095,6 +2132,9 @@ class Agent:
             self.emit({"type": "error", "text": str(e)})
         finally:
             self.busy = False
+            todo = self.session.get("todo") or []
+            if todo and all(i["s"] == "done" for i in todo):
+                self.session["todo"] = []  # finished list: don't carry it into the next request
             self._finish_checkpoint(start_idx)
             if pr.get("name") == "me" and self.persist:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
@@ -2136,7 +2176,10 @@ class Agent:
             for tc, name, args, tid, _ in prepared:
                 def work(tc=tc, name=name, args=args, tid=tid):
                     t1 = time.time()
-                    results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    try:
+                        results[tid] = self._exec(name, args, tid, pr) + (time.time() - t1,)
+                    except Exception as e:  # incl. Cancelled: every call still gets a result
+                        results[tid] = (False, "cancelled" if isinstance(e, Cancelled) else f"error: {type(e).__name__}: {e}", None, time.time() - t1)
                 th = threading.Thread(target=work, daemon=True)
                 th.start()
                 ths.append(th)
@@ -2161,8 +2204,10 @@ class Agent:
     def _exec(self, name, args, tid, pr):
         """Checks + runs one tool. Returns (ok, output, image)."""
         temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
-        if args is None:
+        if not isinstance(args, dict):
             return False, "error: arguments were not valid JSON — send a JSON object", None
+        if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
+            return False, "error: path must be a string", None
         if name not in {t["name"] for t in self.tool_schemas()}:
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
         if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
@@ -2305,7 +2350,10 @@ class Agent:
         if not self.snap or not self.persist:
             return
         files = dict(self.snap)
-        Checkpoints(self.s, self.session["id"]).push({"msgs": start_idx, "files": files, "t": time.time()})
+        gen = self.session.get("compactions", 0)
+        # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
+        msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
+        Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
         diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
@@ -2318,7 +2366,7 @@ class Agent:
         if not cp:
             return {"ok": False, "text": "nothing to undo"}
         restore_files(cp["files"])
-        if 0 <= cp["msgs"] <= len(self.session["messages"]):
+        if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
         names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
@@ -2424,9 +2472,11 @@ class Agent:
         cwd = self.session["cwd"]
         out = {}
         for k, v in args.items():
-            if isinstance(v, str):
+            if k == "path" and isinstance(v, str):  # only the path itself: never rewrite file content or commands
                 for r in sorted(roots, key=len, reverse=True):
-                    v = v.replace(r, cwd)
+                    if v == r or v.startswith(r.rstrip("/\\") + os.sep) or v.startswith(r.rstrip("/\\") + "/"):
+                        v = cwd + v[len(r.rstrip("/\\")):]
+                        break
             out[k] = v
         return out
 
@@ -2990,12 +3040,11 @@ class Term:
             h_out, h_in = k.GetStdHandle(-11), k.GetStdHandle(-10)
             mode = ctypes.c_uint32()
             k.GetConsoleMode(h_out, ctypes.byref(mode))
+            self.old_out, self.old_cp = mode.value, k.GetConsoleOutputCP()
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            # VT input for keys. Do NOT add ENABLE_MOUSE_INPUT / drop QuickEdit here: that garbled typing in cmd.exe.
-            # The wheel arrives as VT mouse sequences (?1000h/?1006h below) where the console supports them.
-            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
+            self._win_in_mode(mouse)
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty
@@ -3006,8 +3055,19 @@ class Term:
         self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
+    def _win_in_mode(self, mouse):
+        """VT input for keys; with mouse on also ENABLE_MOUSE_INPUT + QuickEdit off, so conhost reports the wheel.
+        Input is read with ReadConsoleInputW (see _readch_win), so mouse records never reach the key stream."""
+        import ctypes
+        flags = (self.old | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
+        if mouse:
+            flags = (flags | 0x0010 | 0x0080) & ~0x0040
+        ctypes.windll.kernel32.SetConsoleMode(ctypes.windll.kernel32.GetStdHandle(-10), flags)
+
     def set_mouse(self, on):
         self.mouse = on
+        if WIN and self.old is not None:
+            self._win_in_mode(on)
         self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
 
     def stop(self):
@@ -3017,6 +3077,9 @@ class Term:
             k = ctypes.windll.kernel32
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
+            if getattr(self, "old_out", None) is not None:
+                k.SetConsoleMode(k.GetStdHandle(-11), self.old_out)
+                k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
@@ -3025,15 +3088,45 @@ class Term:
         sys.stdout.write(s)
         sys.stdout.flush()
 
+    def _readch_win(self):
+        """Block for console input records; return key text (VT sequences included) plus synthesized wheel sequences."""
+        import ctypes
+        from ctypes import wintypes as w
+
+        class KEY(ctypes.Structure):
+            _fields_ = [("down", w.BOOL), ("repeat", w.WORD), ("vk", w.WORD), ("scan", w.WORD), ("ch", w.WCHAR), ("state", w.DWORD)]
+
+        class MOUSE(ctypes.Structure):
+            _fields_ = [("x", w.SHORT), ("y", w.SHORT), ("buttons", w.DWORD), ("state", w.DWORD), ("flags", w.DWORD)]
+
+        class U(ctypes.Union):
+            _fields_ = [("key", KEY), ("mouse", MOUSE), ("pad", ctypes.c_byte * 16)]
+
+        class REC(ctypes.Structure):
+            _fields_ = [("type", w.WORD), ("u", U)]
+
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)
+        recs, n = (REC * 64)(), w.DWORD()
+        if not k.ReadConsoleInputW(h, recs, 64, ctypes.byref(n)):
+            raise OSError("ReadConsoleInputW failed")
+        out = []
+        for r in recs[: n.value]:
+            if r.type == 1 and r.u.key.down and r.u.key.ch != "\x00":
+                out.append(r.u.key.ch * max(1, r.u.key.repeat))
+            elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
+                delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
+                out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+        # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
+        s = getattr(self, "_hi_sur", "") + "".join(out)
+        self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
+        if self._hi_sur:
+            s = s[:-1]
+        return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
     def _readch(self):
         if WIN:
-            import msvcrt
-            c = msvcrt.getwch()
-            if c in ("\x00", "\xe0"):
-                c2 = msvcrt.getwch()
-                return {"H": "\x1b[A", "P": "\x1b[B", "K": "\x1b[D", "M": "\x1b[C", "G": "\x1b[H", "O": "\x1b[F", "S": "\x1b[3~",
-                        "I": "\x1b[5~", "Q": "\x1b[6~"}.get(c2, "")
-            return c
+            return self._readch_win()
         b = os.read(self.fd, 4096)
         return b.decode("utf-8", "replace")
 
@@ -3331,9 +3424,9 @@ class Block:
 class TUIRender:
     # ─── rendering ───
     def block_lines(self, b, width):
-        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill"):
+        if b._cache and b._cache[0] == width and b.done and b.kind not in ("tool", "skill", "welcome"):
             return b._cache[1]
-        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats", "welcome", "assistant") and b.kind != "assistant":
+        if b._cache and b._cache[0] == width and b.kind in ("user", "info", "stats"):
             return b._cache[1]
         L = self._render_block(b, width)
         b._cache = (width, L)
@@ -3496,10 +3589,10 @@ class TUIRender:
         args = "  ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in (a.get("args") or {}).items())
         if args:
             out.append(row([(args[: inner - 2], rgb(TH["dim"]))]))
-        if b.status:
+        if b.status and not b.done:
             out.append(row([(SPIN[self.frame % len(SPIN)] + " ", rgb(color)), (b.status[: inner - 4], rgb(TH["fg"]))]))
         p = b.progress
-        if p:
+        if p and not b.done:
             lbl = (p.get("label") or "")[:24]
             cnt = f" {p['n']}/{p['total']}" if p.get("total") else (f" {p['n']}" if p.get("n") is not None else "")
             bw = max(10, inner - swidth(lbl) - swidth(cnt) - 6)
@@ -3555,11 +3648,12 @@ class TUIRender:
     def todo_lines(self, W, H):
         """Live checklist above the input while there is open work (the agent's todo tool)."""
         items = self.agent.session.get("todo") or []
-        if not items or (all(i["s"] == "done" for i in items) and not self.agent.busy):
+        g = self.agent.session.get("goal") or {}
+        # only while the agent works: a finished turn leaves no checklist behind, even if some items were never ticked
+        if not items or not (self.agent.busy or g.get("status") == "working"):
             return []
         done = sum(1 for i in items if i["s"] == "done")
         head = Line().add(" ").add("todo ", rgb(TH["accent"]) + CSI + "1m").add(f"{done}/{len(items)}", rgb(TH["dim"]))
-        g = self.agent.session.get("goal") or {}
         if g.get("status") == "working":
             head.add("  ◎ goal: " + g["text"][: max(10, W - 30)], rgb(TH["accent2"]))
         cap = max(2, min(7, H // 4))
@@ -3674,8 +3768,9 @@ class TUIRender:
             pre = f" {mode} › "
             pw = swidth(pre)
             in_rows, (cr, cc) = self.input_lines(W - 2 - (pw - 3))
-            in_rows = in_rows[-8:] if len(in_rows) > 8 else in_rows
-            cr = min(cr, len(in_rows) - 1)
+            first = max(0, min(cr, len(in_rows) - 8))  # keep the cursor row inside the 8 visible rows
+            in_rows = in_rows[first:first + 8]
+            cr = max(0, min(cr - first, len(in_rows) - 1))
             busy = self.agent.busy
             box = []
             bcol = rgb(TH["accent"] if not busy else TH["faint"])
@@ -3723,7 +3818,7 @@ class TUIRender:
                     l.add((" ▸ " if selected else "   ") + lab.ljust(18), st + rgb(TH["accent"] if selected else TH["fg"]))
                     l.add(" " + det[: W - 30], st + rgb(TH["dim"]))
                     pop.append(l)
-            avail = H - len(bottom) - len(pop)
+            avail = max(1, H - len(bottom) - len(pop))
             # transcript
             lines = []
             for b in self.blocks:
@@ -3733,7 +3828,7 @@ class TUIRender:
             end = len(lines) - self.scroll
             view = lines[max(0, end - avail):end]
             view = [Line()] * (avail - len(view)) + view
-            if self.scroll:
+            if self.scroll and view:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
             out = []
@@ -4863,6 +4958,7 @@ class TUICommands:
                             a = json.loads(tc["function"]["arguments"])
                         except ValueError:
                             a = {}
+                        a = a if isinstance(a, dict) else {}
                         b = self.add("tool", name=tc["function"]["name"], args=a, label=self.agent.tools.preview(tc["function"]["name"], a))
                         b.done, b.ok, b.collapsed = True, True, True
 
@@ -5040,6 +5136,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.frame = 0
         self.lock = threading.RLock()
         self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
+        self.agent.take_queued = self.take_pending
         self.tools_live = {}
         self.cur_text = None
         self.cur_reason = None
@@ -5176,9 +5273,20 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
                 self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
+            elif t == "queued_sent":
+                for x in e["texts"]:
+                    self.add("user", text=x)
+                self.cur_text = self.cur_reason = None
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
+                    self.cur_reason.touch()
+                # tools cut off by an interrupt/error never get tool_end: close them so no spinner is left running
+                for b in self.tools_live.values():
+                    b.done, b.ok, b.elapsed, b.collapsed = True, False, time.time() - b.t0, True
+                    b.data.setdefault("output", "interrupted")
+                    b.touch()
+                self.tools_live.clear()
                 self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
                                        + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
                 self.cur_text = self.cur_reason = None
@@ -5267,6 +5375,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
         except Exception:
             pass
 
+    def take_pending(self):
+        "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
+        with self.lock:
+            out = [t for t in self.pending if not re.search(r"@\S+\.(png|jpe?g|gif|webp|bmp)\b", t, re.I)]
+            self.pending = [t for t in self.pending if t not in out]
+            return out
+
     def drain_pending(self):
         "Send the next queued message once the agent is free (one at a time: the next waits for this turn)."
         if self.pending and not self.agent.busy and not self.launching:
@@ -5317,7 +5432,12 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     try:
                         self.draw()
                     except Exception as e:
-                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e}")
+                        try:  # keep the full traceback: the one-line message alone is not enough to fix it
+                            with open(self.s.home / "render-error.log", "a", encoding="utf-8") as f:
+                                f.write(f"{time.strftime('%F %T')} me {VERSION}\n{traceback.format_exc()}\n")
+                        except OSError:
+                            pass
+                        self.term.write(f"{CSI}H{CSI}2Jrender error: {e} (details: {self.s.home / 'render-error.log'})")
                         self._prev_rows = None
                     last = now
         finally:
