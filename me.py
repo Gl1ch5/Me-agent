@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, tra
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.13"
+VERSION = "0.5.14"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -3126,7 +3126,16 @@ class Term:
 
     def _readch(self):
         if WIN:
-            return self._readch_win()
+            if self.mouse:
+                return self._readch_win()
+            # mouse off: the classic reader (no wheel), a safe fallback if raw records ever misbehave on some console
+            import msvcrt
+            c = msvcrt.getwch()
+            if c in ("\x00", "\xe0"):
+                c2 = msvcrt.getwch()
+                return {"H": "\x1b[A", "P": "\x1b[B", "K": "\x1b[D", "M": "\x1b[C", "G": "\x1b[H", "O": "\x1b[F", "S": "\x1b[3~",
+                        "I": "\x1b[5~", "Q": "\x1b[6~"}.get(c2, "")
+            return c
         b = os.read(self.fd, 4096)
         return b.decode("utf-8", "replace")
 

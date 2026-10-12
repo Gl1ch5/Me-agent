@@ -672,6 +672,37 @@ def index(req: Request):
     return page("index.html", req)
 
 
+def changelog_html():
+    """CHANGELOG.md (repo root) as HTML: '## version' headings, '- ' items, `code`, **bold**."""
+    import html as _h
+    f = HERE.parent / "CHANGELOG.md"
+    out, in_list = [], False
+    for line in (f.read_text("utf-8") if f.is_file() else "").splitlines():
+        t = _h.escape(line.strip())
+        t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+        t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
+        if t.startswith("- "):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{t[2:]}</li>")
+            continue
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+        if t.startswith("## "):
+            cur = ' <span class="cur">current</span>' if t[3:].split(" ")[0] == client_version() else ""
+            out.append(f'<h2 id="v{t[3:].split(" ")[0]}">{t[3:]}{cur}</h2>')
+    if in_list:
+        out.append("</ul>")
+    return "\n".join(out)
+
+
+@app.get("/changelog")
+def changelog(req: Request):
+    return HTMLResponse(page("changelog.html", req).body.decode().replace("__CHANGELOG__", changelog_html()))
+
+
 @app.get("/account")
 def account(req: Request):
     return page("account.html", req)

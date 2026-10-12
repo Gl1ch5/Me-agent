@@ -40,6 +40,7 @@ nav .links a{text-decoration:none}nav .links a:hover{color:var(--fg)}
 .copy{font:12px var(--mono);background:var(--line);color:var(--fg);border:none;border-radius:6px;padding:6px 10px;cursor:pointer;flex-shrink:0}
 .copy:hover{background:var(--faint)}
 .note{margin-top:12px;font-size:13px;color:var(--dim)}
+.ver{margin-top:14px;font-size:13px;color:var(--dim)}.ver a{font:600 12px var(--mono);color:var(--bg);background:var(--a);border-radius:5px;padding:2px 7px;text-decoration:none}
 .term{margin:56px 0 0;border:1px solid var(--line);border-radius:14px;background:#0e0f13;overflow:hidden;box-shadow:0 30px 80px -30px rgba(139,124,255,.25)}
 .term .bar{display:flex;gap:7px;padding:12px 14px;border-bottom:1px solid #1d2029}
 .term .bar i{width:11px;height:11px;border-radius:50%;background:#2a2d38}
@@ -109,6 +110,7 @@ nav .links{align-items:center}
     <a class="hide" href="#skills" data-i18n="nav_skills">skills</a>
     <a class="hide" href="#open" data-i18n="nav_open">open source</a>
     <a class="hide" href="#commands" data-i18n="nav_commands">commands</a>
+    <a href="/changelog" data-i18n="nav_changes">changelog</a>
     <a href="/account" data-i18n="nav_account">account</a>
     <div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ru">RU</button></div>
   </div>
@@ -120,6 +122,7 @@ nav .links{align-items:center}
   <div class="install">
     <div class="tabs"><button class="on" data-t="sh">macOS / Linux</button><button data-t="ps">Windows</button></div>
     <div class="cmd"><span class="p">$</span><code id="cmd">curl -fsSL __SERVER__/i | sh</code><button class="copy" id="cp" data-i18n="copy">copy</button></div>
+    <div class="ver"><a href="/changelog">v__VERSION__</a> · <span data-i18n="ver_p">latest version — already installed? run <code>/update</code></span></div>
     <div class="note" data-i18n="note">Needs Python 3.8+. No pip, no node, no dependencies. Then just type <code>me</code>.</div>
   </div>
   <div class="stats">
@@ -262,13 +265,14 @@ Call list_prs before labeling.
   <a class="btn" href="https://github.com/Gl1ch5/Me-agent" data-i18n="cta_src">source on GitHub</a>
 </div>
 
-<footer><span><span data-i18n="foot">made for people who switch machines</span> · me v__VERSION__</span><span><a href="/account" data-i18n="nav_account">account</a> · <a href="/me.py" data-i18n="src">source</a> · <a href="https://github.com/Gl1ch5/Me-agent/releases" data-i18n="rel">releases</a></span></footer>
+<footer><span><span data-i18n="foot">made for people who switch machines</span> · me v__VERSION__</span><span><a href="/account" data-i18n="nav_account">account</a> · <a href="/me.py" data-i18n="src">source</a> · <a href="/changelog" data-i18n="nav_changes">changelog</a> · <a href="https://github.com/Gl1ch5/Me-agent/releases" data-i18n="rel">releases</a></span></footer>
 </div>
 
 <script>
 const S = "__SERVER__";
 const RU = {
-  nav_features: "возможности", nav_skills: "навыки", nav_open: "открытый код", nav_commands: "команды", nav_account: "аккаунт",
+  nav_features: "возможности", nav_skills: "навыки", nav_open: "открытый код", nav_commands: "команды", nav_account: "аккаунт", nav_changes: "изменения",
+  ver_p: "последняя версия — уже стоит? выполните <code>/update</code>",
   h1a: "ваш агент,", h1b: "везде.",
   hero_p: "<b>me</b> — минималистичный агент для кода в <b>одном Python-файле</b>. Модели, ключи API, промпты, навыки и чаты живут в облаке: установите на любой машине, войдите, и всё уже на месте.",
   copy: "копировать", copied: "скопировано",

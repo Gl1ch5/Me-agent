@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>me — changelog</title>
+<meta name="theme-color" content="#0b0c10">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0c10;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--a:#8b7cff;--b:#4fd1c5;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+@media (prefers-color-scheme: light){:root{--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a}}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.wrap{max-width:760px;margin:0 auto;padding:0 20px 60px}
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.logo{font-family:var(--mono);font-weight:700;font-size:20px;display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo i{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b));display:inline-block}
+nav .links{display:flex;gap:18px;font-size:14px;color:var(--dim)}nav .links a{text-decoration:none}nav .links a:hover{color:var(--fg)}
+h1{font-family:var(--mono);font-size:clamp(32px,6vw,52px);letter-spacing:-2px;margin:30px 0 8px}
+.lead{color:var(--dim);margin-bottom:28px;line-height:1.55}
+.cmd{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:13px var(--mono);overflow-x:auto;white-space:nowrap;margin:6px 0}
+h2{font:700 18px var(--mono);margin:34px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
+h2 .cur{font:500 11px var(--mono);color:var(--bg);background:var(--a);border-radius:5px;padding:2px 7px;margin-left:8px;vertical-align:middle}
+ul{padding-left:20px;line-height:1.65}li{margin:4px 0}
+code{font:13px var(--mono);background:var(--bg2);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+</style>
+</head>
+<body><div class="wrap">
+<nav><a class="logo" href="/"><i></i>me</a><div class="links"><a href="/">главная</a><a href="/account">аккаунт</a><a href="https://github.com/Gl1ch5/Me-agent/releases">релизы</a></div></nav>
+<h1>changelog</h1>
+<p class="lead">Текущая версия: <b>v__VERSION__</b>. Уже установлено — обновитесь командой <code>/update</code> в терминале. Установка:</p>
+<div class="cmd">macOS / Linux: curl -fsSL __SERVER__/i | sh</div>
+<div class="cmd">Windows (PowerShell): irm __SERVER__/i.ps1 | iex</div>
+__CHANGELOG__
+</div></body></html>
