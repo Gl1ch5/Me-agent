@@ -62,7 +62,10 @@ def presets(store):
             body = m.group(2)
         name = meta.get("name") or p.stem
         base = out.get(name, {"tools": ALL_TOOLS, "writes": "*"})
-        out[name] = dict(base, **{k: v for k, v in meta.items() if v != ""}, name=name, prompt=body.strip(), custom=True)
+        # frontmatter may carry its own name/prompt/custom keys; build the dict in one place so none of them clash
+        fields = {k: v for k, v in meta.items() if v != ""}
+        fields.update(name=name, prompt=body.strip(), custom=True)
+        out[name] = dict(base, **fields)
     return out
 
 

@@ -279,6 +279,15 @@ def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     assert "me" in me.presets(s)
 
 
+def test_agent_frontmatter_keys(tmp=Path(tempfile.mkdtemp())):
+    # an agent file synced from another machine may carry name/prompt in its frontmatter: must not crash the TUI render
+    s = make()
+    (s.home / "agents" / "scout.md").write_text("---\nname: scout\nprompt: from frontmatter\ndescription: finds things\n---\nBody text.")
+    ps = me.presets(s)
+    assert ps["scout"]["name"] == "scout" and ps["scout"]["prompt"] == "Body text." and ps["scout"]["custom"] is True
+    assert ps["scout"]["description"] == "finds things"
+
+
 def test_memory(tmp=Path(tempfile.mkdtemp())):
     s = make()
     ag, ev = run(s, "tool:memory " + json.dumps({"text": "deploy on fridays"}))
