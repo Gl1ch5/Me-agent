@@ -292,6 +292,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         self.draw()
                     except Exception as e:
                         self.term.write(f"{CSI}H{CSI}2Jrender error: {e}")
+                        self._prev_rows = None
                     last = now
         finally:
             self.agent.cancel.set()

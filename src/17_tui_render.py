@@ -409,9 +409,16 @@ class TUIRender:
             if self.scroll:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
-            out = [CSI + "H"]
-            for i, l in enumerate(screen[:H]):
-                out.append(f"{CSI}{i + 1};1H" + l.render(W, bgc))
+            out = []
+            # repaint only the rows that changed (a full repaint every frame flickers badly in the Windows console)
+            rows = [l.render(W, bgc) for l in screen[:H]]
+            prev = getattr(self, "_prev_rows", None)
+            full = prev is None or len(prev) != len(rows) or getattr(self, "_prev_wh", None) != (W, H) or self.modal or getattr(self, "_prev_modal", False)
+            for i, r in enumerate(rows):
+                if full or prev[i] != r:
+                    out.append(f"{CSI}{i + 1};1H" + r)
+            self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
+            out.insert(0, CSI + "?25l")  # hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))

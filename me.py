@@ -16,7 +16,7 @@ import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, uni
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.6"
+VERSION = "0.5.7"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -3781,9 +3781,16 @@ class TUIRender:
             if self.scroll:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
-            out = [CSI + "H"]
-            for i, l in enumerate(screen[:H]):
-                out.append(f"{CSI}{i + 1};1H" + l.render(W, bgc))
+            out = []
+            # repaint only the rows that changed (a full repaint every frame flickers badly in the Windows console)
+            rows = [l.render(W, bgc) for l in screen[:H]]
+            prev = getattr(self, "_prev_rows", None)
+            full = prev is None or len(prev) != len(rows) or getattr(self, "_prev_wh", None) != (W, H) or self.modal or getattr(self, "_prev_modal", False)
+            for i, r in enumerate(rows):
+                if full or prev[i] != r:
+                    out.append(f"{CSI}{i + 1};1H" + r)
+            self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
+            out.insert(0, CSI + "?25l")  # hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))
@@ -3974,6 +3981,7 @@ class TUIInput:
             self.cur = s
         elif k == "ctrl-l":
             self.term.write(CSI + "2J")
+            self._prev_rows = None
         elif k == "ctrl-o":
             for b in reversed(self.blocks):
                 if b.kind in ("tool", "skill", "reason") and b.done:
@@ -5347,6 +5355,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         self.draw()
                     except Exception as e:
                         self.term.write(f"{CSI}H{CSI}2Jrender error: {e}")
+                        self._prev_rows = None
                     last = now
         finally:
             self.agent.cancel.set()
