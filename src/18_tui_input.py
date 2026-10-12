@@ -274,7 +274,7 @@ class TUIInput:
             return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
-            self.info(f"⏳ queued ({len(self.pending)}): {text[:100]}", "dim")
+            self.info(f"◌ queued ({len(self.pending)}): {text[:100]}", "dim")
             return
         self.dispatch(text)
 
