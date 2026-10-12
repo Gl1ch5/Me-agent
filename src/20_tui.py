@@ -315,7 +315,12 @@ class TUI(TUIRender, TUIInput, TUICommands):
             if self.agent.session["messages"]:
                 print(f"me · session {self.agent.session['id']} · ↑{human(u.get('in', 0))} ↓{human(u.get('out', 0))}  (resume: /sessions)")
         if self.restart:
-            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+            args = [sys.executable, os.path.abspath(__file__)] + sys.argv[1:]
+            if WIN:
+                # os.execv does not replace the process on Windows: the old one exits at once, the shell takes the console back
+                # and fights the new process for keystrokes. Wait for the child instead.
+                sys.exit(subprocess.call(args))
+            os.execv(*(args[0], args))
 
 
 
