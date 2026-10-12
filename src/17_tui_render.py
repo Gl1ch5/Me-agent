@@ -169,10 +169,10 @@ class TUIRender:
         args = "  ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in (a.get("args") or {}).items())
         if args:
             out.append(row([(args[: inner - 2], rgb(TH["dim"]))]))
-        if b.status:
+        if b.status and not b.done:
             out.append(row([(SPIN[self.frame % len(SPIN)] + " ", rgb(color)), (b.status[: inner - 4], rgb(TH["fg"]))]))
         p = b.progress
-        if p:
+        if p and not b.done:
             lbl = (p.get("label") or "")[:24]
             cnt = f" {p['n']}/{p['total']}" if p.get("total") else (f" {p['n']}" if p.get("n") is not None else "")
             bw = max(10, inner - swidth(lbl) - swidth(cnt) - 6)
@@ -228,11 +228,12 @@ class TUIRender:
     def todo_lines(self, W, H):
         """Live checklist above the input while there is open work (the agent's todo tool)."""
         items = self.agent.session.get("todo") or []
-        if not items or (all(i["s"] == "done" for i in items) and not self.agent.busy):
+        g = self.agent.session.get("goal") or {}
+        # only while the agent works: a finished turn leaves no checklist behind, even if some items were never ticked
+        if not items or not (self.agent.busy or g.get("status") == "working"):
             return []
         done = sum(1 for i in items if i["s"] == "done")
         head = Line().add(" ").add("todo ", rgb(TH["accent"]) + CSI + "1m").add(f"{done}/{len(items)}", rgb(TH["dim"]))
-        g = self.agent.session.get("goal") or {}
         if g.get("status") == "working":
             head.add("  ◎ goal: " + g["text"][: max(10, W - 30)], rgb(TH["accent2"]))
         cap = max(2, min(7, H // 4))

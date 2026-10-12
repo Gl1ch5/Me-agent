@@ -161,6 +161,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
+                    self.cur_reason.touch()
+                # tools cut off by an interrupt/error never get tool_end: close them so no spinner is left running
+                for b in self.tools_live.values():
+                    b.done, b.ok, b.elapsed, b.collapsed = True, False, time.time() - b.t0, True
+                    b.data.setdefault("output", "interrupted")
+                    b.touch()
+                self.tools_live.clear()
                 self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
                                        + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
                 self.cur_text = self.cur_reason = None

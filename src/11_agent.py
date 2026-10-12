@@ -192,6 +192,9 @@ class Agent:
             self.emit({"type": "error", "text": str(e)})
         finally:
             self.busy = False
+            todo = self.session.get("todo") or []
+            if todo and all(i["s"] == "done" for i in todo):
+                self.session["todo"] = []  # finished list: don't carry it into the next request
             self._finish_checkpoint(start_idx)
             if pr.get("name") == "me" and self.persist:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
