@@ -1968,6 +1968,7 @@ class Agent:
         self.depth = 0  # subagent nesting
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
+        self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -2088,6 +2089,11 @@ class Agent:
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
+                queued = self.take_queued() if self.depth == 0 else []
+                if queued:  # the user wrote while tools ran: hand it to the model now instead of after the whole turn
+                    self.emit({"type": "queued_sent", "texts": queued})
+                    self.session["messages"].append({"role": "user", "content": "[message from the user while you were working — take it into account]\n"
+                                                     + "\n\n".join(queued)})
         except Cancelled:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
@@ -5084,6 +5090,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.frame = 0
         self.lock = threading.RLock()
         self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
+        self.agent.take_queued = self.take_pending
         self.tools_live = {}
         self.cur_text = None
         self.cur_reason = None
@@ -5220,6 +5227,10 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
                 self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
+            elif t == "queued_sent":
+                for x in e["texts"]:
+                    self.add("user", text=x)
+                self.cur_text = self.cur_reason = None
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
@@ -5317,6 +5328,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.update_avail = r["version"]
         except Exception:
             pass
+
+    def take_pending(self):
+        "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
+        with self.lock:
+            out = [t for t in self.pending if not re.search(r"@\S+\.(png|jpe?g|gif|webp|bmp)\b", t, re.I)]
+            self.pending = [t for t in self.pending if t not in out]
+            return out
 
     def drain_pending(self):
         "Send the next queued message once the agent is free (one at a time: the next waits for this turn)."

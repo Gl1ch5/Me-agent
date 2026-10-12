@@ -390,6 +390,20 @@ def test_tui_message_queue(tmp=Path(tempfile.mkdtemp())):
     assert t.pending == [] and sent == ["first", "second"]
 
 
+def test_queued_message_mid_turn(tmp=Path(tempfile.mkdtemp())):
+    # a message queued while a tool runs reaches the model right after that tool step, not after the whole turn
+    (tmp / "a.txt").write_text("x\n")
+    ev, box = [], ["also check b"]
+    ag = me.Agent(make(), ev.append)
+    ag.take_queued = lambda: [box.pop()] if box else []
+    ag.run("tool:read " + json.dumps({"path": str(tmp / "a.txt")}))
+    roles = [m["role"] for m in ag.session["messages"]]
+    i = roles.index("tool")
+    assert roles[i + 1] == "user" and "also check b" in ag.session["messages"][i + 1]["content"], roles
+    assert [e["texts"] for e in ev if e["type"] == "queued_sent"] == [["also check b"]]
+    assert not box
+
+
 def test_agent_frontmatter_keys(tmp=Path(tempfile.mkdtemp())):
     # an agent file synced from another machine may carry name/prompt in its frontmatter: must not crash the TUI render
     s = make()

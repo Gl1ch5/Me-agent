@@ -22,6 +22,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.frame = 0
         self.lock = threading.RLock()
         self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
+        self.agent.take_queued = self.take_pending
         self.tools_live = {}
         self.cur_text = None
         self.cur_reason = None
@@ -158,6 +159,10 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
                 self.add("info", text=("⏹ " if e["text"] == "interrupted" else "✗ ") + e["text"], color="warn" if e["text"] == "interrupted" else "err")
+            elif t == "queued_sent":
+                for x in e["texts"]:
+                    self.add("user", text=x)
+                self.cur_text = self.cur_reason = None
             elif t == "turn_end":
                 if self.cur_reason and not self.cur_reason.done:
                     self.cur_reason.done, self.cur_reason.elapsed = True, time.time() - self.cur_reason.t0
@@ -255,6 +260,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.update_avail = r["version"]
         except Exception:
             pass
+
+    def take_pending(self):
+        "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
+        with self.lock:
+            out = [t for t in self.pending if not re.search(r"@\S+\.(png|jpe?g|gif|webp|bmp)\b", t, re.I)]
+            self.pending = [t for t in self.pending if t not in out]
+            return out
 
     def drain_pending(self):
         "Send the next queued message once the agent is free (one at a time: the next waits for this turn)."

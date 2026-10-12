@@ -60,6 +60,7 @@ class Agent:
         self.depth = 0  # subagent nesting
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
+        self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
 
     def system_prompt(self):
         sks = self.skills.enabled()
@@ -180,6 +181,11 @@ class Agent:
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
+                queued = self.take_queued() if self.depth == 0 else []
+                if queued:  # the user wrote while tools ran: hand it to the model now instead of after the whole turn
+                    self.emit({"type": "queued_sent", "texts": queued})
+                    self.session["messages"].append({"role": "user", "content": "[message from the user while you were working — take it into account]\n"
+                                                     + "\n\n".join(queued)})
         except Cancelled:
             self._fix_dangling()
             self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
