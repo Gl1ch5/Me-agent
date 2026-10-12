@@ -272,11 +272,13 @@ class TUIInput:
             cmd, _, arg = text[1:].partition(" ")
             self.bg(self.command, cmd.strip().lower(), arg.strip())
             return
-        if self.agent.busy:
-            self.toast("still working — esc to interrupt", "warn")
-            self.input = text
-            self.cur = len(text)
+        if self.agent.busy or self.launching or self.pending:
+            self.pending.append(text)
+            self.info(f"⏳ queued ({len(self.pending)}): {text[:100]}", "dim")
             return
+        self.dispatch(text)
+
+    def dispatch(self, text):
         images = []
         for ref in re.findall(r"@(\S+)", text):
             p = Path(ref)
@@ -288,7 +290,14 @@ class TUIInput:
             self.info("no model yet — let's set one up", "warn")
             self.bg(self.setup_provider)
             return
-        self.bg(self.agent.run, text, images)
+        self.launching = True
+        self.bg(self._run_turn, text, images)
+
+    def _run_turn(self, text, images):
+        try:
+            self.agent.run(text, images)
+        finally:
+            self.launching = False
 
     def retheme(self, name=None):
         apply_theme(self.s, name)

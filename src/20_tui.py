@@ -10,6 +10,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.term = Term()
         self.blocks = []
         self.input, self.cur = "", 0
+        self.pending = []  # messages sent while the agent was busy: sent in order when it is free
+        self.launching = False  # a turn was started but the agent may not show busy yet
         self.hist = [l for l in (self.s.home / "history").read_text("utf-8").split("\0") if l] if (self.s.home / "history").exists() else []
         self.hpos = None
         self.scroll = 0  # lines from bottom
@@ -247,6 +249,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
         except Exception:
             pass
 
+    def drain_pending(self):
+        "Send the next queued message once the agent is free (one at a time: the next waits for this turn)."
+        if self.pending and not self.agent.busy and not self.launching:
+            with self.lock:
+                self.dispatch(self.pending.pop(0))
+            self.dirty = True
+
     def run(self):
         self.restart = False
         self.term.start(self.s.config["settings"].get("mouse", True))
@@ -272,6 +281,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.dirty = True
                 except queue.Empty:
                     pass
+                self.drain_pending()
                 if PLUGINS.emit("tick", self):
                     self.dirty = True
                 animating = self.agent.busy or self.tools_live or self.cloud.status == "syncing" or (self.notice[0] and time.time() - self.notice[1] < 4.5)

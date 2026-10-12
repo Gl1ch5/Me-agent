@@ -288,7 +288,7 @@ class TUIRender:
             right.add(("full " if pm == "full" else "read-only "), rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         cs = self.cloud.status
         if self.cloud.online:
-            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]),
+            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)] + " ", TH["accent"]),
                    "error": ("☁ !", TH["err"])}.get(cs, ("☁", TH["dim"]))
             right.add(sym[0] + " ", rgb(sym[1])).add(self.s.auth.get("user", ""), dim)
         else:
@@ -324,7 +324,7 @@ class TUIRender:
         if pm != "ask":
             right.add("full " if pm == "full" else "ro ", rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         if self.cloud.online:
-            sym = {"synced": ("☁✓", TH["ok"]), "syncing": ("☁" + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁!", TH["err"])}.get(
+            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁ !", TH["err"])}.get(
                 self.cloud.status, ("☁", TH["dim"]))
             right.add(sym[0], rgb(sym[1]))
         else:

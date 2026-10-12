@@ -143,7 +143,12 @@ class Term:
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
+            # VT input for keys; with mouse on, also ENABLE_MOUSE_INPUT so the wheel is reported, and QuickEdit off
+            # (QuickEdit selection in conhost swallows the wheel)
+            flags = (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
+            if mouse:
+                flags = (flags | 0x0010 | 0x0080) & ~0x0040
+            k.SetConsoleMode(h_in, flags)
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty

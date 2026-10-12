@@ -362,6 +362,34 @@ def test_modder_pack(tmp=Path(tempfile.mkdtemp())):
     assert [h["path"] for h in hits] == ["games/terraria/fal-arsenal.md"] and hits[0]["route"] == "tmodloader", hits
 
 
+def test_tui_message_queue(tmp=Path(tempfile.mkdtemp())):
+    # a message sent while the agent works is queued, then sent when it is free, in order, one turn at a time
+    from types import SimpleNamespace
+    t = me.TUI.__new__(me.TUI)
+    t.lock = threading.RLock()
+    t.s = SimpleNamespace(home=tmp)
+    t.agent = SimpleNamespace(busy=True)
+    t.input, t.cur, t.sugg, t.hpos, t.scroll, t.hist, t.pending, t.launching, t.dirty = "", 0, [], None, 0, [], [], False, False
+    sent, infos = [], []
+    t.info = lambda text, color="dim": infos.append(text)
+    t.bg = lambda fn, *a: sent.append(a)
+    t.dispatch = lambda text: sent.append(text)
+    t.toast = lambda *a, **k: None
+    for msg in ("first", "second"):
+        t.input = msg
+        t.submit()
+    assert sent == [] and t.pending == ["first", "second"] and len(infos) == 2, (sent, t.pending)
+    t.agent.busy = False
+    t.drain_pending()
+    assert t.pending == ["second"] and sent == ["first"]
+    t.launching = True  # a turn just started, the agent may not show busy yet: wait
+    t.drain_pending()
+    assert t.pending == ["second"] and sent == ["first"]
+    t.launching = False
+    t.drain_pending()
+    assert t.pending == [] and sent == ["first", "second"]
+
+
 def test_agent_frontmatter_keys(tmp=Path(tempfile.mkdtemp())):
     # an agent file synced from another machine may carry name/prompt in its frontmatter: must not crash the TUI render
     s = make()

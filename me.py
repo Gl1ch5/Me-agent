@@ -2992,7 +2992,12 @@ class Term:
             k.SetConsoleMode(h_out, mode.value | 0x0004)
             k.GetConsoleMode(h_in, ctypes.byref(mode))
             self.old = mode.value
-            k.SetConsoleMode(h_in, (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004))
+            # VT input for keys; with mouse on, also ENABLE_MOUSE_INPUT so the wheel is reported, and QuickEdit off
+            # (QuickEdit selection in conhost swallows the wheel)
+            flags = (mode.value | 0x0200) & ~(0x0001 | 0x0002 | 0x0004)
+            if mouse:
+                flags = (flags | 0x0010 | 0x0080) & ~0x0040
+            k.SetConsoleMode(h_in, flags)
             k.SetConsoleOutputCP(65001)
         else:
             import termios, tty
@@ -3613,7 +3618,7 @@ class TUIRender:
             right.add(("full " if pm == "full" else "read-only "), rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         cs = self.cloud.status
         if self.cloud.online:
-            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]),
+            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)] + " ", TH["accent"]),
                    "error": ("☁ !", TH["err"])}.get(cs, ("☁", TH["dim"]))
             right.add(sym[0] + " ", rgb(sym[1])).add(self.s.auth.get("user", ""), dim)
         else:
@@ -3649,7 +3654,7 @@ class TUIRender:
         if pm != "ask":
             right.add("full " if pm == "full" else "ro ", rgb(TH["warn"] if pm == "full" else TH["accent2"]))
         if self.cloud.online:
-            sym = {"synced": ("☁✓", TH["ok"]), "syncing": ("☁" + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁!", TH["err"])}.get(
+            sym = {"synced": ("☁ ✓", TH["ok"]), "syncing": ("☁ " + SPIN[self.frame % len(SPIN)], TH["accent"]), "error": ("☁ !", TH["err"])}.get(
                 self.cloud.status, ("☁", TH["dim"]))
             right.add(sym[0], rgb(sym[1]))
         else:
@@ -4115,11 +4120,13 @@ class TUIInput:
             cmd, _, arg = text[1:].partition(" ")
             self.bg(self.command, cmd.strip().lower(), arg.strip())
             return
-        if self.agent.busy:
-            self.toast("still working — esc to interrupt", "warn")
-            self.input = text
-            self.cur = len(text)
+        if self.agent.busy or self.launching or self.pending:
+            self.pending.append(text)
+            self.info(f"⏳ queued ({len(self.pending)}): {text[:100]}", "dim")
             return
+        self.dispatch(text)
+
+    def dispatch(self, text):
         images = []
         for ref in re.findall(r"@(\S+)", text):
             p = Path(ref)
@@ -4131,7 +4138,14 @@ class TUIInput:
             self.info("no model yet — let's set one up", "warn")
             self.bg(self.setup_provider)
             return
-        self.bg(self.agent.run, text, images)
+        self.launching = True
+        self.bg(self._run_turn, text, images)
+
+    def _run_turn(self, text, images):
+        try:
+            self.agent.run(text, images)
+        finally:
+            self.launching = False
 
     def retheme(self, name=None):
         apply_theme(self.s, name)
@@ -5008,6 +5022,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.term = Term()
         self.blocks = []
         self.input, self.cur = "", 0
+        self.pending = []  # messages sent while the agent was busy: sent in order when it is free
+        self.launching = False  # a turn was started but the agent may not show busy yet
         self.hist = [l for l in (self.s.home / "history").read_text("utf-8").split("\0") if l] if (self.s.home / "history").exists() else []
         self.hpos = None
         self.scroll = 0  # lines from bottom
@@ -5245,6 +5261,13 @@ class TUI(TUIRender, TUIInput, TUICommands):
         except Exception:
             pass
 
+    def drain_pending(self):
+        "Send the next queued message once the agent is free (one at a time: the next waits for this turn)."
+        if self.pending and not self.agent.busy and not self.launching:
+            with self.lock:
+                self.dispatch(self.pending.pop(0))
+            self.dirty = True
+
     def run(self):
         self.restart = False
         self.term.start(self.s.config["settings"].get("mouse", True))
@@ -5270,6 +5293,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.dirty = True
                 except queue.Empty:
                     pass
+                self.drain_pending()
                 if PLUGINS.emit("tick", self):
                     self.dirty = True
                 animating = self.agent.busy or self.tools_live or self.cloud.status == "syncing" or (self.notice[0] and time.time() - self.notice[1] < 4.5)
