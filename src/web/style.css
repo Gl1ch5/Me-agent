@@ -162,3 +162,13 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .popup button b{white-space:normal}
 .status{row-gap:4px}
 @media (max-width:420px){header .title{min-width:0}.pill{padding:5px 7px}}
+
+.box{position:relative}
+.slash{position:absolute;left:0;right:0;bottom:calc(100% + 6px);background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:4px;max-height:42vh;overflow:auto;box-shadow:0 8px 28px rgba(0,0,0,.35);z-index:15}
+.slash button{display:flex;width:100%;gap:10px;align-items:baseline;text-align:left;padding:7px 10px;border-radius:8px;font:13px var(--mono)}
+.slash button.on,.slash button:hover{background:var(--bg2)}.slash b{color:var(--a);font-weight:600}.slash .a{color:var(--faint)}.slash .d{margin-left:auto;color:var(--dim);font:12px var(--sans,inherit);text-align:right}
+.tool.cli{border-color:color-mix(in srgb,var(--sk) 55%,var(--line));border-left:3px solid var(--sk)}
+.tool.cli .h b{color:var(--sk)}
+.tool.cli .pbar{margin:0;border-radius:0;height:5px;background:color-mix(in srgb,var(--sk) 16%,var(--bg2))}
+.tool.cli .pbar i{background:var(--sk)}
+.tool.cli.done .pbar i{width:100%!important;animation:none;margin:0}.tool.cli.fail{--sk:var(--err)}

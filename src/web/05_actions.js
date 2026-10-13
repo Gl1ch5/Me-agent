@@ -33,8 +33,7 @@ async function apply(s, history = true) {
 async function send() {
   let t = $("input").value.trim(); if ((!t && !atts.length) || busy) return;
   const fail = e => el(`<div class="info err">${esc(e.message)}</div>`);
-  if (t === "/compact") { $("input").value = ""; grow(); return api(base + "/compact", {}).catch(fail); }
-  if (t === "/undo") { $("input").value = ""; grow(); return A.undo().catch(fail); }
+  if (/^\/[a-z0-9]/i.test(t) && !/^\/goal\s/.test(t) && !atts.length && await runSlash(t)) { $("input").value = ""; grow(); return slashUpdate(); }
   const goal = /^\/goal\s+/.test(t);
   if (goal) t = t.replace(/^\/goal\s+/, "").replace(/^"|"$/g, "");
   const images = atts.filter(a => a.image).map(a => a.url);

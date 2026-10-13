@@ -12,11 +12,11 @@ Layers (top → bottom), each usable on its own:
 Stdlib only. Python 3.8+.
 """
 import ast, base64, difflib, fnmatch, glob, hashlib, io, json, os, platform, queue, re
-import shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
+import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.5.14"
+VERSION = "0.6.0"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"

@@ -170,7 +170,7 @@ Type `/` and start typing, suggestions are fuzzy.
 | Command | What it does |
 |---|---|
 | `/help` | show commands and keys |
-| `/agent` | switch mode: code, design, plan, review… |
+| `/agent` | switch agent (only `code` is built in; the rest come from the marketplace) |
 | `/init` | create AGENTS.md for this project |
 | `/goal` | work autonomously until done and verified, or blocked |
 | `/todo` | show the agent's checklist |

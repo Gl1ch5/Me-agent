@@ -17,12 +17,13 @@ function shortPath(s) {
   const max = innerWidth < 500 ? 34 : 70;
   return s.length > max ? "…" + s.slice(-(max - 1)) : s;
 }
-function toolCard(name, label, args, skill) {
+function toolCard(name, label, args, skill, cli) {
   label = shortPath(label);
   const isSkill = name === "skill" && args && args.action;
-  const color = isSkill ? (COLORS[skill?.color] || "var(--a)") : "var(--a)";
-  const title = isSkill ? `${esc(args.name)} · ${esc(args.action)}` : esc(name);
-  return el(`<div class="tool ${isSkill ? "skill" : ""} closed" style="--sk:${color}"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spin"></span></span><b>${title}</b><span class="lab">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class="t"></span></div><div class="st hidden"></div><div class="pbar hidden"><i></i></div><div class="log hidden"></div><div class="body"></div></div>`);
+  const color = cli ? (COLORS[cli.color] || (/^#/.test(cli.color || "") ? cli.color : COLORS.red || "#ff6b7a")) : isSkill ? (COLORS[skill?.color] || "var(--a)") : "var(--a)";
+  const title = cli ? `${esc(cli.icon || "▣")} ${esc(cli.label)} · ${esc(cli.agent)}` : isSkill ? `${esc(args.name)} · ${esc(args.action)}` : esc(name);
+  if (cli) label = Object.entries(args || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ");
+  return el(`<div class="tool ${cli ? "cli" : isSkill ? "skill" : ""} ${cli ? "" : "closed"}" style="--sk:${color}"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spin"></span></span><b>${title}</b><span class="lab">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class="t"></span></div><div class="st hidden"></div><div class="pbar ${cli ? "ind" : "hidden"}"><i></i></div><div class="log hidden"></div><div class="body"></div></div>`);
 }
 function diffHtml(t) { return t.split("\n").map(l => `<span class="${l[0] === "+" ? "add" : l[0] === "-" ? "del" : ""}">${esc(l)}</span>`).join("\n"); }
 function onEvent(e) {
@@ -41,7 +42,7 @@ function onEvent(e) {
   }
   if (t === "tool_start") {
     endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;
-    live[e.id] = toolCard(e.name, e.label, e.args, e.skill); return;
+    live[e.id] = toolCard(e.name, e.label, e.args, e.skill, e.cli); return;
   }
   if (t === "tool_event") {
     const c = live[e.id]; if (!c) return;
@@ -63,7 +64,8 @@ function onEvent(e) {
   if (t === "tool_end") {
     const c = live[e.id]; if (!c) return; delete live[e.id];
     c.querySelector(".ic").innerHTML = e.ok ? I.check : I.x; c.querySelector(".t").textContent = dur(e.time);
-    c.querySelectorAll(".st,.pbar,.log").forEach(x => x.classList.add("hidden"));
+    c.querySelectorAll(c.classList.contains("cli") ? ".st,.log" : ".st,.pbar,.log").forEach(x => x.classList.add("hidden"));
+    if (c.classList.contains("cli")) { c.classList.add("done", e.ok ? "ok" : "fail"); c.querySelector(".pbar").classList.remove("ind"); c.classList.add("closed"); }
     if (c.querySelector(".panel")) c.classList.add("haspanel");
     const b = c.querySelector(".body"); if (!b.innerHTML) b.textContent = (e.output || "").slice(0, 20000);
     if (!e.ok) c.classList.remove("closed");

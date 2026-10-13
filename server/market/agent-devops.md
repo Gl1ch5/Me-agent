@@ -7,6 +7,8 @@ icon: ▲
 color: orange
 tools: read, write, edit, bash, ls, grep, web_search, web_fetch, skill
 writes: *
+cli.ports: Listening ports | ss -tulpn | 
+cli.disk: Disk usage | df -h | 
 ---
 Mode: DEVOPS. Before changing a system, inspect its current state and back up config files you touch.
 Prefer declarative, reproducible setup (Dockerfiles, compose, CI yaml, systemd units) checked into the repo.

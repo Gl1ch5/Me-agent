@@ -187,6 +187,8 @@ def test_self_verify(tmp=Path(tempfile.mkdtemp())):
 
 def test_subagent():
     s = make()
+    (s.home / "agents").mkdir(exist_ok=True)
+    (s.home / "agents" / "review.md").write_text("---\nname: review\ntools: read, ls, grep\nwrites:\n---\nReview.")
     before = len(s.sessions())
     ag, ev = run(s, "tool:task " + json.dumps({"agent": "review", "prompt": "hi"}))
     out = ends(ev)[0]
@@ -264,6 +266,8 @@ def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
 
 def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     s = make()
+    (s.home / "agents").mkdir(exist_ok=True)
+    (s.home / "agents" / "me.md").write_text((Path(__file__).resolve().parent.parent / "server" / "market" / "agent-me.md").read_text("utf-8"))
     s.config["agent"] = "me"
     ag = me.Agent(s, print)
     sp = ag.system_prompt()
@@ -276,7 +280,7 @@ def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     assert "sunset" in me.themes(s) and me.theme(s, "sunset")["colors"]["accent"] == "#ff7a59"
     ag.run("tool:write " + json.dumps({"path": str(s.home / "skills" / "hi.md"), "content": "---\nname: hi\ndescription: greets\n---\nSay hi."}))
     assert "hi" in me.Skills(s).enabled()
-    assert "me" in me.presets(s)
+    assert "code" in me.presets(s)
 
 
 def test_modder_pack(tmp=Path(tempfile.mkdtemp())):
@@ -411,6 +415,33 @@ def test_agent_frontmatter_keys(tmp=Path(tempfile.mkdtemp())):
     ps = me.presets(s)
     assert ps["scout"]["name"] == "scout" and ps["scout"]["prompt"] == "Body text." and ps["scout"]["custom"] is True
     assert ps["scout"]["description"] == "finds things"
+
+
+def test_only_code_builtin_and_cli_tools(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    assert list(me.BUILTIN_PRESETS) == ["code"]
+    (s.home / "agents").mkdir(exist_ok=True)
+    (s.home / "agents" / "ops.md").write_text(
+        "---\nname: ops\ncolor: red\ntools: read, bash\n"
+        "cli.hello: Say hello | echo hello {who} | cat | who=world\ncli.plain: No params | echo plain-out | \n---\nYou are ops.")
+    ps = me.presets(s)
+    assert set(ps["ops"]["cli"]) == {"ops_hello", "ops_plain"}, ps["ops"]["cli"]
+    assert ps["ops"]["cli"]["ops_hello"]["cmd"] == "echo hello {who} | cat" and ps["ops"]["cli"]["ops_hello"]["params"] == {"who": "world"}
+    s.config["agent"] = "ops"
+    s.config["settings"]["perm"] = "full"
+    ag = me.Agent(s, print)
+    names = [t["name"] for t in ag.tool_schemas()]
+    assert "ops_hello" in names and "ops_plain" in names and "write" not in names
+    assert "ops_hello" in ag.system_prompt()
+    ag, ev = run(s, "tool:ops_hello " + json.dumps({"who": "a b; echo hacked"}))
+    start = [e for e in ev if e["type"] == "tool_start"][0]
+    assert start["cli"]["agent"] == "ops" and start["cli"]["color"] == "red", start
+    assert ends(ev)[0]["ok"] and ends(ev)[0]["output"].strip() == "hello a b; echo hacked", ends(ev)
+    assert any(e["type"] == "tool_event" and e.get("t") == "status" for e in ev)
+    ag, ev = run(s, "tool:ops_plain {}")
+    assert ends(ev)[0]["output"].strip() == "plain-out"
+    s.config["agent"] = "code"
+    assert "ops_hello" not in [t["name"] for t in me.Agent(s, print).tool_schemas()]
 
 
 def test_memory(tmp=Path(tempfile.mkdtemp())):

@@ -66,11 +66,24 @@ def _decode_out(b):
         return b.decode("oem" if WIN else "utf-8", "replace")
 
 
-def run_shell(cmd, timeout, cancel, env=None):
+def run_shell(cmd, timeout, cancel, env=None, on_line=None):
     kw = {} if WIN else {"start_new_session": True}
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
-    out = []
-    threading.Thread(target=lambda: out.append(proc.stdout.read()), daemon=True).start()
+    buf, eof = [], threading.Event()
+
+    def pump():
+        try:
+            for ln in iter(proc.stdout.readline, b""):
+                buf.append(ln)
+                if on_line:
+                    try:
+                        on_line(_decode_out(ln).rstrip())
+                    except Exception:
+                        pass
+        finally:
+            eof.set()
+
+    threading.Thread(target=pump, daemon=True).start()
     t0 = time.time()
     while proc.poll() is None:
         if cancel.is_set() or time.time() - t0 > timeout:
@@ -84,13 +97,9 @@ def run_shell(cmd, timeout, cancel, env=None):
             proc.wait()
             if cancel.is_set():
                 raise Cancelled()
-            time.sleep(0.1)
-            return f"{_decode_out(out[0] if out else b'')}\n[timed out after {timeout}s]"
+            eof.wait(1)
+            return f"{_decode_out(b''.join(buf))}\n[timed out after {timeout}s]"
         time.sleep(0.05)
-    time.sleep(0.05)
-    for _ in range(40):
-        if out:
-            break
-        time.sleep(0.05)
-    text = _decode_out(out[0] if out else b"")
+    eof.wait(2)
+    text = _decode_out(b"".join(buf))
     return clip(text, 30000) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")

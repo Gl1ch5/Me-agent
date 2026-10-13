@@ -24,6 +24,26 @@ self.addEventListener('notificationclick', e => {
 });"""
 
 
+def apply_setting(cfg, key, value):
+    """Settings the web UI may change by name (same keys on the local agent and, client side, on the cloud config doc)."""
+    st = cfg["settings"]
+    if key == "prompt":
+        cfg["prompt"] = str(value or "")
+    elif key == "autocompact":
+        st["autocompact"] = 0 if value in (0, "0", "off", None) else max(10, min(95, int(str(value).rstrip("%"))))
+    elif key == "effort":
+        m = next((x for x in cfg.get("models", []) if x.get("name") == cfg.get("model")), None)
+        if not m:
+            raise ValueError("no model")
+        m["effort"] = "" if value in ("none", "", None) else str(value)
+    elif key.startswith("skill:"):
+        dis = set(st.get("disabled_skills", []))
+        (dis.discard if value else dis.add)(key[6:])
+        st["disabled_skills"] = sorted(dis)
+    else:
+        raise ValueError("unknown setting " + key)
+
+
 class WebSession:
     """Agent + event log for the browser UI. Same endpoint shape as the cloud runner (/api/cloud/<id>/...)."""
 
@@ -73,7 +93,8 @@ class WebSession:
     def state(self):
         ses = self.agent.session
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
-                "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", [])},
+                "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
+                           "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
                 "day_cost": day_cost(self.s.home), "preview": "",
@@ -150,6 +171,13 @@ class WebSession:
             a.session["agent"] = body["name"]
             self.s.save()
             return {"ok": True}
+        if path == "/skills":
+            dis = set(self.s.config["settings"].get("disabled_skills", []))
+            return {"skills": [{"name": n, "description": k.get("description", ""), "on": n not in dis} for n, k in Skills(self.s).all().items()]}
+        if path == "/config":
+            apply_setting(self.s.config, body["key"], body.get("value"))
+            self.s.save()
+            return self.state()
         if path == "/themes":
             return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
         if path == "/theme":
