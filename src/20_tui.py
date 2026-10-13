@@ -87,9 +87,14 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.cur_reason.touch()
                 self.cur_text = None
                 self.cur_reason = None
-                kind = "skill" if e["name"] == "skill" and e["args"].get("action") else "tool"
+                cli = e.get("cli")
+                kind = "skill" if cli or (e["name"] == "skill" and e["args"].get("action")) else "tool"
                 b = self.add(kind, name=e["name"], args=e["args"], label=e["label"])
-                if kind == "skill":
+                if cli:  # an agent's own CLI tool: a box with a colored status bar
+                    c = cli.get("color") or "red"
+                    b.data.update(cli=True, color=SKILL_COLORS.get(c, c if str(c).startswith("#") else SKILL_COLORS["red"]), icon=cli.get("icon") or "▣",
+                                  args={"name": cli["label"], "action": cli["agent"], "args": e["args"]})
+                elif kind == "skill":
                     sk = self.agent.skills.all().get(e["args"].get("name"), {})
                     b.data["color"] = SKILL_COLORS.get(sk.get("color", ""), sk.get("color") if str(sk.get("color", "")).startswith("#") else TH["accent"])
                     b.data["icon"] = sk.get("icon", "◆")

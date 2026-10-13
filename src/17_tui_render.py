@@ -153,7 +153,7 @@ class TUIRender:
         inner = W - 6
         title = f" {icon} {name} · {act} "
         top = Line().add("  ╭─", bc).add(title, rgb(color) + CSI + "1m")
-        top.add("─" * max(1, inner - swidth(title) - swidth(t) - 2), bc).add(f" {t} ", rgb(TH["dim"])).add("─╮", bc)
+        top.add("─" * max(1, inner - swidth(title) - swidth(t) - 3), bc).add(f" {t} ", rgb(TH["dim"])).add("─╮", bc)
         out = [top]
 
         def row(segs):
@@ -186,6 +186,10 @@ class TUIRender:
                 out.append(row([(l[: inner - 2], rgb(TH["fg"] if b.ok else TH["err"]))]))
         if len(out) == 1:
             out.append(row([(SPIN[self.frame % len(SPIN)] + " starting…", rgb(TH["dim"]))]))
+        if b.data.get("cli") and b.done:  # status bar: full, red-family while ok, error color when the command failed
+            col = color if b.ok else TH["err"]
+            msg = f" {'ok' if b.ok else 'failed'} · {t}"
+            out.append(row(self._bar(1.0, max(10, inner - swidth(msg) - 2), col) + [(msg, rgb(col))]))
         out.append(Line().add("  ╰" + "─" * (W - 5) + "╯", bc))
         return out
 

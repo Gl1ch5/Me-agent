@@ -78,7 +78,9 @@ class Agent:
                         "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
         pr = self.preset()
         if pr.get("prompt"):
-            project += "\n\n" + (pr["prompt"].replace("{home}", str(self.s.home)) if pr.get("name") == "me" else pr["prompt"])
+            project += "\n\n" + pr["prompt"].replace("{home}", str(self.s.home))
+        if pr.get("cli"):
+            project += "\nYour CLI tools (prefer them over hand-written shell for these jobs): " + ", ".join(f"{n} — {c['desc']}" for n, c in pr["cli"].items())
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
@@ -113,6 +115,8 @@ class Agent:
             out.append(NOTIFY_TOOL)
         if self.s.config.get("mcp"):
             out.append(MCP_TOOL)
+        pr = self.preset()
+        out += [cli_schema(n, c, pr["name"]) for n, c in (pr.get("cli") or {}).items()]
         return out + PLUGINS.tool_schemas()
 
     def run(self, text, images=()):
@@ -236,6 +240,10 @@ class Agent:
                 args = None
             tid = tc["id"]
             ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+            cli = (self.preset().get("cli") or {}).get(name)
+            if cli:
+                pr = self.preset()
+                ev["cli"] = {"agent": pr["name"], "label": cli["label"], "color": pr.get("color", ""), "icon": pr.get("icon", "")}
             if name == "skill" and args:
                 sk = self.skills.all().get(args.get("name"), {})
                 ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
@@ -294,6 +302,9 @@ class Agent:
             return self._memory(args)
         if name == "task":
             return self._task(args, temit)
+        cli = (pr.get("cli") or {}).get(name)
+        if cli:
+            return self._cli(cli, args, temit)
         need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
         if isinstance(need, str):
             return False, need, None
@@ -314,6 +325,30 @@ class Agent:
             raise
         except Exception as e:
             return False, f"error: {type(e).__name__}: {e}", None
+
+    def _cli(self, spec, args, temit):
+        """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""
+        cmd, err = render_cli(spec, args)
+        if err:
+            return False, err, None
+        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.session.get("cwd"))
+        if isinstance(need, str):
+            return False, need, None
+        if need and not self.confirm("bash", {"cmd": cmd}):
+            return False, "user denied this action. ask what to do instead.", None
+        temit({"t": "status", "text": "$ " + cmd[:120]})
+        n = [0]
+
+        last = [0.0]
+
+        def line(l):
+            n[0] += 1
+            if time.time() - last[0] > 0.1:  # throttle: chatty commands must not flood the event log
+                last[0] = time.time()
+                temit({"t": "status", "text": l.strip()[:160]})
+                temit({"t": "progress", "v": None, "label": f"{n[0]} lines", "n": n[0]})
+        out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line)
+        return "[exit " not in out[-12:], out or "(no output)", None
 
     def _memory(self, a):
         try:

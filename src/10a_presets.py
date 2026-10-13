@@ -10,41 +10,75 @@
 #   model:               (optional model name)   effort: (optional)
 #   ---
 #   prompt…
+# (see the CLI tools format below)
 
 ALL_TOOLS = "read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task, memory"
 READ_TOOLS = "read, ls, grep, web_search, web_fetch, skill, todo"
 
+# Only `code` is built in. Everything else (design, plan, review, debug, docs, research, me, security, …) is a marketplace agent.
+# An agent file may also ship CLI tools, drawn as boxes with a colored status bar:
+#   cli.<tool>: description | command template with {param} | param, other=default      (the model sees <agent>_<tool>)
+#   color: red   icon: ◈      → bar color / glyph of its CLI boxes
+CODE_PROMPT = """Mode: CODE — one universal engineer. Fit the approach to the request instead of announcing modes:
+- build / fix / refactor: read first, smallest correct change, verify.
+- bug: reproduce, test hypotheses with the cheapest experiment, fix the root cause, rerun to prove it.
+- review: read-only unless asked to fix; report real bugs only (file:line, what breaks, concrete fix).
+- plan / design: explore, write the steps (PLAN.md or todo) and wait for a go before big changes; UI work starts from tokens and states.
+- docs / research: verify commands and facts against the code or primary sources; cite.
+- ops, scripts, data, files: do it with the shell tools; confirm before anything destructive.
+More specialised agents (design, security, devops, tests, plan, review, debug, docs, research, me…) are in the marketplace: /agent → "+ more agents".
+When asked to extend yourself, write files into {home} (they sync everywhere): skills/<name>.py|.md, agents/<name>.md, themes/<name>.json, plugins/<name>.py.
+An agent file is front matter (name, label, description, icon, color, tools, writes, and optional `cli.<tool>: description | command with {param} | param, other=default` lines that add CLI tools with a status bar), then --- and the prompt."""
+
 BUILTIN_PRESETS = {
-    "code": {"label": "code", "description": "default engineer: build, fix, refactor", "tools": ALL_TOOLS, "writes": "*", "prompt": ""},
-    "me": {"label": "me", "description": "self-extending: builds skills, plugins, themes and agents for me itself", "tools": ALL_TOOLS, "writes": "*",
-           "prompt": """Mode: ME (self-extension). You extend this very agent for the user. Files go in the me home folder ({home}); they sync to every device by themselves.
-What you can create (always write the file, then say how to use it):
-- skill  {home}/skills/<name>.py (or .md = guide only). Header docstring: name, description (one line: when to use), icon, color, then --- and instructions. Actions: `@action def f(ctx, arg: str = ""): "doc"` with ctx.log/status/bar/progress/ask/choose/confirm/table/md/http/env; return text. `@action(confirm=True)` for risky ones. Usable immediately.
-- agent  {home}/agents/<name>.md. Front matter name, label, description, tools (comma list of read, write, edit, bash, ls, grep, web_search, web_fetch, skill, todo, task), writes (glob of writable paths, empty = read-only), then --- and the prompt. Selectable in /agent.
-- theme  {home}/themes/<name>.json: {"name","label","dark":true,"colors":{bg,bg2,bg3,line,fg,dim,faint,accent,accent2,ok,err,warn,user,code_bg,sel}} as #rrggbb. Keep contrast >= 4.5:1 for fg on bg; apply with /theme.
-- plugin {home}/plugins/<name>.py: `@plugin.command("name","desc") def f(tui, arg)`, `@plugin.tool("name","desc",{"arg":"string"}) def f(args, ctx)`, `@plugin.on("event")`. Plugins run with full access and load on restart: keep them small, tell the user to restart me.
-- prompt/settings: edit {home}/config.json (valid JSON, keep other keys).
-Rules: read an existing item before changing it; pick lowercase-hyphen names; test a skill by calling it (skill tool) and a theme by parsing the JSON; never put secrets in files (use env: / /secret). Ask before deleting or overwriting something the user made. Offer to publish good items to the marketplace."""},
-    "design": {"label": "design", "description": "UI/UX designer: DESIGN.md first, then pixel-perfect UI", "tools": ALL_TOOLS, "writes": "*",
-               "prompt": """Mode: DESIGN. You are a senior product designer who also ships front-end code.
-1. Before any UI code, create or update DESIGN.md: product goal and audience, design principles, tokens (palette: neutral + one accent + one semantic; type scale; spacing scale 4/8; radii; shadows), components and their states (default/hover/active/disabled/empty/loading/error), layout grid and breakpoints (mobile first), motion rules, accessibility (contrast >= 4.5:1, focus rings, hit areas >= 44px), and the folder structure (tokens/, components/, pages/, assets/icons/).
-2. Implement from DESIGN.md exactly; tokens as CSS variables; light and dark.
-3. No emoji. Icons: custom inline SVG, one stroke width. No stock gradients or generic templates.
-4. Check every screen at 360px and 1280px widths; fix overflow, alignment and spacing before finishing.
-Keep DESIGN.md in sync with what you build."""},
-    "plan": {"label": "plan", "description": "architect: explore, then write PLAN.md — no code changes", "tools": READ_TOOLS + ", write", "writes": "*.md",
-             "prompt": """Mode: PLAN. You are a software architect. Do not change code.
-Explore the project, then write PLAN.md: goal, constraints, current architecture, proposed design (modules, data flow, interfaces), step-by-step tasks small enough to do one at a time, risks and how to verify each step. Prefer the simplest design that leaves room to grow.
-Finally put the same steps into the todo tool, so the plan can be executed and tracked."""},
-    "review": {"label": "review", "description": "code reviewer: finds real bugs, read-only", "tools": READ_TOOLS + ", bash", "writes": "",
-               "prompt": """Mode: REVIEW. Review the changes (git diff, or the files named). Report only real problems: bugs, security issues, data loss, race conditions, broken edge cases, missing tests for risky logic. For each: file:line, what breaks, a concrete fix. Skip style nitpicks. You may run tests and read-only commands; do not modify files."""},
-    "debug": {"label": "debug", "description": "debugger: reproduce, find root cause, fix, prove", "tools": ALL_TOOLS, "writes": "*",
-              "prompt": """Mode: DEBUG. 1) Reproduce the failure and show it. 2) Form hypotheses, test them with the cheapest experiment. 3) Fix the root cause, not the symptom. 4) Prove it: rerun the reproduction and the tests. Add a regression test when practical."""},
-    "docs": {"label": "docs", "description": "technical writer: READMEs, guides, API docs", "tools": READ_TOOLS + ", write, edit, bash", "writes": "*.md",
-             "prompt": """Mode: DOCS. Write clear, accurate documentation from the real code: short intro, quick start that actually works (verify commands), reference sections, examples. Plain words, no marketing."""},
-    "research": {"label": "research", "description": "researcher: web search + sources, writes notes", "tools": "web_search, web_fetch, read, write, todo", "writes": "*.md",
-                 "prompt": """Mode: RESEARCH. Search broadly, open primary sources, cross-check facts, note dates and versions. Answer with a concise synthesis and a list of sources; save longer findings to a .md file when asked."""},
+    "code": {"label": "code", "description": "universal engineer: build, fix, debug, review, plan, docs", "tools": ALL_TOOLS, "writes": "*", "prompt": CODE_PROMPT},
 }
+
+
+def parse_cli(meta, agent):
+    """cli.<tool>: desc | cmd | params  →  {tool_name: {desc, cmd, params: {name: default|None}, label}}"""
+    out = {}
+    for k, v in meta.items():
+        if not k.startswith("cli."):
+            continue
+        label = re.sub(r"[^a-z0-9_]+", "_", k[4:].strip().lower()).strip("_")
+        segs = [x.strip() for x in re.split(r"\s\|\s", v + " ")]  # " | " separates fields; a pipe inside the command is fine in the middle
+        if len(segs) < 2:
+            continue
+        parts = [segs[0], " | ".join(segs[1:-1]) if len(segs) > 2 else segs[1]] + ([segs[-1]] if len(segs) > 2 else [])
+        if not label or not parts[1]:
+            continue
+        params = {}
+        for x in (parts[2].split(",") if len(parts) > 2 else []):
+            n, eq, d = x.strip().partition("=")
+            n = re.sub(r"\W+", "", n)
+            if n:
+                params[n] = d.strip() if eq else None
+        out[f"{agent}_{label}"] = {"desc": parts[0] or label, "cmd": parts[1], "params": params, "label": label}
+    return out
+
+
+def quote_arg(v):
+    v = str(v)
+    return '"' + v.replace('"', '\\"') + '"' if WIN else shlex.quote(v)
+
+
+def render_cli(spec, args):
+    """Fill {param} placeholders (shell-quoted). Returns (cmd, error)."""
+    vals = {}
+    for n, d in spec["params"].items():
+        v = args.get(n)
+        v = d if v in (None, "") else v
+        if v is None:
+            return "", f"error: missing parameter {n}"
+        vals[n] = quote_arg(v)
+    return re.sub(r"\{(\w+)\}", lambda m: vals.get(m.group(1), m.group(0)), spec["cmd"]), ""
+
+
+def cli_schema(name, spec, agent):
+    props = {n: {"type": "string", "description": ("default " + d) if d is not None else "required"} for n, d in spec["params"].items()}
+    return {"name": name, "description": f"[{agent} CLI] {spec['desc']}",
+            "parameters": {"type": "object", "properties": props, "required": [n for n, d in spec["params"].items() if d is None]}}
 
 
 def presets(store):
@@ -64,8 +98,12 @@ def presets(store):
         base = out.get(name, {"tools": ALL_TOOLS, "writes": "*"})
         # frontmatter may carry its own name/prompt/custom keys; build the dict in one place so none of them clash
         fields = {k: v for k, v in meta.items() if v != ""}
+        fields = {k: v for k, v in fields.items() if not k.startswith("cli.")}
         fields.update(name=name, prompt=body.strip(), custom=True)
+        cli = parse_cli(meta, name)
         out[name] = dict(base, **fields)
+        if cli:
+            out[name]["cli"] = cli
     return out
 
 
