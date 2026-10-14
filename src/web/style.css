@@ -172,3 +172,9 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .tool.cli .pbar{margin:0;border-radius:0;height:5px;background:color-mix(in srgb,var(--sk) 16%,var(--bg2))}
 .tool.cli .pbar i{background:var(--sk)}
 .tool.cli.done .pbar i{width:100%!important;animation:none;margin:0}.tool.cli.fail{--sk:var(--err)}
+
+.proj{margin:2px 0}.proj summary{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;list-style:none;color:var(--fg);font-size:13.5px;font-weight:600}
+.proj summary::-webkit-details-marker{display:none}.proj summary:hover{background:var(--bg2)}
+.proj summary span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proj summary .n{font:500 11px var(--mono);color:var(--dim)}
+.proj .pnew{width:24px;height:24px;opacity:.55}.proj summary:hover .pnew{opacity:1}
+.proj .si{padding-left:32px}.si.addp{color:var(--a);margin-top:6px}

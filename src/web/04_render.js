@@ -155,11 +155,23 @@ function renderStatus(tin, tout) {
 }
 function renderSessions() {
   const ss = state.sessions || [], sid = state.session?.id;
+  const item = s => `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`;
+  const projects = {};  // Codex-style: chats grouped by project folder, the most recently used project first
+  if (MODE === "local") ss.forEach(s => (projects[s.cwd || ""] ??= []).push(s));
+  if (MODE === "local" && Object.keys(projects).length) {
+    const cur = state.cwd || "";
+    if (cur && !projects[cur]) projects[cur] = [];
+    const order = Object.keys(projects).sort((a, b) => (a === cur ? -1 : b === cur ? 1 : 0) || Math.max(0, ...projects[b].map(x => x.updated || 0)) - Math.max(0, ...projects[a].map(x => x.updated || 0)));
+    $("slist").innerHTML = order.map(p => {
+      const name = p.split(/[\\/]/).filter(Boolean).pop() || p || t("(no folder)"), open = p === cur || projects[p].some(x => x.id === sid);
+      return `<details class="proj" ${open ? "open" : ""}><summary title="${esc(p)}"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>${esc(name)}</span><b class="n">${projects[p].length || ""}</b><button class="ib pnew" title="${esc(t("New chat"))}" onclick="event.preventDefault();event.stopPropagation();newChatIn('${esc(p.replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></summary>${projects[p].slice(0, 40).map(item).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`}</details>`;
+    }).join("") + `<button class="si addp" onclick="$('wsPill').click()">+ ${esc(t("open a project folder"))}</button>`;
+    return;
+  }
   const groups = {};
   ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;
     const g = age < 1 ? t("Today") : age < 7 ? t("This week") : t("Older"); (groups[g] ??= []).push(s); });
-  $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(s =>
-    `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
+  $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(item).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
 }
 async function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }
 function setBusy() {
