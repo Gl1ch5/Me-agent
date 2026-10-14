@@ -99,7 +99,8 @@ inp.addEventListener("keydown", e => { if (e.code === "Space" && !inp.value && e
 inp.addEventListener("keyup", e => { if (e.code === "Space") recStop(); });
 $("wsPill").onclick = async () => {
   if (MODE === "cloud") return location.href = "/account#workspaces";
-  const p = prompt(t("Project folder for the local agent"), state.cwd || "");
+  const native = window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder;  // desktop app: real folder dialog
+  const p = native ? await window.pywebview.api.pick_folder(state.cwd || "") : prompt(t("Project folder for the local agent"), state.cwd || "");
   if (!p) return;
   try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };
