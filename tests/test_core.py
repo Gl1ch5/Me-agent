@@ -466,6 +466,8 @@ if __name__ == "__main__":
             try:
                 v()
                 print("ok  ", k)
+            except ModuleNotFoundError as e:  # optional test deps (Pillow) missing: skip, don't fail
+                print("skip", k, e)
             except Exception as e:
                 fails += 1
                 import traceback

@@ -70,6 +70,14 @@ except Exception as e:
 '''
 
 
+def _src(text, node):
+    """Source of a default value (ast.unparse is 3.9+)."""
+    try:
+        return repr(ast.literal_eval(node))
+    except ValueError:
+        return ast.unparse(node) if hasattr(ast, "unparse") else (ast.get_source_segment(text, node) or "…")
+
+
 def parse_skill(path):
     p = Path(path)
     text = p.read_text("utf-8")
@@ -91,7 +99,7 @@ def parse_skill(path):
                 kw = {k.arg: ast.literal_eval(k.value) for k in getattr(dec, "keywords", []) if isinstance(k.value, ast.Constant)}
                 a = node.args
                 names = [x.arg for x in a.args][1:]
-                defaults = [ast.unparse(d) for d in a.defaults] if hasattr(ast, "unparse") else []
+                defaults = [_src(text, d) for d in a.defaults]
                 sig = []
                 for i, n in enumerate(names):
                     j = i - (len(names) - len(defaults))

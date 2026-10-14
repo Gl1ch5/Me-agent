@@ -1,12 +1,33 @@
 name: ci
 on: [push, pull_request]
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: python build.py --check
-      - run: python tests/test_core.py
       - run: python -c "import ast,sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]" server/*.py server/market/*.py
+      - uses: actions/setup-node@v4
+        with: {node-version: "20"}
+      - name: web UI and IDE extension JS parse
+        run: |
+          for f in src/web/*.js apps/vscode/*.js; do node --check "$f"; done
+  test:
+    # me.py promises Python 3.8+ on every OS: a syntax that only 3.12 accepts once broke every Windows install on 3.11
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.8", "3.11", "3.13"]
+        exclude:
+          - {os: macos-latest, python: "3.8"}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ matrix.python }}"}
+      - run: python tests/test_core.py
+        env: {PYTHONIOENCODING: utf-8}

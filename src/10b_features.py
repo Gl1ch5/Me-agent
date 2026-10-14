@@ -87,7 +87,7 @@ def mem_add(home, text, source=""):
 
 
 def mem_forget(home, mid):
-    p = mem_dir(home) / f"{re.sub(r'[^\w-]', '', mid)}.json"
+    p = mem_dir(home) / (re.sub(r"[^\w-]", "", mid) + ".json")
     if not p.exists():
         raise ValueError(f"no memory note {mid}")
     p.unlink()
