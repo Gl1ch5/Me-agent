@@ -604,7 +604,7 @@ class TUICommands:
         if not ss:
             return self.toast("no sessions yet")
         sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
-                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {len(s.get('messages', []))} msgs · "
+                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {s.get('n', 0)} msgs · "
                                             + s.get("cwd", "")) for s in ss])
         if not sid or self.agent.busy:
             return

@@ -52,11 +52,27 @@ class Store:
         return self.home / "sessions" / f"{sid}.json"
 
     def sessions(self):
-        out = []
+        """Light index, newest first: {id, title, updated, cwd, ws, n (messages), usage}. A file is parsed again only when it changed."""
+        cache = self.__dict__.setdefault("_idx", {})
+        out, seen = [], set()
         for p in (self.home / "sessions").glob("*.json"):
-            d = jload(p)
-            if d:
-                out.append(d)
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            seen.add(p.name)
+            hit = cache.get(p.name)
+            if not hit or hit[0] != (st.st_mtime_ns, st.st_size):
+                d = jload(p)
+                if not isinstance(d, dict) or not d.get("id"):
+                    continue
+                hit = cache[p.name] = ((st.st_mtime_ns, st.st_size), {
+                    "id": d["id"], "title": d.get("title", ""), "updated": d.get("updated", 0), "created": d.get("created", 0),
+                    "cwd": d.get("cwd", ""), "ws": d.get("ws"), "n": len(d.get("messages", [])), "usage": d.get("usage", {}),
+                    "agent": d.get("agent", ""), "pinned": d.get("pinned", False), "archived": d.get("archived", False)})
+            out.append(hit[1])
+        for k in set(cache) - seen:
+            cache.pop(k, None)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
 
     def save_session(self, s):
