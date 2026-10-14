@@ -80,7 +80,7 @@ def _src(text, node):
 
 def parse_skill(path):
     p = Path(path)
-    text = p.read_text("utf-8")
+    text = p.read_text("utf-8").replace("\r\n", "\n")
     meta, body, actions = {"name": p.stem, "description": ""}, "", {}
     if p.suffix == ".py":
         try:
@@ -126,10 +126,18 @@ class Skills:
         self.s = store
 
     def all(self):
+        d = self.s.home / "skills"
+        return dict(cached(("skills", str(d)), dir_sig(d), lambda: self._load(d)))
+
+    @staticmethod
+    def _load(d):
         out = {}
-        for p in sorted((self.s.home / "skills").iterdir()):
+        for p in sorted(d.iterdir()) if d.is_dir() else []:
             if p.is_file() and p.suffix in (".py", ".md"):
-                sk = parse_skill(p)
+                try:
+                    sk = parse_skill(p)
+                except (OSError, UnicodeDecodeError) as e:
+                    sk = {"name": p.stem, "description": "", "error": str(e), "body": "", "actions": {}, "path": str(p)}
                 out[sk["name"]] = sk
         return out
 
@@ -137,7 +145,7 @@ class Skills:
         dis = set(self.s.config["settings"].get("disabled_skills", []))
         return {k: v for k, v in self.all().items() if k not in dis}
 
-    def run(self, sk, action, args, emit, cancel, ask=None):
+    def run(self, sk, action, args, emit, cancel, ask=None, cwd=None):
         if sk.get("requires"):
             deps = Path(sk["path"]).parent / ".deps"
             mark = deps / (".ok-" + hashlib.sha1(sk["requires"].encode()).hexdigest()[:8])
@@ -151,7 +159,8 @@ class Skills:
         env.update({k: str(v) for k, v in self.s.config.get("secrets", {}).items()})
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen([sys.executable, "-c", SKILL_RUNNER, sk["path"], action, json.dumps(args)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1,
+                                cwd=cwd if cwd and os.path.isdir(cwd) else None)
         result = None
 
         def watch():

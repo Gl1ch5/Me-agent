@@ -40,3 +40,24 @@ def dur(s):
 def clip(s, n):
     s = str(s)
     return s if len(s) <= n else s[: n // 2] + f"\n…[{len(s) - n} chars cut]…\n" + s[-n // 2:]
+
+
+_CACHE = {}
+
+
+def dir_sig(d, pattern="*"):
+    """Cheap fingerprint of a folder's files (name, mtime, size): one listdir + stat per file, no reads."""
+    try:
+        return tuple((p.name, st.st_mtime_ns, st.st_size) for p in sorted(Path(d).glob(pattern)) for st in (p.stat(),))
+    except OSError:
+        return ()
+
+
+def cached(key, sig, fn):
+    """fn() once per distinct sig: parsing every skill/agent/theme file on each call made each tool step and TUI frame hit the disk."""
+    hit = _CACHE.get(key)
+    if hit and hit[0] == sig:
+        return hit[1]
+    val = fn()
+    _CACHE[key] = (sig, val)
+    return val

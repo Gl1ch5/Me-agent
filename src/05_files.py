@@ -101,6 +101,10 @@ def read_any(path, offset=1, limit=2000):
     sel = lines[offset - 1: offset - 1 + limit]
     w = len(str(offset + len(sel)))
     out = "\n".join(f"{i:>{w}}│{l[:2000]}" for i, l in enumerate(sel, offset))
+    if len(out) > 60000:  # one huge read is re-sent on every later step of the turn: cap it and point at offset
+        keep = out[:60000].rsplit("\n", 1)[0]
+        shown = keep.count("\n") + 1
+        return keep + f"\n… output capped; continue with offset={offset + shown}", None
     if offset - 1 + limit < len(lines):
         out += f"\n… {len(lines) - (offset - 1 + limit)} more lines (use offset)"
     return out or "(empty file)", None

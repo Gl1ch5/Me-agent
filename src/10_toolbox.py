@@ -4,12 +4,12 @@ class ToolBox:
     def __init__(self, store, skills):
         self.s, self.skills = store, skills
 
-    def preview(self, name, a):
+    def preview(self, name, a, cwd=None):
         """Short human label for UI."""
         if name in ("read", "write", "edit"):
             p = str(a.get("path", ""))
             try:
-                rel = os.path.relpath(p)
+                rel = os.path.relpath(p, cwd or os.getcwd())
                 return rel if not rel.startswith("..") else p
             except ValueError:
                 return p
@@ -56,8 +56,11 @@ class ToolBox:
             return sk.get("actions", {}).get(a["action"], {}).get("confirm", False)
         return False
 
-    def run(self, name, a, emit, cancel, ask=None):
-        """Returns (ok, text, image_data_url|None)."""
+    def run(self, name, a, emit, cancel, ask=None, cwd=None):
+        """Returns (ok, text, image_data_url|None). Relative paths and commands resolve against `cwd` (the session's project)."""
+        cwd = cwd or os.getcwd()
+        if isinstance(a.get("path"), str) and a["path"] and name in ("read", "write", "edit", "grep"):
+            a = dict(a, path=os.path.join(cwd, os.path.expanduser(a["path"])))
         if name == "read":
             out, img = read_any(a["path"], a.get("offset", 1), a.get("limit", 2000))
             return not out.startswith("error"), out, img
@@ -80,19 +83,22 @@ class ToolBox:
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
             return True, f"edited {p} ({msg})", None
         if name == "bash":
-            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel, shell_env(self.s.config.get("secrets")))
+            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel, shell_env(self.s.config.get("secrets")), cwd=cwd,
+                            shell=self.s.config["settings"].get("shell", ""))
             return "[exit " not in out[-12:], out or "(no output)", None
         if name == "ls":
             pat = a["pattern"]
             if pat == "map" or pat.startswith("map "):
-                return True, repo_map(os.getcwd(), pat[4:].strip(), self.s.home), None
-            hits = [h for h in glob.glob(pat, recursive=True) if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
-            hits.sort(key=lambda h: -os.path.getmtime(h) if os.path.exists(h) else 0)
+                return True, repo_map(cwd, pat[4:].strip(), self.s.home), None
+            full = os.path.join(cwd, os.path.expanduser(pat))
+            hits = [os.path.relpath(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
+            hits = [h for h in hits if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
+            hits.sort(key=lambda h: -os.path.getmtime(os.path.join(cwd, h)) if os.path.exists(os.path.join(cwd, h)) else 0)
             return True, "\n".join(hits[:300]) + (f"\n… {len(hits) - 300} more" if len(hits) > 300 else "") or "no matches", None
         if name == "grep":
-            return True, self._grep(a["pattern"], a.get("path") or ".", a.get("glob")), None
+            return True, self._grep(a["pattern"], a.get("path") or cwd, a.get("glob"), cwd), None
         if name == "skill":
-            return self._skill(a, emit, cancel, ask)
+            return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
             return self._notify(a)
         if name == "mcp":
@@ -148,11 +154,17 @@ class ToolBox:
         return "\n".join(d[:80]) + ("\n…" if len(d) > 80 else "")
 
     @staticmethod
-    def _grep(pattern, path, gl):
+    def _grep(pattern, path, gl, cwd=None):
+        cwd = cwd or os.getcwd()
+        rel = os.path.relpath(path, cwd) if os.path.abspath(path).startswith(os.path.abspath(cwd)) else path
         if shutil.which("rg"):
-            cmd = ["rg", "-n", "--no-heading", "-M", "300", "-m", "50", pattern, path] + (["-g", gl] if gl else [])
-            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            cmd = ["rg", "-n", "--no-heading", "-M", "300", "-m", "50"] + (["-g", gl] if gl else []) + ["--", pattern, rel]
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd,
+                               creationflags=0x08000000 if WIN else 0)
+            if r.returncode == 2 and r.stderr.strip():
+                return "error: " + r.stderr.strip()[:500]
             return clip(r.stdout, 20000) or "no matches"
+        path = rel if os.path.isabs(rel) else os.path.join(cwd, rel)
         try:
             rx = re.compile(pattern)
         except re.error as e:
@@ -166,14 +178,14 @@ class ToolBox:
                 with open(f, encoding="utf-8") as fh:
                     for i, line in enumerate(fh, 1):
                         if rx.search(line):
-                            out.append(f"{f}:{i}:{line.rstrip()[:300]}")
+                            out.append(f"{os.path.relpath(f, cwd)}:{i}:{line.rstrip()[:300]}")
                             if len(out) >= 300:
                                 return "\n".join(out) + "\n… (truncated)"
             except (UnicodeDecodeError, OSError):
                 continue
         return "\n".join(out) or "no matches"
 
-    def _skill(self, a, emit, cancel, ask):
+    def _skill(self, a, emit, cancel, ask, cwd=None):
         sks = self.skills.enabled()
         sk = sks.get(a.get("name"))
         if not sk:
@@ -184,7 +196,7 @@ class ToolBox:
             return True, (sk["body"] or sk["description"]) + (f"\n\nActions (skill name={sk['name']}, action=…, args={{…}}):\n{acts}" if acts else ""), None
         if act not in sk["actions"]:
             return False, f"no action '{act}' in {sk['name']}. actions: {', '.join(sk['actions'])}", None
-        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask)
+        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask, cwd)
         return ok, clip(out, 30000), None
 
 

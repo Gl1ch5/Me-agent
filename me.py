@@ -67,6 +67,27 @@ def clip(s, n):
     return s if len(s) <= n else s[: n // 2] + f"\n…[{len(s) - n} chars cut]…\n" + s[-n // 2:]
 
 
+_CACHE = {}
+
+
+def dir_sig(d, pattern="*"):
+    """Cheap fingerprint of a folder's files (name, mtime, size): one listdir + stat per file, no reads."""
+    try:
+        return tuple((p.name, st.st_mtime_ns, st.st_size) for p in sorted(Path(d).glob(pattern)) for st in (p.stat(),))
+    except OSError:
+        return ()
+
+
+def cached(key, sig, fn):
+    """fn() once per distinct sig: parsing every skill/agent/theme file on each call made each tool step and TUI frame hit the disk."""
+    hit = _CACHE.get(key)
+    if hit and hit[0] == sig:
+        return hit[1]
+    val = fn()
+    _CACHE[key] = (sig, val)
+    return val
+
+
 # ───────────────────────────── store ─────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -508,37 +529,97 @@ class Provider:
         self.m, self.p = model, prov
         self.base = (prov.get("base_url") or "https://api.openai.com/v1").rstrip("/")
 
-    def _post(self, path, body):
-        r = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST")
-        r.add_header("Content-Type", "application/json")
-        r.add_header("Accept", "text/event-stream")
-        if self.p.get("api_key"):
-            r.add_header("Authorization", "Bearer " + self.p["api_key"])
-        try:
-            return urllib.request.urlopen(r, timeout=600)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:800]}")
+    RETRY_CODES = (408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529)
+
+    def _post(self, path, body, cancel=None, tries=4):
+        """POST with retries: rate limits, overloaded upstreams and dropped connections are routine with LLM APIs."""
+        data = json.dumps(body).encode()
+        for i in range(tries):
+            r = urllib.request.Request(self.base + path, data=data, method="POST")
+            r.add_header("Content-Type", "application/json")
+            r.add_header("Accept", "text/event-stream")
+            r.add_header("User-Agent", f"me/{VERSION}")
+            for k, v in (self.p.get("headers") or {}).items():
+                r.add_header(k, str(v))
+            if self.p.get("api_key"):
+                r.add_header("Authorization", "Bearer " + self.p["api_key"])
+            try:
+                return urllib.request.urlopen(r, timeout=600)
+            except urllib.error.HTTPError as e:
+                text = e.read().decode("utf-8", "replace")[:800]
+                if e.code not in self.RETRY_CODES or i == tries - 1:
+                    raise RuntimeError(f"HTTP {e.code}: {text}")
+                wait = e.headers.get("Retry-After") if e.headers else None
+                wait = float(wait) if wait and re.fullmatch(r"\d+(\.\d+)?", wait) else 2 ** i * 1.5
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                if i == tries - 1:
+                    raise RuntimeError(f"cannot reach {self.base}: {getattr(e, 'reason', e)}")
+                wait = 2 ** i
+            end = time.time() + min(wait, 60)
+            while time.time() < end:  # back off, but stay cancellable
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                time.sleep(0.1)
 
     @staticmethod
     def _sse(resp, cancel):
-        buf = b""
-        while True:
-            if cancel.is_set():
-                resp.close()
-                raise Cancelled()
-            chunk = resp.readline()
-            if not chunk:
-                break
-            line = chunk.strip()
-            if line.startswith(b"data:"):
-                data = line[5:].strip()
-                if data == b"[DONE]":
-                    break
-                buf = data
+        # a model that thinks silently sends nothing for minutes; readline() would block through Esc, so a watcher
+        # shuts the socket down the moment the user cancels
+        done = threading.Event()
+
+        def watch():
+            while not done.wait(0.1):
+                if cancel.is_set():
+                    try:
+                        sock = resp.fp.raw._sock
+                        sock.shutdown(2)
+                    except Exception:
+                        pass
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    return
+        threading.Thread(target=watch, daemon=True).start()
+        try:
+            while True:
+                if cancel.is_set():
+                    raise Cancelled()
                 try:
-                    yield json.loads(buf)
-                except ValueError:
-                    pass
+                    chunk = resp.readline()
+                except Exception:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    raise
+                if not chunk:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    break
+                line = chunk.strip()
+                if line.startswith(b"data:"):
+                    data = line[5:].strip()
+                    if data == b"[DONE]":
+                        break
+                    try:
+                        ev = json.loads(data)
+                    except ValueError:
+                        continue
+                    if isinstance(ev, dict) and ev.get("error") and not ev.get("choices"):  # OpenRouter & co. report mid-stream errors this way
+                        err = ev["error"]
+                        raise RuntimeError("provider error: " + (err.get("message") if isinstance(err, dict) else str(err))[:800])
+                    yield ev
+                elif line.startswith(b"{") and b'"error"' in line:  # a plain JSON error body instead of a stream
+                    try:
+                        err = json.loads(line).get("error")
+                    except ValueError:
+                        err = line.decode("utf-8", "replace")
+                    raise RuntimeError("provider error: " + str(err.get("message") if isinstance(err, dict) else err)[:800])
+        finally:
+            done.set()
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     def cache_mode(self):
         """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
@@ -576,7 +657,7 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, calls, usage = "", {}, {}
-        resp = self._post("/chat/completions", body)
+        resp = self._post("/chat/completions", body, cancel)
         for ev in self._sse(resp, cancel):
             if ev.get("usage"):
                 usage = ev["usage"]
@@ -629,7 +710,7 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, calls, usage = "", {}, {}
-        for ev in self._sse(self._post("/responses", body), cancel):
+        for ev in self._sse(self._post("/responses", body, cancel), cancel):
             t = ev.get("type", "")
             if t == "response.output_text.delta":
                 text += ev["delta"]
@@ -767,6 +848,10 @@ def read_any(path, offset=1, limit=2000):
     sel = lines[offset - 1: offset - 1 + limit]
     w = len(str(offset + len(sel)))
     out = "\n".join(f"{i:>{w}}│{l[:2000]}" for i, l in enumerate(sel, offset))
+    if len(out) > 60000:  # one huge read is re-sent on every later step of the turn: cap it and point at offset
+        keep = out[:60000].rsplit("\n", 1)[0]
+        shown = keep.count("\n") + 1
+        return keep + f"\n… output capped; continue with offset={offset + shown}", None
     if offset - 1 + limit < len(lines):
         out += f"\n… {len(lines) - (offset - 1 + limit)} more lines (use offset)"
     return out or "(empty file)", None
@@ -854,7 +939,7 @@ def _src(text, node):
 
 def parse_skill(path):
     p = Path(path)
-    text = p.read_text("utf-8")
+    text = p.read_text("utf-8").replace("\r\n", "\n")
     meta, body, actions = {"name": p.stem, "description": ""}, "", {}
     if p.suffix == ".py":
         try:
@@ -900,10 +985,18 @@ class Skills:
         self.s = store
 
     def all(self):
+        d = self.s.home / "skills"
+        return dict(cached(("skills", str(d)), dir_sig(d), lambda: self._load(d)))
+
+    @staticmethod
+    def _load(d):
         out = {}
-        for p in sorted((self.s.home / "skills").iterdir()):
+        for p in sorted(d.iterdir()) if d.is_dir() else []:
             if p.is_file() and p.suffix in (".py", ".md"):
-                sk = parse_skill(p)
+                try:
+                    sk = parse_skill(p)
+                except (OSError, UnicodeDecodeError) as e:
+                    sk = {"name": p.stem, "description": "", "error": str(e), "body": "", "actions": {}, "path": str(p)}
                 out[sk["name"]] = sk
         return out
 
@@ -911,7 +1004,7 @@ class Skills:
         dis = set(self.s.config["settings"].get("disabled_skills", []))
         return {k: v for k, v in self.all().items() if k not in dis}
 
-    def run(self, sk, action, args, emit, cancel, ask=None):
+    def run(self, sk, action, args, emit, cancel, ask=None, cwd=None):
         if sk.get("requires"):
             deps = Path(sk["path"]).parent / ".deps"
             mark = deps / (".ok-" + hashlib.sha1(sk["requires"].encode()).hexdigest()[:8])
@@ -925,7 +1018,8 @@ class Skills:
         env.update({k: str(v) for k, v in self.s.config.get("secrets", {}).items()})
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen([sys.executable, "-c", SKILL_RUNNER, sk["path"], action, json.dumps(args)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1,
+                                cwd=cwd if cwd and os.path.isdir(cwd) else None)
         result = None
 
         def watch():
@@ -1028,9 +1122,24 @@ def _decode_out(b):
         return b.decode("oem" if WIN else "utf-8", "replace")
 
 
-def run_shell(cmd, timeout, cancel, env=None, on_line=None):
-    kw = {} if WIN else {"start_new_session": True}
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
+def shell_argv(cmd, shell=""):
+    """Windows: cmd.exe by default, or PowerShell / Git Bash when settings.shell asks for it. Elsewhere the user's /bin/sh."""
+    if WIN and shell == "powershell":
+        exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
+        return [exe, "-NoProfile", "-NonInteractive", "-Command", cmd], False
+    if WIN and shell == "bash":
+        exe = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+        return [exe, "-lc", cmd], False
+    return cmd, True
+
+
+def run_shell(cmd, timeout, cancel, env=None, on_line=None, cwd=None, shell=""):
+    kw = {"creationflags": 0x08000000} if WIN else {"start_new_session": True}  # CREATE_NO_WINDOW: no console flashing up
+    argv, use_shell = shell_argv(cmd, shell)
+    if cwd and not os.path.isdir(cwd):
+        cwd = None
+    proc = subprocess.Popen(argv, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env,
+                            cwd=cwd, **kw)
     buf, eof = [], threading.Event()
 
     def pump():
@@ -1060,7 +1169,7 @@ def run_shell(cmd, timeout, cancel, env=None, on_line=None):
             if cancel.is_set():
                 raise Cancelled()
             eof.wait(1)
-            return f"{_decode_out(b''.join(buf))}\n[timed out after {timeout}s]"
+            return f"{clip(_decode_out(b''.join(buf)), 30000)}\n[timed out after {timeout}s]"
         time.sleep(0.05)
     eof.wait(2)
     text = _decode_out(b"".join(buf))
@@ -1268,12 +1377,12 @@ class ToolBox:
     def __init__(self, store, skills):
         self.s, self.skills = store, skills
 
-    def preview(self, name, a):
+    def preview(self, name, a, cwd=None):
         """Short human label for UI."""
         if name in ("read", "write", "edit"):
             p = str(a.get("path", ""))
             try:
-                rel = os.path.relpath(p)
+                rel = os.path.relpath(p, cwd or os.getcwd())
                 return rel if not rel.startswith("..") else p
             except ValueError:
                 return p
@@ -1320,8 +1429,11 @@ class ToolBox:
             return sk.get("actions", {}).get(a["action"], {}).get("confirm", False)
         return False
 
-    def run(self, name, a, emit, cancel, ask=None):
-        """Returns (ok, text, image_data_url|None)."""
+    def run(self, name, a, emit, cancel, ask=None, cwd=None):
+        """Returns (ok, text, image_data_url|None). Relative paths and commands resolve against `cwd` (the session's project)."""
+        cwd = cwd or os.getcwd()
+        if isinstance(a.get("path"), str) and a["path"] and name in ("read", "write", "edit", "grep"):
+            a = dict(a, path=os.path.join(cwd, os.path.expanduser(a["path"])))
         if name == "read":
             out, img = read_any(a["path"], a.get("offset", 1), a.get("limit", 2000))
             return not out.startswith("error"), out, img
@@ -1344,19 +1456,22 @@ class ToolBox:
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
             return True, f"edited {p} ({msg})", None
         if name == "bash":
-            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel, shell_env(self.s.config.get("secrets")))
+            out = run_shell(a["cmd"], int(a.get("timeout") or 120), cancel, shell_env(self.s.config.get("secrets")), cwd=cwd,
+                            shell=self.s.config["settings"].get("shell", ""))
             return "[exit " not in out[-12:], out or "(no output)", None
         if name == "ls":
             pat = a["pattern"]
             if pat == "map" or pat.startswith("map "):
-                return True, repo_map(os.getcwd(), pat[4:].strip(), self.s.home), None
-            hits = [h for h in glob.glob(pat, recursive=True) if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
-            hits.sort(key=lambda h: -os.path.getmtime(h) if os.path.exists(h) else 0)
+                return True, repo_map(cwd, pat[4:].strip(), self.s.home), None
+            full = os.path.join(cwd, os.path.expanduser(pat))
+            hits = [os.path.relpath(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
+            hits = [h for h in hits if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
+            hits.sort(key=lambda h: -os.path.getmtime(os.path.join(cwd, h)) if os.path.exists(os.path.join(cwd, h)) else 0)
             return True, "\n".join(hits[:300]) + (f"\n… {len(hits) - 300} more" if len(hits) > 300 else "") or "no matches", None
         if name == "grep":
-            return True, self._grep(a["pattern"], a.get("path") or ".", a.get("glob")), None
+            return True, self._grep(a["pattern"], a.get("path") or cwd, a.get("glob"), cwd), None
         if name == "skill":
-            return self._skill(a, emit, cancel, ask)
+            return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
             return self._notify(a)
         if name == "mcp":
@@ -1412,11 +1527,17 @@ class ToolBox:
         return "\n".join(d[:80]) + ("\n…" if len(d) > 80 else "")
 
     @staticmethod
-    def _grep(pattern, path, gl):
+    def _grep(pattern, path, gl, cwd=None):
+        cwd = cwd or os.getcwd()
+        rel = os.path.relpath(path, cwd) if os.path.abspath(path).startswith(os.path.abspath(cwd)) else path
         if shutil.which("rg"):
-            cmd = ["rg", "-n", "--no-heading", "-M", "300", "-m", "50", pattern, path] + (["-g", gl] if gl else [])
-            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            cmd = ["rg", "-n", "--no-heading", "-M", "300", "-m", "50"] + (["-g", gl] if gl else []) + ["--", pattern, rel]
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd,
+                               creationflags=0x08000000 if WIN else 0)
+            if r.returncode == 2 and r.stderr.strip():
+                return "error: " + r.stderr.strip()[:500]
             return clip(r.stdout, 20000) or "no matches"
+        path = rel if os.path.isabs(rel) else os.path.join(cwd, rel)
         try:
             rx = re.compile(pattern)
         except re.error as e:
@@ -1430,14 +1551,14 @@ class ToolBox:
                 with open(f, encoding="utf-8") as fh:
                     for i, line in enumerate(fh, 1):
                         if rx.search(line):
-                            out.append(f"{f}:{i}:{line.rstrip()[:300]}")
+                            out.append(f"{os.path.relpath(f, cwd)}:{i}:{line.rstrip()[:300]}")
                             if len(out) >= 300:
                                 return "\n".join(out) + "\n… (truncated)"
             except (UnicodeDecodeError, OSError):
                 continue
         return "\n".join(out) or "no matches"
 
-    def _skill(self, a, emit, cancel, ask):
+    def _skill(self, a, emit, cancel, ask, cwd=None):
         sks = self.skills.enabled()
         sk = sks.get(a.get("name"))
         if not sk:
@@ -1448,7 +1569,7 @@ class ToolBox:
             return True, (sk["body"] or sk["description"]) + (f"\n\nActions (skill name={sk['name']}, action=…, args={{…}}):\n{acts}" if acts else ""), None
         if act not in sk["actions"]:
             return False, f"no action '{act}' in {sk['name']}. actions: {', '.join(sk['actions'])}", None
-        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask)
+        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask, cwd)
         return ok, clip(out, 30000), None
 
 
@@ -1592,10 +1713,15 @@ def cli_schema(name, spec, agent):
 
 
 def presets(store):
-    out = {k: dict(v, name=k) for k, v in BUILTIN_PRESETS.items()}
     d = store.home / "agents"
+    got = cached(("presets", str(d)), dir_sig(d, "*.md"), lambda: _load_presets(d))
+    return {k: dict(v) for k, v in got.items()}
+
+
+def _load_presets(d):
+    out = {k: dict(v, name=k) for k, v in BUILTIN_PRESETS.items()}
     for p in sorted(d.glob("*.md")) if d.exists() else []:
-        text = p.read_text("utf-8", "replace")
+        text = p.read_text("utf-8", "replace").replace("\r\n", "\n")
         m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
         meta, body = {}, text
         if m:
@@ -2007,6 +2133,17 @@ class LimitHit(Exception):
     pass
 
 
+DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
+
+
+def tc_args(tc):
+    try:
+        a = json.loads(tc["function"]["arguments"] or "{}")
+        return a if isinstance(a, dict) else None
+    except ValueError:
+        return None
+
+
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
                 "or the code itself, and fix any failure. If nothing can be run, say so and why.")
 GOAL_PROMPT = """GOAL: {objective}
@@ -2084,6 +2221,14 @@ class Agent:
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
 
+    @property
+    def cwd(self):
+        return self.session.get("cwd") or os.getcwd()
+
+    def abspath(self, path):
+        """A tool path as the model meant it: relative to the session's project folder, ~ expanded."""
+        return os.path.abspath(os.path.join(self.cwd, os.path.expanduser(str(path or ""))))
+
     def context_files(self):
         cwd = Path(self.session.get("cwd") or ".")
         return [n for n in CONTEXT_FILES if (cwd / n).is_file()]
@@ -2123,7 +2268,8 @@ class Agent:
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
-        t0, tin, tout, cost = time.time(), 0, 0, 0.0
+        self._trim_history(start_idx)
+        t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
         wrote, ran, nudged = False, False, False
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
@@ -2133,11 +2279,20 @@ class Agent:
                 limit = self.compact_threshold(m)
                 if limit and self.ctx_used > limit:
                     self.compact(reason="auto")
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel,
+                schemas = self.tool_schemas()
+                self._tool_names = {t["name"] for t in schemas}
+                system = self.system_prompt()
+                msg, usage = prov.stream(system, self.session["messages"], schemas, self.emit, self.cancel,
                                          cache_key=self.session["id"])
+                if not usage["in"]:  # provider sent no usage (some proxies drop stream_options): estimate, ~4 chars per token
+                    usage = dict(usage, est=True, **{"in": len(system + json.dumps(self.session["messages"], ensure_ascii=False)
+                                                                    + json.dumps(schemas)) // 4,
+                                                     "out": usage["out"] or len(json.dumps(msg, ensure_ascii=False)) // 4})
                 c = usage_cost(m, usage)
                 tin += usage["in"]
                 tout += usage["out"]
+                tcached += min(usage.get("cached", 0), usage["in"])
+                steps += 1
                 cost += c
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
                 self.session["ctx"] = self.ctx_used
@@ -2147,12 +2302,12 @@ class Agent:
                 u["cached"] = u.get("cached", 0) + usage.get("cached", 0)
                 u["cost"] = round(u.get("cost", 0) + c, 6)
                 today = add_day_cost(self.s.home, c) if c and self.persist else day_cost(self.s.home)
-                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": usage.get("cached", 0),
+                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": tcached, "steps": steps, "est": bool(usage.get("est")),
                            "cost": cost, "session_cost": u["cost"], "day_cost": today})
                 self.session["messages"].append(msg)
                 self.checkpoint()
                 if not msg.get("tool_calls"):
-                    if wrote and not ran and not nudged and "bash" in {t["name"] for t in self.tool_schemas()} and not st.get("no_verify"):
+                    if wrote and not ran and not nudged and "bash" in self._tool_names and not st.get("no_verify"):
                         nudged = True  # self-check before "done": changes were made but nothing was run since
                         self.emit({"type": "verify"})
                         self.session["messages"].append({"role": "user", "content": VERIFY_NUDGE})
@@ -2163,8 +2318,8 @@ class Agent:
                 imgs = []
                 for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
-                    if ok and name in ("write", "edit"):
-                        wrote, ran = True, False
+                    if ok and name in ("write", "edit") and not re.search(DOC_EXT, str((tc_args(tc) or {}).get("path", "")), re.I):
+                        wrote, ran = True, False  # docs/config prose needs no test run: nudging there only burned a model call
                     elif name == "bash" or name == "task":
                         ran = ran or wrote
                     if img:
@@ -2199,8 +2354,23 @@ class Agent:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
             if self.persist:
                 self.s.save_session(self.session)
-            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,
+            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "cached": tcached, "steps": steps,
+                       "ctx": self.ctx_used, "cost": cost,
                        "session_cost": self.session["usage"].get("cost", 0)})
+
+    TRIM_AT, TRIM_KEEP = 4000, 1500
+
+    def _trim_history(self, upto):
+        """Before a new user turn: shrink bulky tool results and drop image payloads of earlier turns.
+        Every step re-sends the whole history, so a 40 KB file read once was paid for again on every later step. The model can
+        re-read anything it still needs. Only messages before `upto` change, once, so the cached prompt prefix stays stable after."""
+        for m in self.session["messages"][:upto]:
+            c = m.get("content")
+            if m["role"] == "tool" and isinstance(c, str) and len(c) > self.TRIM_AT and not c.startswith("[trimmed"):
+                k = self.TRIM_KEEP
+                m["content"] = f"[trimmed old output: {len(c)} chars; read again if needed]\n{c[:k]}\n…\n{c[-k // 3:]}"
+            elif isinstance(c, list) and any(x.get("type") == "image_url" for x in c):
+                m["content"] = [x if x.get("type") != "image_url" else {"type": "text", "text": "[image shown earlier]"} for x in c]
 
     def _limits(self, cost, st):
         mt, md = float(st.get("max_turn_cost") or 0), float(st.get("max_day_cost") or 0)
@@ -2221,7 +2391,7 @@ class Agent:
             except ValueError:
                 args = None
             tid = tc["id"]
-            ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+            ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {}, self.cwd)}
             cli = (self.preset().get("cli") or {}).get(name)
             if cli:
                 pr = self.preset()
@@ -2271,9 +2441,9 @@ class Agent:
             return False, "error: arguments were not valid JSON — send a JSON object", None
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
-        if name not in {t["name"] for t in self.tool_schemas()}:
+        if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
-        if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+        if name in ("write", "edit") and not may_write(pr, os.path.relpath(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
@@ -2287,7 +2457,7 @@ class Agent:
         cli = (pr.get("cli") or {}).get(name)
         if cli:
             return self._cli(cli, args, temit)
-        need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
+        need = self.tools.needs_confirm(name, dict(args, path=self.abspath(args["path"])) if isinstance(args.get("path"), str) else args, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need:
@@ -2300,9 +2470,9 @@ class Agent:
                 self.s.save()
         args = self.remap(args)
         if name in ("write", "edit"):
-            self._snapshot(args.get("path", ""))
+            self._snapshot(self.abspath(args.get("path", "")))
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask)
+            return self.tools.run(name, args, temit, self.cancel, self.ask, self.cwd)
         except Cancelled:
             raise
         except Exception as e:
@@ -2313,7 +2483,7 @@ class Agent:
         cmd, err = render_cli(spec, args)
         if err:
             return False, err, None
-        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.session.get("cwd"))
+        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need and not self.confirm("bash", {"cmd": cmd}):
@@ -2329,7 +2499,8 @@ class Agent:
                 last[0] = time.time()
                 temit({"t": "status", "text": l.strip()[:160]})
                 temit({"t": "progress", "v": None, "label": f"{n[0]} lines", "n": n[0]})
-        out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line)
+        out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line, cwd=self.cwd,
+                        shell=self.s.config["settings"].get("shell", ""))
         return "[exit " not in out[-12:], out or "(no output)", None
 
     def _memory(self, a):
@@ -2429,7 +2600,7 @@ class Agent:
 
     # ─── checkpoints / undo ───
     def _snapshot(self, path):
-        p = os.path.abspath(os.path.expanduser(path))
+        p = self.abspath(path)
         if p not in self.snap:
             try:
                 self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None

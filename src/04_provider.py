@@ -12,37 +12,97 @@ class Provider:
         self.m, self.p = model, prov
         self.base = (prov.get("base_url") or "https://api.openai.com/v1").rstrip("/")
 
-    def _post(self, path, body):
-        r = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST")
-        r.add_header("Content-Type", "application/json")
-        r.add_header("Accept", "text/event-stream")
-        if self.p.get("api_key"):
-            r.add_header("Authorization", "Bearer " + self.p["api_key"])
-        try:
-            return urllib.request.urlopen(r, timeout=600)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:800]}")
+    RETRY_CODES = (408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529)
+
+    def _post(self, path, body, cancel=None, tries=4):
+        """POST with retries: rate limits, overloaded upstreams and dropped connections are routine with LLM APIs."""
+        data = json.dumps(body).encode()
+        for i in range(tries):
+            r = urllib.request.Request(self.base + path, data=data, method="POST")
+            r.add_header("Content-Type", "application/json")
+            r.add_header("Accept", "text/event-stream")
+            r.add_header("User-Agent", f"me/{VERSION}")
+            for k, v in (self.p.get("headers") or {}).items():
+                r.add_header(k, str(v))
+            if self.p.get("api_key"):
+                r.add_header("Authorization", "Bearer " + self.p["api_key"])
+            try:
+                return urllib.request.urlopen(r, timeout=600)
+            except urllib.error.HTTPError as e:
+                text = e.read().decode("utf-8", "replace")[:800]
+                if e.code not in self.RETRY_CODES or i == tries - 1:
+                    raise RuntimeError(f"HTTP {e.code}: {text}")
+                wait = e.headers.get("Retry-After") if e.headers else None
+                wait = float(wait) if wait and re.fullmatch(r"\d+(\.\d+)?", wait) else 2 ** i * 1.5
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                if i == tries - 1:
+                    raise RuntimeError(f"cannot reach {self.base}: {getattr(e, 'reason', e)}")
+                wait = 2 ** i
+            end = time.time() + min(wait, 60)
+            while time.time() < end:  # back off, but stay cancellable
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled()
+                time.sleep(0.1)
 
     @staticmethod
     def _sse(resp, cancel):
-        buf = b""
-        while True:
-            if cancel.is_set():
-                resp.close()
-                raise Cancelled()
-            chunk = resp.readline()
-            if not chunk:
-                break
-            line = chunk.strip()
-            if line.startswith(b"data:"):
-                data = line[5:].strip()
-                if data == b"[DONE]":
-                    break
-                buf = data
+        # a model that thinks silently sends nothing for minutes; readline() would block through Esc, so a watcher
+        # shuts the socket down the moment the user cancels
+        done = threading.Event()
+
+        def watch():
+            while not done.wait(0.1):
+                if cancel.is_set():
+                    try:
+                        sock = resp.fp.raw._sock
+                        sock.shutdown(2)
+                    except Exception:
+                        pass
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                    return
+        threading.Thread(target=watch, daemon=True).start()
+        try:
+            while True:
+                if cancel.is_set():
+                    raise Cancelled()
                 try:
-                    yield json.loads(buf)
-                except ValueError:
-                    pass
+                    chunk = resp.readline()
+                except Exception:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    raise
+                if not chunk:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    break
+                line = chunk.strip()
+                if line.startswith(b"data:"):
+                    data = line[5:].strip()
+                    if data == b"[DONE]":
+                        break
+                    try:
+                        ev = json.loads(data)
+                    except ValueError:
+                        continue
+                    if isinstance(ev, dict) and ev.get("error") and not ev.get("choices"):  # OpenRouter & co. report mid-stream errors this way
+                        err = ev["error"]
+                        raise RuntimeError("provider error: " + (err.get("message") if isinstance(err, dict) else str(err))[:800])
+                    yield ev
+                elif line.startswith(b"{") and b'"error"' in line:  # a plain JSON error body instead of a stream
+                    try:
+                        err = json.loads(line).get("error")
+                    except ValueError:
+                        err = line.decode("utf-8", "replace")
+                    raise RuntimeError("provider error: " + str(err.get("message") if isinstance(err, dict) else err)[:800])
+        finally:
+            done.set()
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     def cache_mode(self):
         """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
@@ -80,7 +140,7 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, calls, usage = "", {}, {}
-        resp = self._post("/chat/completions", body)
+        resp = self._post("/chat/completions", body, cancel)
         for ev in self._sse(resp, cancel):
             if ev.get("usage"):
                 usage = ev["usage"]
@@ -133,7 +193,7 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, calls, usage = "", {}, {}
-        for ev in self._sse(self._post("/responses", body), cancel):
+        for ev in self._sse(self._post("/responses", body, cancel), cancel):
             t = ev.get("type", "")
             if t == "response.output_text.delta":
                 text += ev["delta"]

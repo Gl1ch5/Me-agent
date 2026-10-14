@@ -66,9 +66,24 @@ def _decode_out(b):
         return b.decode("oem" if WIN else "utf-8", "replace")
 
 
-def run_shell(cmd, timeout, cancel, env=None, on_line=None):
-    kw = {} if WIN else {"start_new_session": True}
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env, **kw)
+def shell_argv(cmd, shell=""):
+    """Windows: cmd.exe by default, or PowerShell / Git Bash when settings.shell asks for it. Elsewhere the user's /bin/sh."""
+    if WIN and shell == "powershell":
+        exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
+        return [exe, "-NoProfile", "-NonInteractive", "-Command", cmd], False
+    if WIN and shell == "bash":
+        exe = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"
+        return [exe, "-lc", cmd], False
+    return cmd, True
+
+
+def run_shell(cmd, timeout, cancel, env=None, on_line=None, cwd=None, shell=""):
+    kw = {"creationflags": 0x08000000} if WIN else {"start_new_session": True}  # CREATE_NO_WINDOW: no console flashing up
+    argv, use_shell = shell_argv(cmd, shell)
+    if cwd and not os.path.isdir(cwd):
+        cwd = None
+    proc = subprocess.Popen(argv, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env,
+                            cwd=cwd, **kw)
     buf, eof = [], threading.Event()
 
     def pump():
@@ -98,7 +113,7 @@ def run_shell(cmd, timeout, cancel, env=None, on_line=None):
             if cancel.is_set():
                 raise Cancelled()
             eof.wait(1)
-            return f"{_decode_out(b''.join(buf))}\n[timed out after {timeout}s]"
+            return f"{clip(_decode_out(b''.join(buf)), 30000)}\n[timed out after {timeout}s]"
         time.sleep(0.05)
     eof.wait(2)
     text = _decode_out(b"".join(buf))

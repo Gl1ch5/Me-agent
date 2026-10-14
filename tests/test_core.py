@@ -459,6 +459,60 @@ def test_memory(tmp=Path(tempfile.mkdtemp())):
     assert not ends(ev)[0]["ok"]
 
 
+def test_provider_retry_error_cancel():
+    s = make()
+    ag, ev = run(s, "flaky hello")  # 429 once → retried, answered
+    assert any(e["type"] == "text" for e in ev) and not any(e["type"] == "error" for e in ev), ev
+    ag, ev = run(s, "streamerr")
+    assert any(e["type"] == "error" and "upstream overloaded" in e["text"] for e in ev)
+    ev = []
+    ag = me.Agent(s, ev.append)
+    threading.Timer(0.6, ag.cancel.set).start()
+    t0 = time.time()
+    ag.run("silent please")
+    assert time.time() - t0 < 4, "Esc must stop a silent model at once"
+    assert any(e["type"] == "error" and e["text"] == "interrupted" for e in ev)
+
+
+def test_paths_follow_session_cwd(tmp=Path(tempfile.mkdtemp())):
+    # the web app runs many projects in one process: relative paths and commands must use the session's folder, not os.getcwd()
+    s = make()
+    (tmp / "a.txt").write_text("alpha\n")
+    ag = me.Agent(s, lambda e: None)
+    ag.session = me.new_session(str(tmp))
+    ag.run("tool:read " + json.dumps({"path": "a.txt"}))
+    assert "alpha" in ag.session["messages"][-2]["content"]
+    ag.run("tool:write " + json.dumps({"path": "sub/b.txt", "content": "beta"}))
+    assert (tmp / "sub" / "b.txt").read_text() == "beta"
+    ag.run("tool:bash " + json.dumps({"cmd": "dir" if os.name == "nt" else "ls"}))
+    assert "a.txt" in ag.session["messages"][-2]["content"]
+    ag.run("tool:grep " + json.dumps({"pattern": "alpha"}))
+    assert "a.txt" in ag.session["messages"][-2]["content"]
+    ag.run("tool:ls " + json.dumps({"pattern": "**/*.txt"}))
+    out = ag.session["messages"][-2]["content"]
+    assert "a.txt" in out and os.path.join("sub", "b.txt") in out
+    assert me.Agent(s, print).undo()["ok"] is False  # other session: nothing to undo
+    assert ag.undo()["ok"] and not (tmp / "sub" / "b.txt").exists()
+
+
+def test_history_trim_and_usage(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    big = tmp / "big.txt"
+    big.write_text("\n".join(f"line {i} " + "x" * 60 for i in range(800)))
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.session = me.new_session(str(tmp))
+    ag.run("tool:read " + json.dumps({"path": "big.txt"}))
+    tool = [m for m in ag.session["messages"] if m["role"] == "tool"][0]
+    assert len(tool["content"]) > 40000  # the current turn sees everything
+    end = [e for e in ev if e["type"] == "turn_end"][0]
+    assert end["steps"] == 2 and end["cached"] > 0
+    ag.run("hi")
+    assert tool["content"].startswith("[trimmed old output") and len(tool["content"]) < 3000  # later turns don't pay for it again
+    ag.run("tool:write " + json.dumps({"path": "notes.md", "content": "x"}))
+    assert not any(e["type"] == "verify" for e in ev[-20:])  # a doc edit needs no test-run round
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):
