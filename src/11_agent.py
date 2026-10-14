@@ -335,7 +335,7 @@ class Agent:
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
-        if name in ("write", "edit") and not may_write(pr, os.path.relpath(self.abspath(args.get("path", "")), self.cwd)):
+        if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
@@ -507,7 +507,7 @@ class Agent:
         # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
         msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
         Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
-        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+        diffs = [{"path": relp(p, self.cwd), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
 
@@ -522,7 +522,7 @@ class Agent:
         if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
-        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        names = [relp(p, self.cwd) for p in cp["files"]]
         ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
         self.emit(ev)
         return dict(ev, ok=True)

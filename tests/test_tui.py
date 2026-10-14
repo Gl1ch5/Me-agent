@@ -125,9 +125,10 @@ def main():
         t.wait("copied last answer")
         print("ok   /copy")
 
-        t.send("\x16")  # ctrl+v with no image tools → a clear message, no crash
-        t.wait("no image in the clipboard")
-        print("ok   ctrl+v without a clipboard image explains why")
+        if sys.platform != "darwin":  # macOS has a real clipboard here: ctrl+v pastes its text, which is right
+            t.send("\x16")  # ctrl+v with no image tools → a clear message, no crash
+            t.wait("no image in the clipboard")
+            print("ok   ctrl+v without a clipboard image explains why")
 
         for _ in range(40):
             t.send("\x1b[<64;5;5M")  # wheel up

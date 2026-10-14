@@ -35,6 +35,14 @@ def write_raw(p, text):
         f.write(text)
 
 
+def relp(path, start=None):
+    """os.path.relpath that never raises: on Windows a path on another drive (C: vs D:) has no relative form, keep it absolute."""
+    try:
+        return os.path.relpath(path, start or os.getcwd())
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def human(n):
     n = int(n or 0)
     if n < 1000:

@@ -9,7 +9,7 @@ class ToolBox:
         if name in ("read", "write", "edit"):
             p = str(a.get("path", ""))
             try:
-                rel = os.path.relpath(p, cwd or os.getcwd())
+                rel = relp(p, cwd)
                 return rel if not rel.startswith("..") else p
             except ValueError:
                 return p
@@ -96,7 +96,7 @@ class ToolBox:
             if pat == "map" or pat.startswith("map "):
                 return True, repo_map(cwd, pat[4:].strip(), self.s.home), None
             full = os.path.join(cwd, os.path.expanduser(pat))
-            hits = [os.path.relpath(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
+            hits = [relp(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
             hits = [h for h in hits if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
             hits.sort(key=lambda h: -os.path.getmtime(os.path.join(cwd, h)) if os.path.exists(os.path.join(cwd, h)) else 0)
             return True, "\n".join(hits[:300]) + (f"\n… {len(hits) - 300} more" if len(hits) > 300 else "") or "no matches", None
@@ -183,7 +183,7 @@ class ToolBox:
                 with open(f, encoding="utf-8") as fh:
                     for i, line in enumerate(fh, 1):
                         if rx.search(line):
-                            out.append(f"{os.path.relpath(f, cwd)}:{i}:{line.rstrip()[:300]}")
+                            out.append(f"{relp(f, cwd)}:{i}:{line.rstrip()[:300]}")
                             if len(out) >= 300:
                                 return "\n".join(out) + "\n… (truncated)"
             except (UnicodeDecodeError, OSError):

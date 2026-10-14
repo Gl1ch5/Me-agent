@@ -60,6 +60,14 @@ def write_raw(p, text):
         f.write(text)
 
 
+def relp(path, start=None):
+    """os.path.relpath that never raises: on Windows a path on another drive (C: vs D:) has no relative form, keep it absolute."""
+    try:
+        return os.path.relpath(path, start or os.getcwd())
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def human(n):
     n = int(n or 0)
     if n < 1000:
@@ -1419,7 +1427,7 @@ class ToolBox:
         if name in ("read", "write", "edit"):
             p = str(a.get("path", ""))
             try:
-                rel = os.path.relpath(p, cwd or os.getcwd())
+                rel = relp(p, cwd)
                 return rel if not rel.startswith("..") else p
             except ValueError:
                 return p
@@ -1506,7 +1514,7 @@ class ToolBox:
             if pat == "map" or pat.startswith("map "):
                 return True, repo_map(cwd, pat[4:].strip(), self.s.home), None
             full = os.path.join(cwd, os.path.expanduser(pat))
-            hits = [os.path.relpath(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
+            hits = [relp(h, cwd) if not os.path.isabs(os.path.expanduser(pat)) else h for h in glob.glob(full, recursive=True)]
             hits = [h for h in hits if not any(f"{os.sep}{d}{os.sep}" in os.sep + h for d in SKIP_DIRS)]
             hits.sort(key=lambda h: -os.path.getmtime(os.path.join(cwd, h)) if os.path.exists(os.path.join(cwd, h)) else 0)
             return True, "\n".join(hits[:300]) + (f"\n… {len(hits) - 300} more" if len(hits) > 300 else "") or "no matches", None
@@ -1593,7 +1601,7 @@ class ToolBox:
                 with open(f, encoding="utf-8") as fh:
                     for i, line in enumerate(fh, 1):
                         if rx.search(line):
-                            out.append(f"{os.path.relpath(f, cwd)}:{i}:{line.rstrip()[:300]}")
+                            out.append(f"{relp(f, cwd)}:{i}:{line.rstrip()[:300]}")
                             if len(out) >= 300:
                                 return "\n".join(out) + "\n… (truncated)"
             except (UnicodeDecodeError, OSError):
@@ -2486,7 +2494,7 @@ class Agent:
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
-        if name in ("write", "edit") and not may_write(pr, os.path.relpath(self.abspath(args.get("path", "")), self.cwd)):
+        if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
@@ -2658,7 +2666,7 @@ class Agent:
         # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
         msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
         Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
-        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+        diffs = [{"path": relp(p, self.cwd), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
 
@@ -2673,7 +2681,7 @@ class Agent:
         if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
-        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        names = [relp(p, self.cwd) for p in cp["files"]]
         ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
         self.emit(ev)
         return dict(ev, ok=True)
