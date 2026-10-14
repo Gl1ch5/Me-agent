@@ -70,7 +70,7 @@ def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
 
 def test_skill():
     s = make()
-    (s.home / "skills" / "demo.py").write_text(me.SKILL_TEMPLATE.replace("NAME", "demo"))
+    (s.home / "skills" / "demo.py").write_text(me.SKILL_TEMPLATE.replace("NAME", "demo"), "utf-8")
     sk = me.parse_skill(s.home / "skills" / "demo.py")
     assert sk["name"] == "demo" and "hello" in sk["actions"] and sk["actions"]["danger"]["confirm"]
     assert "demo:" in me.Agent(s, print).system_prompt()
