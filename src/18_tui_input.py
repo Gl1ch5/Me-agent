@@ -4,10 +4,27 @@
 class TUIInput:
     # ─── input handling ───
     def handle_key(self, k):
+        if isinstance(k, tuple) and k[0] == "mouse":
+            return None if self.modal else self.mouse_event(k)
         if self.modal:
             return self.modal_key(k)
         if PLUGINS.emit("key", self, k):
             return
+        if self.msel and k not in ("wheel-up", "wheel-down"):
+            self.msel = None
+            self._prev_rows = None
+        if k in ("ctrl-v", "alt-v"):
+            return self.paste_clipboard()
+        if k == "alt-c":
+            return self.copy_text(next((b.text for b in reversed(self.blocks) if b.kind == "assistant"), ""), "last answer")
+        if isinstance(k, tuple) and k[0] == "paste":
+            imgs = image_paths(k[1])
+            if imgs:  # a file dragged into the terminal: attach it instead of pasting its path
+                for p in imgs:
+                    self.attach_image(p)
+                return self.update_sugg()
+            if not k[1].strip():  # some terminals paste nothing when the clipboard holds only an image
+                return self.paste_clipboard(text_too=False)
         if k == "ctrl-c":
             if self.agent.busy:
                 self.agent.cancel.set()
@@ -279,12 +296,80 @@ class TUIInput:
             return
         self.dispatch(text)
 
+    # ─── clipboard, images, mouse selection ───
+    def copy_text(self, text, what="selection"):
+        if not text:
+            return self.toast("nothing to copy")
+        how = clip_copy(text, self.term)
+        self.toast(f"copied {what} · {len(text)} chars" + ("" if how not in ("", "osc52") else " (via terminal)"), "ok")
+
+    def attach_image(self, path):
+        with self.lock:
+            self.attached.append(path)
+            self.insert(f"[image #{len(self.attached)}] ")
+        m = self.s.model() or {}
+        self.toast(f"image attached: {os.path.basename(path)}" + ("" if m.get("vision", True) else " — this model has vision off (/models)"),
+                   "ok" if m.get("vision", True) else "warn")
+
+    def paste_clipboard(self, text_too=True):
+        """ctrl+v / alt+v / right click: an image in the clipboard is attached, otherwise its text is pasted."""
+        def run():
+            img = clip_image(self.s.home / "pastes")
+            if img:
+                return self.attach_image(img)
+            txt = clip_paste() if text_too else None
+            if txt:
+                with self.lock:
+                    self.insert(txt.replace("\r\n", "\n").replace("\r", "\n"))
+                    self.update_sugg()
+            elif not text_too or txt is None:
+                self.toast("no image in the clipboard" + ("" if WIN or sys.platform == "darwin" else
+                                                           " (Linux needs wl-clipboard or xclip)"), "warn")
+            self.redraw()
+        self.toast("reading clipboard…")
+        threading.Thread(target=run, daemon=True).start()
+
+    def mouse_event(self, k):
+        _, kind, x, y = k
+        r, c = y - 1, x - 1
+        if kind == "right":
+            return self.paste_clipboard()
+        if kind == "down":
+            self.msel = {"a": (r, c), "b": (r, c), "drag": False}
+        elif kind == "drag" and self.msel:
+            self.msel.update(b=(r, c), drag=True)
+        elif kind == "up" and self.msel:
+            self.msel["b"] = (r, c)
+            if self.msel["drag"]:
+                self.copy_text(self.selected_text())
+            else:
+                self.msel = None
+        self._prev_rows = None  # repaint with/without the highlight
+
+    def sel_range(self):
+        a, b = self.msel["a"], self.msel["b"]
+        return (a, b) if a <= b else (b, a)
+
+    def selected_text(self):
+        (r0, c0), (r1, c1) = self.sel_range()
+        rows = getattr(self, "_screen_plain", [])
+        out = []
+        for r in range(max(0, r0), min(len(rows), r1 + 1)):
+            lo = c0 if r == r0 else 0
+            hi = c1 + 1 if r == r1 else 10 ** 6
+            out.append(cells(rows[r], lo, hi).rstrip())
+        return "\n".join(out).strip("\n")
+
     def dispatch(self, text):
         images = []
         for ref in re.findall(r"@(\S+)", text):
-            p = Path(ref)
+            p = Path(os.path.join(self.agent.cwd, os.path.expanduser(ref)))
             if p.suffix.lower() in IMAGE_EXT and p.exists():
                 images.append(read_any(p)[1])
+        for i, path in enumerate(self.attached, 1):
+            if f"[image #{i}]" in text and os.path.isfile(path):
+                images.append(read_any(path)[1])
+        self.attached = []
         self.add("user", text=text)
         self.ensure_ws()
         if not self.s.model():

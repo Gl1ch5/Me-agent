@@ -4,10 +4,13 @@
 def main():
     args = sys.argv[1:]
     store = Store()
-    if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
+    if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
+        # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
+        # (a blocking sync here kept `me` from starting for up to 30 s whenever the server was slow or unreachable)
         if store.auth.get("token"):
             Cloud(store).sync()
             store.config = jload(store.cfg_path) or store.config
+    if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
         PLUGINS.load(store)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
@@ -24,15 +27,12 @@ def main():
         n = c.sync()
         return print(f"synced: {n}" if n >= 0 else f"sync failed: {c.last_error}")
     if args and args[0] == "--rpc":
-        Cloud(store).sync() if store.auth.get("token") else None
         return run_rpc(store)
     if args and args[0] in ("-p", "--print"):
         yolo = "-y" in args
         rest = [a for a in args[1:] if a != "-y"]
         prompt = " ".join(rest) or sys.stdin.read()
         c = Cloud(store)
-        if store.auth.get("token"):
-            c.sync()
         run_headless(store, prompt, yolo)
         if store.auth.get("token"):
             c.sync()

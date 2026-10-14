@@ -3263,6 +3263,16 @@ def swidth(s):
     return sum(cw(c) for c in s)
 
 
+def cells(s, lo, hi):
+    """The part of s that sits in display columns [lo, hi)."""
+    out, w = [], 0
+    for c in s:
+        if lo <= w < hi:
+            out.append(c)
+        w += cw(c)
+    return "".join(out)
+
+
 class Line:
     """A display line: list of (text, style) segments."""
     __slots__ = ("segs",)
@@ -3277,6 +3287,17 @@ class Line:
 
     def width(self):
         return sum(swidth(t) for t, _ in self.segs)
+
+    def plain(self, width):
+        """The text this line shows in `width` cells (what a selection copies)."""
+        out, w = [], 0
+        for t, _ in self.segs:
+            for c in t:
+                if w + cw(c) > width:
+                    return "".join(out)
+                out.append(c)
+                w += cw(c)
+        return "".join(out)
 
     def render(self, width, base=""):
         out, w = [], 0
@@ -3377,7 +3398,7 @@ class Term:
             self.old = termios.tcgetattr(self.fd)
             tty.setraw(self.fd)
         # ?1007l: no "alternate scroll" - otherwise the wheel is sent as up/down arrows and pages through input history
-        self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
+        self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (MOUSE_ON if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _win_in_mode(self, mouse):
@@ -3393,10 +3414,10 @@ class Term:
         self.mouse = on
         if WIN and self.old is not None:
             self._win_in_mode(on)
-        self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
+        self.write(MOUSE_ON if on else MOUSE_OFF)
 
     def stop(self):
-        self.write(f"{CSI}?1000l{CSI}?1006l{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
+        self.write(f"{MOUSE_OFF}{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
         if WIN:
             import ctypes
             k = ctypes.windll.kernel32
@@ -3435,19 +3456,52 @@ class Term:
         recs, n = (REC * 64)(), w.DWORD()
         if not k.ReadConsoleInputW(h, recs, 64, ctypes.byref(n)):
             raise OSError("ReadConsoleInputW failed")
-        out = []
+        out, top = [], None
         for r in recs[: n.value]:
             if r.type == 1 and r.u.key.down and r.u.key.ch != "\x00":
-                out.append(r.u.key.ch * max(1, r.u.key.repeat))
-            elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
-                delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
-                out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+                ch = r.u.key.ch
+                if r.u.key.state & 0x0003 and not r.u.key.state & 0x000C and ch.isprintable() and not (out and out[-1].endswith("\x1b")):
+                    # left/right Alt (not AltGr = Ctrl+Alt); conhost in VT mode may already have sent the ESC itself
+                    ch = "\x1b" + ch
+                out.append(ch * max(1, r.u.key.repeat))
+            elif r.type == 2 and self.mouse:
+                m = r.u.mouse
+                if m.flags & 0x0004:  # MOUSE_WHEELED; high word = signed delta
+                    delta = ctypes.c_short(m.buttons >> 16).value
+                    out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+                    continue
+                if top is None:  # record coordinates are buffer-relative: make them window-relative
+                    top = self._win_top()
+                x, y = m.x + 1, m.y - top + 1
+                prev = getattr(self, "_mbtn", 0)
+                btn = m.buttons & 0x3
+                if m.flags & 0x0001:  # MOUSE_MOVED
+                    if btn & 1:
+                        out.append(f"\x1b[<32;{x};{y}M")
+                elif btn & 1 and not prev & 1:
+                    out.append(f"\x1b[<0;{x};{y}M")
+                elif prev & 1 and not btn & 1:
+                    out.append(f"\x1b[<0;{x};{y}m")
+                elif btn & 2 and not prev & 2:
+                    out.append(f"\x1b[<2;{x};{y}M")
+                self._mbtn = btn
         # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
         s = getattr(self, "_hi_sur", "") + "".join(out)
         self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
         if self._hi_sur:
             s = s[:-1]
         return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+    @staticmethod
+    def _win_top():
+        import ctypes
+        from ctypes import wintypes as w
+
+        class CSBI(ctypes.Structure):
+            _fields_ = [("size", w._COORD), ("cur", w._COORD), ("attr", w.WORD), ("win", w.SMALL_RECT), ("max", w._COORD)]
+        info = CSBI()
+        k = ctypes.windll.kernel32
+        return info.win.Top if k.GetConsoleScreenBufferInfo(k.GetStdHandle(-11), ctypes.byref(info)) else 0
 
     def _readch(self):
         if WIN:
@@ -3476,7 +3530,7 @@ class Term:
                 while select.select([self.fd], [], [], 0.01)[0]:
                     buf += os.read(self.fd, 4096).decode("utf-8", "replace")
             keys, buf = parse_keys(buf)
-            for k in keys:
+            for k in paste_guard(keys):
                 self.q.put(k)
 
 
@@ -3484,6 +3538,20 @@ KEYMAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "[H": "home", "
           "[3~": "delete", "[5~": "pgup", "[6~": "pgdn", "OA": "up", "OB": "down", "OC": "right", "OD": "left", "OH": "home",
           "OF": "end", "[1;5A": "ctrl-up", "[1;5B": "ctrl-down", "[1;5C": "ctrl-right", "[1;5D": "ctrl-left", "[1;3C": "ctrl-right",
           "[1;3D": "ctrl-left", "[Z": "shift-tab", "[13;2u": "newline", "[27;2;13~": "newline"}
+
+
+MOUSE_ON = f"{CSI}?1000h{CSI}?1002h{CSI}?1006h"  # clicks + drags (for selection) + wheel, SGR coordinates
+MOUSE_OFF = f"{CSI}?1002l{CSI}?1000l{CSI}?1006l"
+
+
+def paste_guard(keys):
+    """Terminals without bracketed paste (classic cmd.exe) deliver a pasted block as typed keys: an Enter followed by more text in
+    the same read is a pasted line break, not "send" — otherwise each pasted line went out as its own message."""
+    out = list(keys)
+    for i, k in enumerate(out):
+        if k == "enter" and any(isinstance(x, tuple) and x[0] == "char" for x in out[i + 1:]):
+            out[i] = "newline"
+    return out
 
 
 def parse_keys(buf):
@@ -3504,10 +3572,24 @@ def parse_keys(buf):
                 continue
             m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([mM])", buf[i:])
             if m:
-                b = int(m.group(1))
+                b, x, y, down = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) == "M"
                 if b & 64 and not b & 32:  # wheel, with or without shift/ctrl/alt
                     keys.append("wheel-up" if b & 3 == 0 else "wheel-down" if b & 3 == 1 else "unknown")
+                elif b & 32:  # motion with a button held: drag
+                    keys.append(("mouse", "drag", x, y))
+                elif b & 3 == 0:
+                    keys.append(("mouse", "down" if down else "up", x, y))
+                elif b & 3 == 2 and down:
+                    keys.append(("mouse", "right", x, y))
                 i += m.end()
+                continue
+            if i + 1 < len(buf) and buf[i + 1] in "vV" and not buf.startswith("\x1b[", i):
+                keys.append("alt-v")
+                i += 2
+                continue
+            if i + 1 < len(buf) and buf[i + 1] in "cC" and not buf.startswith("\x1b[", i):
+                keys.append("alt-c")
+                i += 2
                 continue
             m = re.match(r"\x1b(\[[\d;]*[~A-Za-z]|O[A-Z])", buf[i:])
             if m:
@@ -3603,6 +3685,183 @@ def apply_theme(store, name=None):
     TH.update(c)
     TH["add"], TH["del"] = c["ok"], c["err"]
     return c
+
+
+# ───────────────────────────── clipboard ─────────────────────────────
+# Native clipboard on every OS: text copy/paste and image paste. Windows uses the Win32 API (text) and PowerShell (images);
+# macOS pbcopy/pbpaste/osascript; Linux wl-clipboard or xclip/xsel; Termux termux-api. OSC 52 is the fallback for copy
+# (works over SSH and in Windows Terminal, iTerm, kitty, WezTerm…).
+
+
+def _run_clip(argv, data=None, timeout=5, capture=True):
+    """capture=False for copy tools: xclip/wl-copy fork a clipboard server that keeps any output pipe open."""
+    try:
+        out = subprocess.PIPE if capture else subprocess.DEVNULL
+        r = subprocess.run(argv, input=data, stdout=out, stderr=out, timeout=timeout, creationflags=0x08000000 if WIN else 0)
+        return r.returncode == 0, r.stdout or b""
+    except (OSError, subprocess.SubprocessError):
+        return False, b""
+
+
+def _win_clip(text=None):
+    """Win32 clipboard: set text (str) or get text (None)."""
+    import ctypes
+    from ctypes import wintypes as w
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    u.OpenClipboard.argtypes, u.GetClipboardData.restype, u.SetClipboardData.argtypes = [w.HWND], w.HANDLE, [w.UINT, w.HANDLE]
+    k.GlobalAlloc.restype, k.GlobalLock.restype, k.GlobalLock.argtypes, k.GlobalUnlock.argtypes = w.HGLOBAL, w.LPVOID, [w.HGLOBAL], [w.HGLOBAL]
+    for _ in range(10):  # another app may hold the clipboard for a moment
+        if u.OpenClipboard(None):
+            break
+        time.sleep(0.03)
+    else:
+        return None
+    try:
+        if text is None:
+            h = u.GetClipboardData(13)  # CF_UNICODETEXT
+            if not h:
+                return ""
+            p = k.GlobalLock(h)
+            try:
+                return ctypes.wstring_at(p)
+            finally:
+                k.GlobalUnlock(h)
+        data = text.replace("\r\n", "\n").replace("\n", "\r\n")
+        buf = ctypes.create_unicode_buffer(data)
+        size = ctypes.sizeof(buf)
+        h = k.GlobalAlloc(0x0002, size)  # GMEM_MOVEABLE
+        p = k.GlobalLock(h)
+        ctypes.memmove(p, buf, size)
+        k.GlobalUnlock(h)
+        u.EmptyClipboard()
+        return bool(u.SetClipboardData(13, h))
+    finally:
+        u.CloseClipboard()
+
+
+def _linux_tool(*names):
+    return next((n for n in names if shutil.which(n)), None)
+
+
+def clip_copy(text, term=None):
+    """Copy text to the system clipboard. Returns how it was done ("" if nothing worked)."""
+    how = ""
+    try:
+        if WIN:
+            how = "clipboard" if _win_clip(text) else ""
+        elif sys.platform == "darwin":
+            how = "pbcopy" if _run_clip(["pbcopy"], text.encode(), capture=False)[0] else ""
+        elif os.environ.get("TERMUX_VERSION") and shutil.which("termux-clipboard-set"):
+            how = "termux" if _run_clip(["termux-clipboard-set"], text.encode(), capture=False)[0] else ""
+        elif os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+            how = "wl-copy" if _run_clip(["wl-copy"], text.encode(), capture=False)[0] else ""
+        elif os.environ.get("DISPLAY") and _linux_tool("xclip", "xsel"):
+            t = _linux_tool("xclip", "xsel")
+            how = t if _run_clip([t, "-selection", "clipboard"] if t == "xclip" else [t, "-bi"], text.encode(), capture=False)[0] else ""
+    except Exception:
+        how = ""
+    if term is not None:  # OSC 52 too: reaches the local clipboard over SSH, and in terminals the native tools can't see
+        term.write(f"{ESC}]52;c;{base64.b64encode(text.encode()).decode()}\a")
+        how = how or "osc52"
+    return how
+
+
+def clip_paste():
+    """Clipboard text, or None if it can't be read here."""
+    try:
+        if WIN:
+            return _win_clip(None)
+        if sys.platform == "darwin":
+            ok, out = _run_clip(["pbpaste"])
+        elif os.environ.get("TERMUX_VERSION") and shutil.which("termux-clipboard-get"):
+            ok, out = _run_clip(["termux-clipboard-get"])
+        elif os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+            ok, out = _run_clip(["wl-paste", "-n"])
+        elif os.environ.get("DISPLAY") and _linux_tool("xclip", "xsel"):
+            t = _linux_tool("xclip", "xsel")
+            ok, out = _run_clip([t, "-selection", "clipboard", "-o"] if t == "xclip" else [t, "-bo"])
+        else:
+            return None
+        return out.decode("utf-8", "replace") if ok else None
+    except Exception:
+        return None
+
+
+WIN_CLIP_IMAGE = r"""
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$out = $args[0]
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if (-not $img) {
+  $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
+  foreach ($f in $files) { if ($f -match '\.(png|jpe?g|gif|bmp|webp)$') { $img = [System.Drawing.Image]::FromFile($f); break } }
+}
+if (-not $img) { exit 3 }
+$max = 2000; $w = $img.Width; $h = $img.Height
+if ([Math]::Max($w, $h) -gt $max) {
+  $k = $max / [Math]::Max($w, $h); $bmp = New-Object System.Drawing.Bitmap ([int]($w * $k)), ([int]($h * $k))
+  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.InterpolationMode = 'HighQualityBicubic'
+  $g.DrawImage($img, 0, 0, $bmp.Width, $bmp.Height); $g.Dispose(); $img = $bmp
+}
+$img.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+"""
+
+
+def clip_image(dest_dir):
+    """Save an image from the clipboard as PNG in dest_dir. Returns the path, or None (no image / unsupported)."""
+    Path(dest_dir).mkdir(parents=True, exist_ok=True)
+    out = Path(dest_dir) / time.strftime("paste-%Y%m%d-%H%M%S.png")
+    try:
+        if WIN:
+            script = Path(tempfile.gettempdir()) / "me-clip-image.ps1"
+            script.write_text(WIN_CLIP_IMAGE, "utf-8")
+            ps = shutil.which("powershell") or shutil.which("pwsh") or "powershell"
+            ok, _ = _run_clip([ps, "-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(script), str(out)], timeout=15)
+        elif sys.platform == "darwin":
+            if shutil.which("pngpaste"):
+                ok, _ = _run_clip(["pngpaste", str(out)])
+            else:
+                osa = ('set f to (open for access POSIX file "%s" with write permission)\n'
+                       'try\nwrite (the clipboard as «class PNGf») to f\nend try\nclose access f') % str(out).replace('"', '\\"')
+                ok, _ = _run_clip(["osascript", "-e", osa])
+        elif os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+            ok, types = _run_clip(["wl-paste", "--list-types"])
+            mime = next((t for t in types.decode("utf-8", "replace").split() if t.startswith("image/")), None)
+            ok, data = _run_clip(["wl-paste", "--type", mime], timeout=10) if mime else (False, b"")
+            if ok and data:
+                out = out.with_suffix("." + mime.split("/")[1].replace("jpeg", "jpg"))
+                out.write_bytes(data)
+        elif os.environ.get("DISPLAY") and shutil.which("xclip"):
+            ok, types = _run_clip(["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"])
+            mime = next((t for t in types.decode("utf-8", "replace").split() if t.startswith("image/")), None)
+            ok, data = _run_clip(["xclip", "-selection", "clipboard", "-t", mime, "-o"], timeout=10) if mime else (False, b"")
+            if ok and data:
+                out = out.with_suffix("." + mime.split("/")[1].replace("jpeg", "jpg"))
+                out.write_bytes(data)
+        else:
+            return None
+    except Exception:
+        return None
+    return str(out) if ok and out.exists() and out.stat().st_size > 0 else None
+
+
+def image_paths(text):
+    """A paste that is just image file path(s) — what dragging files into a terminal produces — → those paths."""
+    text = text.strip()
+    if not text or "\n" in text.strip() and len(text) > 4000:
+        return []
+    parts = re.findall(r'"([^"]+)"|\'([^\']+)\'|((?:\\ |\S)+)', text)
+    out = []
+    for a, b, c in parts:
+        p = (a or b or c).replace("\\ ", " ")
+        if p.startswith("file://"):
+            import urllib.parse as up
+            p = up.unquote(up.urlparse(p).path)
+            if WIN and re.match(r"^/[A-Za-z]:", p):
+                p = p[1:]
+        if Path(p).suffix.lower() not in IMAGE_EXT or not os.path.isfile(os.path.expanduser(p)):
+            return []
+        out.append(os.path.abspath(os.path.expanduser(p)))
+    return out
 
 
 # ───────────────────────────── markdown ─────────────────────────────
@@ -3782,7 +4041,8 @@ class TUIRender:
             out.append(Line().add("  ").add("◆ " + ", ".join(ctxf) + " loaded into this session", rgb(TH["ok"])) if ctxf else
                        Line().add("  ").add("◇ no AGENTS.md — run /init so I remember this project", rgb(TH["warn"])))
             out.append(Line().add("  ").add("/ ", rgb(TH["accent"])).add("commands   ", dim).add("@ ", rgb(TH["accent"])).add("files   ", dim)
-                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline", dim))
+                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline   ", dim)
+                       .add("alt+v ", rgb(TH["accent"])).add("paste image   ", dim).add("drag ", rgb(TH["accent"])).add("select+copy", dim))
             out.append(Line())
             return out
         if b.kind == "user":
@@ -4157,12 +4417,20 @@ class TUIRender:
                     l.add(" " + det[: W - 30], st + rgb(TH["dim"]))
                     pop.append(l)
             avail = max(1, H - len(bottom) - len(pop))
-            # transcript
-            lines = []
-            for b in self.blocks:
-                lines.extend(self.block_lines(b, W - 1))
-            maxscroll = max(0, len(lines) - avail)
-            self.scroll = min(self.scroll, maxscroll)
+            # transcript: render blocks from the bottom up, only as many as the view needs (a long session used to re-walk
+            # every block on every animation frame)
+            need = avail + self.scroll + 1
+            chunks, got, complete = [], 0, True
+            for b in reversed(self.blocks):
+                if got >= need:
+                    complete = False
+                    break
+                bl = self.block_lines(b, W - 1)
+                chunks.append(bl)
+                got += len(bl)
+            lines = [l for bl in reversed(chunks) for l in bl]
+            if complete:
+                self.scroll = min(self.scroll, max(0, len(lines) - avail))
             end = len(lines) - self.scroll
             view = lines[max(0, end - avail):end]
             view = [Line()] * (avail - len(view)) + view
@@ -4172,13 +4440,23 @@ class TUIRender:
             out = []
             # repaint only the rows that changed (a full repaint every frame flickers badly in the Windows console)
             rows = [l.render(W, bgc) for l in screen[:H]]
+            self._screen_plain = [l.plain(W) for l in screen[:H]]
+            if self.msel:  # mouse selection: plain text on the selection color
+                (r0, c0), (r1, c1) = self.sel_range()
+                hl = rgb(TH["accent"], True) + rgb(TH["bg"])
+                for r in range(max(0, r0), min(len(rows), r1 + 1)):
+                    t = self._screen_plain[r]
+                    lo, hi = (c0 if r == r0 else 0), (c1 + 1 if r == r1 else W)
+                    rows[r] = (bgc + rgb(TH["fg"]) + cells(t, 0, lo) + hl + cells(t + " " * W, lo, hi) + RESET + bgc + rgb(TH["fg"])
+                               + cells(t + " " * W, hi, W) + RESET)
             prev = getattr(self, "_prev_rows", None)
             full = prev is None or len(prev) != len(rows) or getattr(self, "_prev_wh", None) != (W, H) or self.modal or getattr(self, "_prev_modal", False)
             for i, r in enumerate(rows):
                 if full or prev[i] != r:
                     out.append(f"{CSI}{i + 1};1H" + r)
             self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
-            out.insert(0, CSI + "?25l")  # hide the cursor while painting
+            changed = bool(out)
+            out.insert(0, CSI + "?2026h" + CSI + "?25l")  # synchronized update (Windows Terminal, kitty…); hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))
@@ -4191,7 +4469,11 @@ class TUIRender:
                 out.append(f"{CSI}{row};{col}H{CSI}?25h")
             else:
                 out.append(f"{CSI}?25l")
-            self.term.write("".join(out))
+            out.append(CSI + "?2026l")
+            frame = "".join(out)
+            if changed or self.modal or frame != getattr(self, "_prev_frame_tail", None):
+                self.term.write(frame)  # an unchanged frame writes nothing: cursor hide/show every tick flickered in cmd.exe
+            self._prev_frame_tail = frame if not changed else None
             self.dirty = False
 
     def _draw_modal(self, W, H, bgc):
@@ -4289,10 +4571,27 @@ class TUIRender:
 class TUIInput:
     # ─── input handling ───
     def handle_key(self, k):
+        if isinstance(k, tuple) and k[0] == "mouse":
+            return None if self.modal else self.mouse_event(k)
         if self.modal:
             return self.modal_key(k)
         if PLUGINS.emit("key", self, k):
             return
+        if self.msel and k not in ("wheel-up", "wheel-down"):
+            self.msel = None
+            self._prev_rows = None
+        if k in ("ctrl-v", "alt-v"):
+            return self.paste_clipboard()
+        if k == "alt-c":
+            return self.copy_text(next((b.text for b in reversed(self.blocks) if b.kind == "assistant"), ""), "last answer")
+        if isinstance(k, tuple) and k[0] == "paste":
+            imgs = image_paths(k[1])
+            if imgs:  # a file dragged into the terminal: attach it instead of pasting its path
+                for p in imgs:
+                    self.attach_image(p)
+                return self.update_sugg()
+            if not k[1].strip():  # some terminals paste nothing when the clipboard holds only an image
+                return self.paste_clipboard(text_too=False)
         if k == "ctrl-c":
             if self.agent.busy:
                 self.agent.cancel.set()
@@ -4564,12 +4863,80 @@ class TUIInput:
             return
         self.dispatch(text)
 
+    # ─── clipboard, images, mouse selection ───
+    def copy_text(self, text, what="selection"):
+        if not text:
+            return self.toast("nothing to copy")
+        how = clip_copy(text, self.term)
+        self.toast(f"copied {what} · {len(text)} chars" + ("" if how not in ("", "osc52") else " (via terminal)"), "ok")
+
+    def attach_image(self, path):
+        with self.lock:
+            self.attached.append(path)
+            self.insert(f"[image #{len(self.attached)}] ")
+        m = self.s.model() or {}
+        self.toast(f"image attached: {os.path.basename(path)}" + ("" if m.get("vision", True) else " — this model has vision off (/models)"),
+                   "ok" if m.get("vision", True) else "warn")
+
+    def paste_clipboard(self, text_too=True):
+        """ctrl+v / alt+v / right click: an image in the clipboard is attached, otherwise its text is pasted."""
+        def run():
+            img = clip_image(self.s.home / "pastes")
+            if img:
+                return self.attach_image(img)
+            txt = clip_paste() if text_too else None
+            if txt:
+                with self.lock:
+                    self.insert(txt.replace("\r\n", "\n").replace("\r", "\n"))
+                    self.update_sugg()
+            elif not text_too or txt is None:
+                self.toast("no image in the clipboard" + ("" if WIN or sys.platform == "darwin" else
+                                                           " (Linux needs wl-clipboard or xclip)"), "warn")
+            self.redraw()
+        self.toast("reading clipboard…")
+        threading.Thread(target=run, daemon=True).start()
+
+    def mouse_event(self, k):
+        _, kind, x, y = k
+        r, c = y - 1, x - 1
+        if kind == "right":
+            return self.paste_clipboard()
+        if kind == "down":
+            self.msel = {"a": (r, c), "b": (r, c), "drag": False}
+        elif kind == "drag" and self.msel:
+            self.msel.update(b=(r, c), drag=True)
+        elif kind == "up" and self.msel:
+            self.msel["b"] = (r, c)
+            if self.msel["drag"]:
+                self.copy_text(self.selected_text())
+            else:
+                self.msel = None
+        self._prev_rows = None  # repaint with/without the highlight
+
+    def sel_range(self):
+        a, b = self.msel["a"], self.msel["b"]
+        return (a, b) if a <= b else (b, a)
+
+    def selected_text(self):
+        (r0, c0), (r1, c1) = self.sel_range()
+        rows = getattr(self, "_screen_plain", [])
+        out = []
+        for r in range(max(0, r0), min(len(rows), r1 + 1)):
+            lo = c0 if r == r0 else 0
+            hi = c1 + 1 if r == r1 else 10 ** 6
+            out.append(cells(rows[r], lo, hi).rstrip())
+        return "\n".join(out).strip("\n")
+
     def dispatch(self, text):
         images = []
         for ref in re.findall(r"@(\S+)", text):
-            p = Path(ref)
+            p = Path(os.path.join(self.agent.cwd, os.path.expanduser(ref)))
             if p.suffix.lower() in IMAGE_EXT and p.exists():
                 images.append(read_any(p)[1])
+        for i, path in enumerate(self.attached, 1):
+            if f"[image #{i}]" in text and os.path.isfile(path):
+                images.append(read_any(path)[1])
+        self.attached = []
         self.add("user", text=text)
         self.ensure_ws()
         if not self.s.model():
@@ -4723,6 +5090,9 @@ class TUICommands:
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
                 "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool\n- `@path` attach file (images go to the model)"
+                "\n- `ctrl+v` / `alt+v` / right click: paste an image or text from the clipboard · drag an image file in to attach it"
+                "\n- drag with the mouse to select and copy text · `alt+c` copy the last answer · `/copy` code blocks or the whole chat"
+                "\n- `shift`+drag: the terminal's own selection · `/config` → mouse off gives native selection everywhere"
                 "\n- `tab` accept suggestion")
         self.add("assistant", text=txt).done = True
 
@@ -4838,11 +5208,27 @@ class TUICommands:
         self.welcome()
 
     def cmd_copy(self, arg):
-        for b in reversed(self.blocks):
-            if b.kind == "assistant":
-                self.term.write(f"{ESC}]52;c;{base64.b64encode(b.text.encode()).decode()}\a")
-                return self.toast("copied last answer to clipboard", "ok")
-        self.toast("nothing to copy")
+        answers = [b.text for b in self.blocks if b.kind == "assistant" and b.text.strip()]
+        if not answers:
+            return self.toast("nothing to copy")
+        codes = re.findall(r"```[^\n]*\n(.*?)```", answers[-1], re.S)
+        items = [("last", "last answer", f"{len(answers[-1])} chars")]
+        items += [(f"code{i}", f"code block {i + 1}", c.strip().split("\n")[0][:50]) for i, c in enumerate(codes)]
+        items += [("all", "whole conversation", f"{len(self.blocks)} blocks")]
+        v = arg or (items[0][0] if len(items) == 2 and not codes else self.pick("Copy", items))
+        if not v:
+            return
+        if v == "all":
+            parts = []
+            for b in self.blocks:
+                if b.kind == "user":
+                    parts.append("> " + b.text.replace("\n", "\n> "))
+                elif b.kind == "assistant":
+                    parts.append(b.text.strip())
+            return self.copy_text("\n\n".join(parts), "conversation")
+        if v.startswith("code") and v[4:].isdigit() and int(v[4:]) < len(codes):
+            return self.copy_text(codes[int(v[4:])].rstrip("\n"), f"code block {int(v[4:]) + 1}")
+        self.copy_text(answers[-1], "last answer")
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
@@ -5483,6 +5869,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.update_avail = None
         self.files_cache = None
         self.notice = ("", 0)
+        self.attached = []  # image files attached to the message being typed ([image #n] in the input)
+        self.msel = None  # mouse selection {"a": (row, col), "b": (row, col), "drag": bool}
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -5705,6 +6093,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         elif self.cloud.online:
             n = self.cloud.sync()
             if n > 0:
+                self.retheme()
                 self.toast(f"☁ {n} items synced from cloud", "ok")
             elif n < 0:
                 self.toast(f"☁ sync failed: {self.cloud.last_error[:60]}", "err")
@@ -5902,10 +6291,13 @@ def meta_line(text):
 def main():
     args = sys.argv[1:]
     store = Store()
-    if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
+    if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
+        # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
+        # (a blocking sync here kept `me` from starting for up to 30 s whenever the server was slow or unreachable)
         if store.auth.get("token"):
             Cloud(store).sync()
             store.config = jload(store.cfg_path) or store.config
+    if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
         PLUGINS.load(store)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
@@ -5922,15 +6314,12 @@ def main():
         n = c.sync()
         return print(f"synced: {n}" if n >= 0 else f"sync failed: {c.last_error}")
     if args and args[0] == "--rpc":
-        Cloud(store).sync() if store.auth.get("token") else None
         return run_rpc(store)
     if args and args[0] in ("-p", "--print"):
         yolo = "-y" in args
         rest = [a for a in args[1:] if a != "-y"]
         prompt = " ".join(rest) or sys.stdin.read()
         c = Cloud(store)
-        if store.auth.get("token"):
-            c.sync()
         run_headless(store, prompt, yolo)
         if store.auth.get("token"):
             c.sync()

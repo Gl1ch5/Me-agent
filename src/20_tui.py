@@ -31,6 +31,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.update_avail = None
         self.files_cache = None
         self.notice = ("", 0)
+        self.attached = []  # image files attached to the message being typed ([image #n] in the input)
+        self.msel = None  # mouse selection {"a": (row, col), "b": (row, col), "drag": bool}
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -253,6 +255,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         elif self.cloud.online:
             n = self.cloud.sync()
             if n > 0:
+                self.retheme()
                 self.toast(f"☁ {n} items synced from cloud", "ok")
             elif n < 0:
                 self.toast(f"☁ sync failed: {self.cloud.last_error[:60]}", "err")

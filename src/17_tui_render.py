@@ -28,7 +28,8 @@ class TUIRender:
             out.append(Line().add("  ").add("◆ " + ", ".join(ctxf) + " loaded into this session", rgb(TH["ok"])) if ctxf else
                        Line().add("  ").add("◇ no AGENTS.md — run /init so I remember this project", rgb(TH["warn"])))
             out.append(Line().add("  ").add("/ ", rgb(TH["accent"])).add("commands   ", dim).add("@ ", rgb(TH["accent"])).add("files   ", dim)
-                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline", dim))
+                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline   ", dim)
+                       .add("alt+v ", rgb(TH["accent"])).add("paste image   ", dim).add("drag ", rgb(TH["accent"])).add("select+copy", dim))
             out.append(Line())
             return out
         if b.kind == "user":
@@ -403,12 +404,20 @@ class TUIRender:
                     l.add(" " + det[: W - 30], st + rgb(TH["dim"]))
                     pop.append(l)
             avail = max(1, H - len(bottom) - len(pop))
-            # transcript
-            lines = []
-            for b in self.blocks:
-                lines.extend(self.block_lines(b, W - 1))
-            maxscroll = max(0, len(lines) - avail)
-            self.scroll = min(self.scroll, maxscroll)
+            # transcript: render blocks from the bottom up, only as many as the view needs (a long session used to re-walk
+            # every block on every animation frame)
+            need = avail + self.scroll + 1
+            chunks, got, complete = [], 0, True
+            for b in reversed(self.blocks):
+                if got >= need:
+                    complete = False
+                    break
+                bl = self.block_lines(b, W - 1)
+                chunks.append(bl)
+                got += len(bl)
+            lines = [l for bl in reversed(chunks) for l in bl]
+            if complete:
+                self.scroll = min(self.scroll, max(0, len(lines) - avail))
             end = len(lines) - self.scroll
             view = lines[max(0, end - avail):end]
             view = [Line()] * (avail - len(view)) + view
@@ -418,13 +427,23 @@ class TUIRender:
             out = []
             # repaint only the rows that changed (a full repaint every frame flickers badly in the Windows console)
             rows = [l.render(W, bgc) for l in screen[:H]]
+            self._screen_plain = [l.plain(W) for l in screen[:H]]
+            if self.msel:  # mouse selection: plain text on the selection color
+                (r0, c0), (r1, c1) = self.sel_range()
+                hl = rgb(TH["accent"], True) + rgb(TH["bg"])
+                for r in range(max(0, r0), min(len(rows), r1 + 1)):
+                    t = self._screen_plain[r]
+                    lo, hi = (c0 if r == r0 else 0), (c1 + 1 if r == r1 else W)
+                    rows[r] = (bgc + rgb(TH["fg"]) + cells(t, 0, lo) + hl + cells(t + " " * W, lo, hi) + RESET + bgc + rgb(TH["fg"])
+                               + cells(t + " " * W, hi, W) + RESET)
             prev = getattr(self, "_prev_rows", None)
             full = prev is None or len(prev) != len(rows) or getattr(self, "_prev_wh", None) != (W, H) or self.modal or getattr(self, "_prev_modal", False)
             for i, r in enumerate(rows):
                 if full or prev[i] != r:
                     out.append(f"{CSI}{i + 1};1H" + r)
             self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
-            out.insert(0, CSI + "?25l")  # hide the cursor while painting
+            changed = bool(out)
+            out.insert(0, CSI + "?2026h" + CSI + "?25l")  # synchronized update (Windows Terminal, kitty…); hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))
@@ -437,7 +456,11 @@ class TUIRender:
                 out.append(f"{CSI}{row};{col}H{CSI}?25h")
             else:
                 out.append(f"{CSI}?25l")
-            self.term.write("".join(out))
+            out.append(CSI + "?2026l")
+            frame = "".join(out)
+            if changed or self.modal or frame != getattr(self, "_prev_frame_tail", None):
+                self.term.write(frame)  # an unchanged frame writes nothing: cursor hide/show every tick flickered in cmd.exe
+            self._prev_frame_tail = frame if not changed else None
             self.dirty = False
 
     def _draw_modal(self, W, H, bgc):

@@ -39,6 +39,16 @@ def swidth(s):
     return sum(cw(c) for c in s)
 
 
+def cells(s, lo, hi):
+    """The part of s that sits in display columns [lo, hi)."""
+    out, w = [], 0
+    for c in s:
+        if lo <= w < hi:
+            out.append(c)
+        w += cw(c)
+    return "".join(out)
+
+
 class Line:
     """A display line: list of (text, style) segments."""
     __slots__ = ("segs",)
@@ -53,6 +63,17 @@ class Line:
 
     def width(self):
         return sum(swidth(t) for t, _ in self.segs)
+
+    def plain(self, width):
+        """The text this line shows in `width` cells (what a selection copies)."""
+        out, w = [], 0
+        for t, _ in self.segs:
+            for c in t:
+                if w + cw(c) > width:
+                    return "".join(out)
+                out.append(c)
+                w += cw(c)
+        return "".join(out)
 
     def render(self, width, base=""):
         out, w = [], 0
@@ -153,7 +174,7 @@ class Term:
             self.old = termios.tcgetattr(self.fd)
             tty.setraw(self.fd)
         # ?1007l: no "alternate scroll" - otherwise the wheel is sent as up/down arrows and pages through input history
-        self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (f"{CSI}?1000h{CSI}?1006h" if mouse else ""))
+        self.write(f"{CSI}?1049h{CSI}?1007l{CSI}?25l{CSI}?2004h" + (MOUSE_ON if mouse else ""))
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _win_in_mode(self, mouse):
@@ -169,10 +190,10 @@ class Term:
         self.mouse = on
         if WIN and self.old is not None:
             self._win_in_mode(on)
-        self.write(f"{CSI}?1000h{CSI}?1006h" if on else f"{CSI}?1000l{CSI}?1006l")
+        self.write(MOUSE_ON if on else MOUSE_OFF)
 
     def stop(self):
-        self.write(f"{CSI}?1000l{CSI}?1006l{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
+        self.write(f"{MOUSE_OFF}{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
         if WIN:
             import ctypes
             k = ctypes.windll.kernel32
@@ -211,19 +232,52 @@ class Term:
         recs, n = (REC * 64)(), w.DWORD()
         if not k.ReadConsoleInputW(h, recs, 64, ctypes.byref(n)):
             raise OSError("ReadConsoleInputW failed")
-        out = []
+        out, top = [], None
         for r in recs[: n.value]:
             if r.type == 1 and r.u.key.down and r.u.key.ch != "\x00":
-                out.append(r.u.key.ch * max(1, r.u.key.repeat))
-            elif r.type == 2 and r.u.mouse.flags & 0x0004 and self.mouse:  # MOUSE_WHEELED; high word = signed delta
-                delta = ctypes.c_short(r.u.mouse.buttons >> 16).value
-                out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+                ch = r.u.key.ch
+                if r.u.key.state & 0x0003 and not r.u.key.state & 0x000C and ch.isprintable() and not (out and out[-1].endswith("\x1b")):
+                    # left/right Alt (not AltGr = Ctrl+Alt); conhost in VT mode may already have sent the ESC itself
+                    ch = "\x1b" + ch
+                out.append(ch * max(1, r.u.key.repeat))
+            elif r.type == 2 and self.mouse:
+                m = r.u.mouse
+                if m.flags & 0x0004:  # MOUSE_WHEELED; high word = signed delta
+                    delta = ctypes.c_short(m.buttons >> 16).value
+                    out.append("\x1b[<64;1;1M" if delta > 0 else "\x1b[<65;1;1M")
+                    continue
+                if top is None:  # record coordinates are buffer-relative: make them window-relative
+                    top = self._win_top()
+                x, y = m.x + 1, m.y - top + 1
+                prev = getattr(self, "_mbtn", 0)
+                btn = m.buttons & 0x3
+                if m.flags & 0x0001:  # MOUSE_MOVED
+                    if btn & 1:
+                        out.append(f"\x1b[<32;{x};{y}M")
+                elif btn & 1 and not prev & 1:
+                    out.append(f"\x1b[<0;{x};{y}M")
+                elif prev & 1 and not btn & 1:
+                    out.append(f"\x1b[<0;{x};{y}m")
+                elif btn & 2 and not prev & 2:
+                    out.append(f"\x1b[<2;{x};{y}M")
+                self._mbtn = btn
         # join surrogate halves (emoji etc.) that arrive as separate records, also across reads
         s = getattr(self, "_hi_sur", "") + "".join(out)
         self._hi_sur = s[-1] if s and "\ud800" <= s[-1] <= "\udbff" else ""
         if self._hi_sur:
             s = s[:-1]
         return s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+    @staticmethod
+    def _win_top():
+        import ctypes
+        from ctypes import wintypes as w
+
+        class CSBI(ctypes.Structure):
+            _fields_ = [("size", w._COORD), ("cur", w._COORD), ("attr", w.WORD), ("win", w.SMALL_RECT), ("max", w._COORD)]
+        info = CSBI()
+        k = ctypes.windll.kernel32
+        return info.win.Top if k.GetConsoleScreenBufferInfo(k.GetStdHandle(-11), ctypes.byref(info)) else 0
 
     def _readch(self):
         if WIN:
@@ -252,7 +306,7 @@ class Term:
                 while select.select([self.fd], [], [], 0.01)[0]:
                     buf += os.read(self.fd, 4096).decode("utf-8", "replace")
             keys, buf = parse_keys(buf)
-            for k in keys:
+            for k in paste_guard(keys):
                 self.q.put(k)
 
 
@@ -260,6 +314,20 @@ KEYMAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "[H": "home", "
           "[3~": "delete", "[5~": "pgup", "[6~": "pgdn", "OA": "up", "OB": "down", "OC": "right", "OD": "left", "OH": "home",
           "OF": "end", "[1;5A": "ctrl-up", "[1;5B": "ctrl-down", "[1;5C": "ctrl-right", "[1;5D": "ctrl-left", "[1;3C": "ctrl-right",
           "[1;3D": "ctrl-left", "[Z": "shift-tab", "[13;2u": "newline", "[27;2;13~": "newline"}
+
+
+MOUSE_ON = f"{CSI}?1000h{CSI}?1002h{CSI}?1006h"  # clicks + drags (for selection) + wheel, SGR coordinates
+MOUSE_OFF = f"{CSI}?1002l{CSI}?1000l{CSI}?1006l"
+
+
+def paste_guard(keys):
+    """Terminals without bracketed paste (classic cmd.exe) deliver a pasted block as typed keys: an Enter followed by more text in
+    the same read is a pasted line break, not "send" — otherwise each pasted line went out as its own message."""
+    out = list(keys)
+    for i, k in enumerate(out):
+        if k == "enter" and any(isinstance(x, tuple) and x[0] == "char" for x in out[i + 1:]):
+            out[i] = "newline"
+    return out
 
 
 def parse_keys(buf):
@@ -280,10 +348,24 @@ def parse_keys(buf):
                 continue
             m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([mM])", buf[i:])
             if m:
-                b = int(m.group(1))
+                b, x, y, down = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) == "M"
                 if b & 64 and not b & 32:  # wheel, with or without shift/ctrl/alt
                     keys.append("wheel-up" if b & 3 == 0 else "wheel-down" if b & 3 == 1 else "unknown")
+                elif b & 32:  # motion with a button held: drag
+                    keys.append(("mouse", "drag", x, y))
+                elif b & 3 == 0:
+                    keys.append(("mouse", "down" if down else "up", x, y))
+                elif b & 3 == 2 and down:
+                    keys.append(("mouse", "right", x, y))
                 i += m.end()
+                continue
+            if i + 1 < len(buf) and buf[i + 1] in "vV" and not buf.startswith("\x1b[", i):
+                keys.append("alt-v")
+                i += 2
+                continue
+            if i + 1 < len(buf) and buf[i + 1] in "cC" and not buf.startswith("\x1b[", i):
+                keys.append("alt-c")
+                i += 2
                 continue
             m = re.match(r"\x1b(\[[\d;]*[~A-Za-z]|O[A-Z])", buf[i:])
             if m:

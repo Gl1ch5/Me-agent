@@ -22,6 +22,9 @@ class TUICommands:
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
                 "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool\n- `@path` attach file (images go to the model)"
+                "\n- `ctrl+v` / `alt+v` / right click: paste an image or text from the clipboard · drag an image file in to attach it"
+                "\n- drag with the mouse to select and copy text · `alt+c` copy the last answer · `/copy` code blocks or the whole chat"
+                "\n- `shift`+drag: the terminal's own selection · `/config` → mouse off gives native selection everywhere"
                 "\n- `tab` accept suggestion")
         self.add("assistant", text=txt).done = True
 
@@ -137,11 +140,27 @@ class TUICommands:
         self.welcome()
 
     def cmd_copy(self, arg):
-        for b in reversed(self.blocks):
-            if b.kind == "assistant":
-                self.term.write(f"{ESC}]52;c;{base64.b64encode(b.text.encode()).decode()}\a")
-                return self.toast("copied last answer to clipboard", "ok")
-        self.toast("nothing to copy")
+        answers = [b.text for b in self.blocks if b.kind == "assistant" and b.text.strip()]
+        if not answers:
+            return self.toast("nothing to copy")
+        codes = re.findall(r"```[^\n]*\n(.*?)```", answers[-1], re.S)
+        items = [("last", "last answer", f"{len(answers[-1])} chars")]
+        items += [(f"code{i}", f"code block {i + 1}", c.strip().split("\n")[0][:50]) for i, c in enumerate(codes)]
+        items += [("all", "whole conversation", f"{len(self.blocks)} blocks")]
+        v = arg or (items[0][0] if len(items) == 2 and not codes else self.pick("Copy", items))
+        if not v:
+            return
+        if v == "all":
+            parts = []
+            for b in self.blocks:
+                if b.kind == "user":
+                    parts.append("> " + b.text.replace("\n", "\n> "))
+                elif b.kind == "assistant":
+                    parts.append(b.text.strip())
+            return self.copy_text("\n\n".join(parts), "conversation")
+        if v.startswith("code") and v[4:].isdigit() and int(v[4:]) < len(codes):
+            return self.copy_text(codes[int(v[4:])].rstrip("\n"), f"code block {int(v[4:]) + 1}")
+        self.copy_text(answers[-1], "last answer")
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
