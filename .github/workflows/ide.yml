@@ -1,0 +1,91 @@
+name: ide
+# me IDE = VSCodium (open-source VS Code build) with the me extension preinstalled and its own name, in portable mode
+# (settings and extensions live next to the app). Also publishes the bare extension as me-agent.vsix for any VS Code.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    paths: ["apps/vscode/**", ".github/workflows/ide.yml"]
+
+permissions:
+  contents: write
+
+env:
+  CODIUM: "1.94.2.24286"
+
+jobs:
+  vsix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "20"}
+      - name: package the extension
+        working-directory: apps/vscode
+        run: |
+          VERSION=$(grep -m1 '^VERSION = ' ../../src/00_head.py | cut -d'"' -f2)
+          npm pkg set version="$VERSION"
+          npx --yes @vscode/vsce@2.31.1 package --allow-missing-repository --skip-license -o ../../me-agent.vsix
+      - uses: actions/upload-artifact@v4
+        with: {name: vsix, path: me-agent.vsix}
+
+  linux:
+    needs: vsix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: vsix}
+      - name: VSCodium + me extension, portable
+        run: |
+          set -e
+          curl -fsSL -o codium.tar.gz "https://github.com/VSCodium/vscodium/releases/download/$CODIUM/VSCodium-linux-x64-$CODIUM.tar.gz"
+          mkdir me-ide && tar -xzf codium.tar.gz -C me-ide
+          mkdir -p me-ide/data/extensions me-ide/data/user-data/User
+          ./me-ide/bin/codium --extensions-dir me-ide/data/extensions --user-data-dir me-ide/data/user-data --install-extension me-agent.vsix
+          echo '{"workbench.startupEditor": "none", "window.title": "${rootName} — me IDE", "workbench.colorTheme": "Default Dark Modern"}' > me-ide/data/user-data/User/settings.json
+          python3 - <<'EOF'
+          import json
+          p = "me-ide/resources/app/product.json"
+          d = json.load(open(p))
+          d.update(nameShort="me IDE", nameLong="me IDE", applicationName="codium")
+          json.dump(d, open(p, "w"), indent=1)
+          EOF
+          printf '#!/bin/sh\ncd "$(dirname "$0")" && exec ./codium "$@"\n' > me-ide/me-ide && chmod +x me-ide/me-ide
+          tar -czf me-ide-linux-x64.tar.gz me-ide
+      - uses: actions/upload-artifact@v4
+        with: {name: ide-linux, path: me-ide-linux-x64.tar.gz}
+
+  windows:
+    needs: vsix
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: vsix}
+      - name: VSCodium + me extension, portable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest "https://github.com/VSCodium/vscodium/releases/download/$env:CODIUM/VSCodium-win32-x64-$env:CODIUM.zip" -OutFile codium.zip
+          Expand-Archive codium.zip -DestinationPath me-ide
+          New-Item -ItemType Directory -Force me-ide/data/extensions, me-ide/data/user-data/User | Out-Null
+          & me-ide/bin/codium.cmd --extensions-dir me-ide/data/extensions --user-data-dir me-ide/data/user-data --install-extension me-agent.vsix
+          '{"workbench.startupEditor": "none", "window.title": "${rootName} — me IDE"}' | Set-Content -Encoding UTF8 me-ide/data/user-data/User/settings.json
+          $p = "me-ide/resources/app/product.json"; $d = Get-Content $p -Raw | ConvertFrom-Json
+          $d.nameShort = "me IDE"; $d.nameLong = "me IDE"; $d | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $p
+          Compress-Archive me-ide/* me-ide-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with: {name: ide-windows, path: me-ide-windows-x64.zip}
+
+  release:
+    needs: [vsix, linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {path: dist, merge-multiple: true}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/me-agent.vsix
+            dist/me-ide-linux-x64.tar.gz
+            dist/me-ide-windows-x64.zip
