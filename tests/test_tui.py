@@ -94,7 +94,7 @@ def main():
 
         t.send("hi\r")
         t.wait("Hello world")
-        t.wait("tokens")
+        t.wait("1 step")
         print("ok   a turn streams the answer")
 
         x, y = t.find("Hello world")

@@ -38,7 +38,9 @@ function onEvent(e) {
   if (t === "text") {
     endThink();
     if (!cur.text) { cur.text = el(`<div class="msg md"></div>`); cur.raw = ""; }
-    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;
+    cur.raw += e.text; const node = cur.text; node._raw = cur.raw;
+    if (!node._raf) node._raf = requestAnimationFrame(() => { node._raf = 0; node.innerHTML = md(node._raw); scroll(); });  // once per frame, not per token
+    return;
   }
   if (t === "tool_start") {
     endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;
@@ -95,7 +97,8 @@ function onEvent(e) {
   if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(e.text)}</div>`); return; }
   if (t === "turn_end") {
     const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();
-    el(`<div class="stats">${failed ? I.x : I.check}${tt("{a} · ↑ {i} ↓ {o} · {n} tokens{c}", {a: dur(e.time), i: human(e.in), o: human(e.out), n: human(e.in + e.out), c: e.cost ? " · " + money(e.cost) : ""})}</div>`);
+    const st = e.steps || 1, cp = e.cached && e.in ? ` (${Math.round(100 * e.cached / e.in)}% ${t("cached")})` : "";
+    el(`<div class="stats" title="${esc(t("every step re-sends the context; cached input costs a fraction"))}">${failed ? I.x : I.check}${esc(`${dur(e.time)} · ${st} ${pl(st, "step", "steps")} · ${t("context")} ${human(e.ctx || 0)} · ↑${human(e.in)}${cp} ↓${human(e.out)}${e.cost ? " · " + money(e.cost) : ""}`)}</div>`);
     state.ctx = e.ctx; renderStatus(); refreshSessions(); return;
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }

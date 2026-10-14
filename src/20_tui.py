@@ -180,8 +180,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     b.data.setdefault("output", "interrupted")
                     b.touch()
                 self.tools_live.clear()
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
-                                       + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
+                self.add("stats", text=turn_stats(e))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
             self.redraw()
@@ -354,6 +353,17 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 sys.exit(subprocess.call(args))
             os.execv(*(args[0], args))
 
+
+
+def turn_stats(e):
+    """One honest line per turn: every step re-sends the context, so ↑ is the sum over steps; cached input is billed at a fraction."""
+    steps = e.get("steps") or 1
+    cached = e.get("cached", 0)
+    parts = [dur(e["time"]), f"{steps} step{'s' if steps != 1 else ''}", f"context {human(e.get('ctx', 0))}",
+             f"sent ↑{human(e['in'])}" + (f" ({int(100 * cached / e['in'])}% cached)" if cached and e["in"] else ""), f"↓{human(e['out'])}"]
+    if e.get("cost"):
+        parts.append(money(e["cost"]))
+    return "  ·  ".join(parts)
 
 
 def fuzzy(q, s):

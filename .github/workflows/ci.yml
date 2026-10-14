@@ -13,7 +13,7 @@ jobs:
         with: {node-version: "20"}
       - name: web UI and IDE extension JS parse
         run: |
-          for f in src/web/*.js apps/vscode/*.js; do node --check "$f"; done
+          for f in src/web/*.js $(ls apps/vscode/*.js 2>/dev/null); do node --check "$f"; done
   test:
     # me.py promises Python 3.8+ on every OS: a syntax that only 3.12 accepts once broke every Windows install on 3.11
     needs: build
@@ -31,3 +31,6 @@ jobs:
         with: {python-version: "${{ matrix.python }}"}
       - run: python tests/test_core.py
         env: {PYTHONIOENCODING: utf-8}
+      - name: end-to-end TUI in a pty
+        if: runner.os != 'Windows'
+        run: pip install pyte && python tests/test_tui.py
