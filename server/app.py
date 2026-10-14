@@ -739,7 +739,7 @@ DOWNLOADS = {"windows": "me-desktop.exe", "android": "me-android.apk", "vsix": "
              "ide-windows": "me-ide-windows-x64.zip", "ide-linux": "me-ide-linux-x64.tar.gz", "me.py": "me.py"}
 
 
-@app.get("/download/{what}")
+@app.api_route("/download/{what}", methods=["GET", "HEAD"])
 def download(what: str):
     """Stable links for the site: the newest release's file on GitHub."""
     from fastapi.responses import RedirectResponse
