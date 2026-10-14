@@ -2,6 +2,7 @@ name: ide
 # me IDE = VSCodium (open-source VS Code build) with the me extension preinstalled and its own name, in portable mode
 # (settings and extensions live next to the app). Also publishes the bare extension as me-agent.vsix for any VS Code.
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     tags: ["v*"]
