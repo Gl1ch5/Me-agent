@@ -178,3 +178,11 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .proj summary span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proj summary .n{font:500 11px var(--mono);color:var(--dim)}
 .proj .pnew{width:24px;height:24px;opacity:.55}.proj summary:hover .pnew{opacity:1}
 .proj .si{padding-left:32px}.si.addp{color:var(--a);margin-top:6px}
+
+.fhead{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:4px;font:12.5px var(--mono)}
+.fhead b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fview{font:12px/1.55 var(--mono);white-space:pre;overflow:auto;max-height:62vh;padding:8px 10px;color:var(--fg)}
+.fview i{display:inline-block;width:3.2em;color:var(--faint);font-style:normal;text-align:right;margin-right:12px;user-select:none}
+.popup>div:has(.fview){width:min(900px,100%)}
+@media (max-width:760px){#filesBtn span{display:none}}
+.popup .fhead .ib{width:30px;height:30px;flex:0 0 30px;padding:0;justify-content:center;border-radius:8px}

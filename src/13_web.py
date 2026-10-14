@@ -126,6 +126,27 @@ class WebSession:
             else:
                 threading.Thread(target=a.run, args=(body["text"], body.get("images") or ()), daemon=True).start()
             return {"ok": True}
+        if path in ("/files", "/file"):  # project browser: list a folder / read a file, never outside the session's project
+            root = os.path.realpath(a.cwd)
+            p = os.path.realpath(os.path.join(root, body.get("path") or ""))
+            if p != root and not p.startswith(root.rstrip(os.sep) + os.sep):
+                raise ValueError("outside the project")
+            if path == "/files":
+                items = []
+                for e in sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name.lower())):
+                    if e.name in SKIP_DIRS or e.name.startswith(".") and e.name not in (".github", ".env.example"):
+                        continue
+                    try:
+                        items.append({"name": e.name, "dir": e.is_dir(), "size": 0 if e.is_dir() else e.stat().st_size})
+                    except OSError:
+                        continue
+                return {"path": relp(p, root).replace("\\", "/").lstrip("."), "items": items[:1000]}
+            if os.path.getsize(p) > 2_000_000:
+                return {"path": body.get("path"), "text": "", "note": "file over 2 MB"}
+            data = Path(p).read_bytes()
+            if b"\0" in data[:8192]:
+                return {"path": body.get("path"), "text": "", "note": f"binary file, {len(data)} bytes"}
+            return {"path": body.get("path"), "text": data.decode("utf-8", "replace")}
         if path == "/undo":
             r = a.undo()
             if not r["ok"]:

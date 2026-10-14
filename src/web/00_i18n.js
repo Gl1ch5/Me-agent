@@ -1,5 +1,5 @@
 // ─── i18n: English is the source text; RU is a lookup table. t("English") / tt("English") (retranslatable span) ───
-const RU = {"open a project folder": "открыть папку проекта", "(no folder)": "(без папки)", "cached": "из кэша", "context": "контекст", "every step re-sends the context; cached input costs a fraction": "каждый шаг заново отправляет контекст; кэшированный ввод стоит в разы дешевле", 
+const RU = {"files": "файлы", "empty folder": "пустая папка", "back": "назад", "ask about this file": "спросить про этот файл", "open a project folder": "открыть папку проекта", "(no folder)": "(без папки)", "cached": "из кэша", "context": "контекст", "every step re-sends the context; cached input costs a fraction": "каждый шаг заново отправляет контекст; кэшированный ввод стоит в разы дешевле", 
   "New chat": "Новый чат", "Chat": "Чат", "close menu": "закрыть меню", "account": "аккаунт", "local": "локально", "cloud": "облако",
   "notify me when a task is done": "уведомлять о завершении задачи", "theme": "тема", "Language": "Язык", "checklist": "чек-лист",
   "preview": "просмотр", "open the site the agent built": "открыть сайт, созданный агентом", "workspace": "рабочая область",
