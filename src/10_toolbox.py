@@ -67,19 +67,24 @@ class ToolBox:
         if name == "write":
             p = Path(a["path"]).expanduser()
             p.parent.mkdir(parents=True, exist_ok=True)
-            old = p.read_text("utf-8", "replace") if p.exists() else None
-            p.write_text(a["content"], "utf-8")
-            emit({"t": "diff", "text": self._diff(old or "", a["content"], p.name)})
+            old = read_raw(p) if p.is_file() else None
+            content = a["content"]
+            if old and "\r\n" in old and "\r" not in content:  # keep the file's line endings (a Windows CRLF file stays CRLF)
+                content = content.replace("\n", "\r\n")
+            write_raw(p, content)
+            emit({"t": "diff", "text": self._diff((old or "").replace("\r\n", "\n"), a["content"], p.name)})
             return True, f"wrote {p} ({len(a['content'].splitlines())} lines)", None
         if name == "edit":
             p = Path(a["path"]).expanduser()
             if not p.exists():
                 return False, f"error: {p} not found (use write to create it)", None
-            text = p.read_text("utf-8")
+            raw = read_raw(p)
+            crlf = "\r\n" in raw
+            text = raw.replace("\r\n", "\n") if crlf else raw  # edit on LF text, write back in the file's own line endings
             new, msg = apply_edits(text, a)
             if new is None:
                 return False, msg, None
-            p.write_text(new, "utf-8")
+            write_raw(p, new.replace("\n", "\r\n") if crlf else new)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
             return True, f"edited {p} ({msg})", None
         if name == "bash":

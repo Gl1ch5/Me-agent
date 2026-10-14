@@ -267,7 +267,7 @@ def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
 def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     s = make()
     (s.home / "agents").mkdir(exist_ok=True)
-    (s.home / "agents" / "me.md").write_text((Path(__file__).resolve().parent.parent / "server" / "market" / "agent-me.md").read_text("utf-8"))
+    (s.home / "agents" / "me.md").write_text((Path(__file__).resolve().parent.parent / "server" / "market" / "agent-me.md").read_text("utf-8"), "utf-8")
     s.config["agent"] = "me"
     ag = me.Agent(s, print)
     sp = ag.system_prompt()
@@ -436,7 +436,7 @@ def test_only_code_builtin_and_cli_tools(tmp=Path(tempfile.mkdtemp())):
     ag, ev = run(s, "tool:ops_hello " + json.dumps({"who": "a b; echo hacked"}))
     start = [e for e in ev if e["type"] == "tool_start"][0]
     assert start["cli"]["agent"] == "ops" and start["cli"]["color"] == "red", start
-    assert ends(ev)[0]["ok"] and ends(ev)[0]["output"].strip() == "hello a b; echo hacked", ends(ev)
+    assert ends(ev)[0]["ok"] and ends(ev)[0]["output"].strip().replace('"', "") == "hello a b; echo hacked", ends(ev)  # one argument, nothing injected (cmd echo keeps quotes)
     assert any(e["type"] == "tool_event" and e.get("t") == "status" for e in ev)
     ag, ev = run(s, "tool:ops_plain {}")
     assert ends(ev)[0]["output"].strip() == "plain-out"

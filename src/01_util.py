@@ -24,6 +24,17 @@ def jsave(p, data):
             time.sleep(0.05 * (i + 1))
 
 
+def read_raw(p):
+    """File text exactly as stored (no newline translation: on Windows read_text/write_text turned LF files into CRLF)."""
+    with open(p, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def write_raw(p, text):
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
 def human(n):
     n = int(n or 0)
     if n < 1000:

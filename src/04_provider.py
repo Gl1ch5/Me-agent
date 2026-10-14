@@ -46,38 +46,32 @@ class Provider:
 
     @staticmethod
     def _sse(resp, cancel):
-        # a model that thinks silently sends nothing for minutes; readline() would block through Esc, so a watcher
-        # shuts the socket down the moment the user cancels
-        done = threading.Event()
+        """Parsed SSE events. Lines are read by a helper thread, so Esc stops at once on every OS even while a model thinks
+        silently for minutes (a blocked readline() can't be interrupted reliably on Windows)."""
+        q = queue.Queue(maxsize=1000)
 
-        def watch():
-            while not done.wait(0.1):
-                if cancel.is_set():
-                    try:
-                        sock = resp.fp.raw._sock
-                        sock.shutdown(2)
-                    except Exception:
-                        pass
-                    try:
-                        resp.close()
-                    except Exception:
-                        pass
-                    return
-        threading.Thread(target=watch, daemon=True).start()
+        def reader():
+            try:
+                for chunk in iter(resp.readline, b""):
+                    q.put(chunk)
+                q.put(None)
+            except Exception as e:
+                q.put(e)
+        threading.Thread(target=reader, daemon=True, name="me-sse").start()
         try:
             while True:
+                try:
+                    chunk = q.get(timeout=0.1)
+                except queue.Empty:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    continue
                 if cancel.is_set():
                     raise Cancelled()
-                try:
-                    chunk = resp.readline()
-                except Exception:
-                    if cancel.is_set():
-                        raise Cancelled()
-                    raise
-                if not chunk:
-                    if cancel.is_set():
-                        raise Cancelled()
+                if chunk is None:
                     break
+                if isinstance(chunk, Exception):
+                    raise chunk
                 line = chunk.strip()
                 if line.startswith(b"data:"):
                     data = line[5:].strip()
@@ -98,11 +92,7 @@ class Provider:
                         err = line.decode("utf-8", "replace")
                     raise RuntimeError("provider error: " + str(err.get("message") if isinstance(err, dict) else err)[:800])
         finally:
-            done.set()
-            try:
-                resp.close()
-            except Exception:
-                pass
+            threading.Thread(target=resp.close, daemon=True).start()  # closing may block on some platforms: never in the UI path
 
     def cache_mode(self):
         """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""

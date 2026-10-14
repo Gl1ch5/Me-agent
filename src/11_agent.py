@@ -495,7 +495,7 @@ class Agent:
         p = self.abspath(path)
         if p not in self.snap:
             try:
-                self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None
+                self.snap[p] = read_raw(p) if os.path.isfile(p) else None
             except (OSError, UnicodeDecodeError):
                 pass
 

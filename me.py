@@ -49,6 +49,17 @@ def jsave(p, data):
             time.sleep(0.05 * (i + 1))
 
 
+def read_raw(p):
+    """File text exactly as stored (no newline translation: on Windows read_text/write_text turned LF files into CRLF)."""
+    with open(p, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def write_raw(p, text):
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
 def human(n):
     n = int(n or 0)
     if n < 1000:
@@ -599,38 +610,32 @@ class Provider:
 
     @staticmethod
     def _sse(resp, cancel):
-        # a model that thinks silently sends nothing for minutes; readline() would block through Esc, so a watcher
-        # shuts the socket down the moment the user cancels
-        done = threading.Event()
+        """Parsed SSE events. Lines are read by a helper thread, so Esc stops at once on every OS even while a model thinks
+        silently for minutes (a blocked readline() can't be interrupted reliably on Windows)."""
+        q = queue.Queue(maxsize=1000)
 
-        def watch():
-            while not done.wait(0.1):
-                if cancel.is_set():
-                    try:
-                        sock = resp.fp.raw._sock
-                        sock.shutdown(2)
-                    except Exception:
-                        pass
-                    try:
-                        resp.close()
-                    except Exception:
-                        pass
-                    return
-        threading.Thread(target=watch, daemon=True).start()
+        def reader():
+            try:
+                for chunk in iter(resp.readline, b""):
+                    q.put(chunk)
+                q.put(None)
+            except Exception as e:
+                q.put(e)
+        threading.Thread(target=reader, daemon=True, name="me-sse").start()
         try:
             while True:
+                try:
+                    chunk = q.get(timeout=0.1)
+                except queue.Empty:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    continue
                 if cancel.is_set():
                     raise Cancelled()
-                try:
-                    chunk = resp.readline()
-                except Exception:
-                    if cancel.is_set():
-                        raise Cancelled()
-                    raise
-                if not chunk:
-                    if cancel.is_set():
-                        raise Cancelled()
+                if chunk is None:
                     break
+                if isinstance(chunk, Exception):
+                    raise chunk
                 line = chunk.strip()
                 if line.startswith(b"data:"):
                     data = line[5:].strip()
@@ -651,11 +656,7 @@ class Provider:
                         err = line.decode("utf-8", "replace")
                     raise RuntimeError("provider error: " + str(err.get("message") if isinstance(err, dict) else err)[:800])
         finally:
-            done.set()
-            try:
-                resp.close()
-            except Exception:
-                pass
+            threading.Thread(target=resp.close, daemon=True).start()  # closing may block on some platforms: never in the UI path
 
     def cache_mode(self):
         """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
@@ -1476,19 +1477,24 @@ class ToolBox:
         if name == "write":
             p = Path(a["path"]).expanduser()
             p.parent.mkdir(parents=True, exist_ok=True)
-            old = p.read_text("utf-8", "replace") if p.exists() else None
-            p.write_text(a["content"], "utf-8")
-            emit({"t": "diff", "text": self._diff(old or "", a["content"], p.name)})
+            old = read_raw(p) if p.is_file() else None
+            content = a["content"]
+            if old and "\r\n" in old and "\r" not in content:  # keep the file's line endings (a Windows CRLF file stays CRLF)
+                content = content.replace("\n", "\r\n")
+            write_raw(p, content)
+            emit({"t": "diff", "text": self._diff((old or "").replace("\r\n", "\n"), a["content"], p.name)})
             return True, f"wrote {p} ({len(a['content'].splitlines())} lines)", None
         if name == "edit":
             p = Path(a["path"]).expanduser()
             if not p.exists():
                 return False, f"error: {p} not found (use write to create it)", None
-            text = p.read_text("utf-8")
+            raw = read_raw(p)
+            crlf = "\r\n" in raw
+            text = raw.replace("\r\n", "\n") if crlf else raw  # edit on LF text, write back in the file's own line endings
             new, msg = apply_edits(text, a)
             if new is None:
                 return False, msg, None
-            p.write_text(new, "utf-8")
+            write_raw(p, new.replace("\n", "\r\n") if crlf else new)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
             return True, f"edited {p} ({msg})", None
         if name == "bash":
@@ -1836,7 +1842,7 @@ def repo_map(root, sub="", home=HOME, limit=12000):
     fresh, lines = {}, []
     base = os.path.join(root, sub) if sub else root
     for f in sorted(walk_files(base, 5000)):
-        rel = os.path.relpath(f, root)
+        rel = os.path.relpath(f, root).replace("\\", "/")
         if os.path.splitext(f)[1].lower() not in MAP_EXT:
             continue
         try:
@@ -1938,14 +1944,15 @@ def restore_files(files):
                 pass
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(old, "utf-8")
+            write_raw(p, old)
 
 
 def file_diff(path, old):
     try:
-        new = Path(path).read_text("utf-8", "replace")
-    except OSError:
+        new = read_raw(path).replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
         new = ""
+    old = (old or "").replace("\r\n", "\n")
     d = list(difflib.unified_diff((old or "").splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
     return "\n".join(d[:400]) + ("\n…" if len(d) > 400 else "")
 
@@ -2639,7 +2646,7 @@ class Agent:
         p = self.abspath(path)
         if p not in self.snap:
             try:
-                self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None
+                self.snap[p] = read_raw(p) if os.path.isfile(p) else None
             except (OSError, UnicodeDecodeError):
                 pass
 

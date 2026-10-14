@@ -38,7 +38,7 @@ def repo_map(root, sub="", home=HOME, limit=12000):
     fresh, lines = {}, []
     base = os.path.join(root, sub) if sub else root
     for f in sorted(walk_files(base, 5000)):
-        rel = os.path.relpath(f, root)
+        rel = os.path.relpath(f, root).replace("\\", "/")
         if os.path.splitext(f)[1].lower() not in MAP_EXT:
             continue
         try:
@@ -140,14 +140,15 @@ def restore_files(files):
                 pass
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(old, "utf-8")
+            write_raw(p, old)
 
 
 def file_diff(path, old):
     try:
-        new = Path(path).read_text("utf-8", "replace")
-    except OSError:
+        new = read_raw(path).replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
         new = ""
+    old = (old or "").replace("\r\n", "\n")
     d = list(difflib.unified_diff((old or "").splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
     return "\n".join(d[:400]) + ("\n…" if len(d) > 400 else "")
 
