@@ -8,7 +8,7 @@ DEFAULT_CONFIG = {
     "agent": "",  # active agent preset ("" = default)
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
-    "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
+    "settings": {"yolo": False, "mouse": os.name != "nt", "disabled_skills": [], "disabled_plugins": []},
     "search": {"deepseek_key": "", "model": "deepseek-v4-flash"},
     "voice": {"groq_key": "", "model": "whisper-large-v3", "language": ""},
 }

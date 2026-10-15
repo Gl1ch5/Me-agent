@@ -282,7 +282,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
 
     def run(self):
         self.restart = False
-        self.term.start(self.s.config["settings"].get("mouse", True))
+        self.term.start(self.s.config["settings"].get("mouse", not WIN))
         if not WIN:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()
