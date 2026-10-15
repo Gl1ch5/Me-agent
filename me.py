@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -77,7 +77,7 @@ DEFAULT_CONFIG = {
     "agent": "",  # active agent preset ("" = default)
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
-    "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
+    "settings": {"yolo": False, "mouse": os.name != "nt", "disabled_skills": [], "disabled_plugins": []},
     "search": {"deepseek_key": "", "model": "deepseek-v4-flash"},
     "voice": {"groq_key": "", "model": "whisper-large-v3", "language": ""},
 }
@@ -5203,13 +5203,13 @@ class TUICommands:
         st = self.s.config["settings"]
         while True:
             items = [("yolo", f"auto-approve tools   {'on' if st.get('yolo') else 'off'}", ""),
-                     ("mouse", f"mouse wheel scroll   {'on' if st.get('mouse', True) else 'off'}", "off = native text selection"),
+                     ("mouse", f"mouse wheel scroll   {'on' if st.get('mouse', not WIN) else 'off'}", "off = native text selection"),
                      ("show_thinking", f"show thinking        {'on' if st.get('show_thinking') else 'off'}", ""),
                      ("home", "data dir", str(self.s.home))]
             v = self.pick("Settings", items)
             if v is None or v == "home":
                 return
-            st[v] = not st.get(v, v == "mouse")
+            st[v] = not st.get(v, v == "mouse" and not WIN)
             if v == "mouse":
                 self.term.set_mouse(st[v])
             self.s.save()
@@ -5519,7 +5519,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
 
     def run(self):
         self.restart = False
-        self.term.start(self.s.config["settings"].get("mouse", True))
+        self.term.start(self.s.config["settings"].get("mouse", not WIN))
         if not WIN:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()

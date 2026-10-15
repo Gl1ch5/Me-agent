@@ -717,13 +717,13 @@ class TUICommands:
         st = self.s.config["settings"]
         while True:
             items = [("yolo", f"auto-approve tools   {'on' if st.get('yolo') else 'off'}", ""),
-                     ("mouse", f"mouse wheel scroll   {'on' if st.get('mouse', True) else 'off'}", "off = native text selection"),
+                     ("mouse", f"mouse wheel scroll   {'on' if st.get('mouse', not WIN) else 'off'}", "off = native text selection"),
                      ("show_thinking", f"show thinking        {'on' if st.get('show_thinking') else 'off'}", ""),
                      ("home", "data dir", str(self.s.home))]
             v = self.pick("Settings", items)
             if v is None or v == "home":
                 return
-            st[v] = not st.get(v, v == "mouse")
+            st[v] = not st.get(v, v == "mouse" and not WIN)
             if v == "mouse":
                 self.term.set_mouse(st[v])
             self.s.save()
