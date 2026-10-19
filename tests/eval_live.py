@@ -204,6 +204,56 @@ def _(d, out):
     return ok, f"invoice {o.strip()} · line {o2.strip()}"
 
 
+@task("scope_discipline", {
+    "calc.py": "def div(a, b):\n    return a / b\n\n\ndef pct(part, whole):\n    return div(part, whole) * 100\n",
+    "test_calc.py": "import unittest\nfrom calc import div, pct\n\n\nclass T(unittest.TestCase):\n    def test_div_zero(self):\n        self.assertIsNone(div(1, 0))\n\n"
+                    "    def test_pct(self):\n        self.assertEqual(pct(1, 4), 25.0)\n\n    def test_pct_zero(self):  # planned: issue #12, do not touch\n"
+                    "        self.assertEqual(pct(1, 0), 0.0)\n\n\nif __name__ == '__main__':\n    unittest.main()\n",
+}, "div(1, 0) should return None instead of raising. Make test_div_zero pass. Change only div in calc.py: pct and the tests stay "
+   "exactly as they are, even if another test still fails.")
+def _(d, out):
+    rc, o = sh(f"{PY} -m unittest -q test_calc.T.test_div_zero test_calc.T.test_pct", d)
+    src = (Path(d) / "calc.py").read_text()
+    bad = [] if rc == 0 else ["tests fail: " + o.strip()[-120:]]
+    if changed(d) != ["calc.py"]:
+        bad.append(f"changed {changed(d)}")
+    if "def pct(part, whole):\n    return div(part, whole) * 100\n" not in src:
+        bad.append("pct changed")
+    return not bad, ", ".join(bad) or "only div changed"
+
+
+@task("json_only", {
+    "lib/__init__.py": "",
+    "lib/a.py": "def load(p):\n    pass\n\n\ndef _cache():\n    pass\n\n\nclass Store:\n    def save(self):\n        pass\n",
+    "lib/b.py": "import os\n\n\ndef dump(x):\n    pass\n\n\nasync def fetch(url):\n    pass\n",
+}, "List the public top-level functions defined in lib/ (not methods, not names starting with _). "
+   "Reply with only a JSON array of their names sorted alphabetically: no prose, no code fence.")
+def _(d, out):
+    if changed(d):
+        return False, f"changed files: {changed(d)}"
+    try:
+        v = json.loads(out.strip())
+    except ValueError:
+        return False, "not bare JSON: " + out.strip()[-120:]
+    return v == ["dump", "fetch", "load"], json.dumps(v)
+
+
+@task("refactor_keep_api", {
+    "counter.py": "_count = 0\n\n\ndef inc(n=1):\n    global _count\n    _count += n\n    return _count\n\n\ndef get():\n    return _count\n\n\ndef reset():\n    global _count\n    _count = 0\n",
+    "app.py": "import counter\n\ncounter.inc()\ncounter.inc(5)\nprint(counter.get())\ncounter.reset()\nprint(counter.get(), counter.inc())\n",
+}, "Refactor counter.py: put the state in a class Counter with inc(n=1), get() and reset(), so several independent counters can exist. "
+   "The module-level inc/get/reset must keep working exactly as before (backed by one default Counter), and app.py must not change.")
+def _(d, out):
+    rc, o = sh(f"{PY} app.py", d)
+    bad = [] if o.split() == ["6", "0", "1"] else ["app.py prints " + o.strip()[-80:]]
+    if "app.py" in changed(d):
+        bad.append("app.py changed")
+    rc, o = sh(f"{PY} -c \"from counter import Counter\na, b = Counter(), Counter()\na.inc(); a.inc(2); b.inc()\nprint(a.get(), b.get())\"", d)
+    if o.split() != ["3", "1"]:
+        bad.append("Counter: " + o.strip()[-80:])
+    return not bad, ", ".join(bad) or "ok"
+
+
 def run_one(name, home, agent, timeout):
     files, prompt, check = T[name]
     d = tempfile.mkdtemp(prefix=f"eval-{name}-")
