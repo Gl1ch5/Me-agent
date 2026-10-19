@@ -650,6 +650,12 @@ def client(req: Request):
     return PlainTextResponse(src, media_type="text/x-python")
 
 
+@app.get("/studio.py")
+def studio_py():
+    """The desktop command center, for `me studio` (it imports the me.py it is started from)."""
+    return PlainTextResponse((HERE.parent / "apps" / "studio" / "me_studio.py").read_text("utf-8"), media_type="text/x-python")
+
+
 @app.get("/i")
 @app.get("/install.sh")
 def install_sh(req: Request):
@@ -693,6 +699,10 @@ def changelog_html():
         if t.startswith("## "):
             cur = ' <span class="cur">current</span>' if t[3:].split(" ")[0] == client_version() else ""
             out.append(f'<h2 id="v{t[3:].split(" ")[0]}">{t[3:]}{cur}</h2>')
+        elif re.fullmatch(r"<b>[^<]+</b>", t):  # a **section** line inside a release
+            out.append(f"<h3>{t[3:-4]}</h3>")
+        elif t and not t.startswith("# ") and out:  # a plain paragraph (the intro under a version)
+            out.append(f"<p>{t}</p>")
     if in_list:
         out.append("</ul>")
     return "\n".join(out)
@@ -733,6 +743,20 @@ def raw_skill(name: str):
     if not r:
         raise HTTPException(404)
     return PlainTextResponse(r["content"])
+
+
+DOWNLOADS = {"windows": "me-desktop.exe", "studio": "me-studio.exe", "android": "me-android.apk", "vsix": "me-agent.vsix",
+             "ide-windows": "me-ide-windows-x64.zip", "ide-linux": "me-ide-linux-x64.tar.gz", "me.py": "me.py"}
+
+
+@app.api_route("/download/{what}", methods=["GET", "HEAD"])
+def download(what: str):
+    """Stable links for the site: the newest release's file on GitHub."""
+    from fastapi.responses import RedirectResponse
+    f = DOWNLOADS.get(what)
+    if not f:
+        raise HTTPException(404, "unknown app")
+    return RedirectResponse(f"https://github.com/Gl1ch5/Me-agent/releases/latest/download/{f}", status_code=302)
 
 
 @app.get("/healthz")

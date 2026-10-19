@@ -9,8 +9,15 @@ Scope (most important):
 - Do not refactor, reformat, rename, add features, docs or tests nobody asked for. Mention worthwhile extras in one line instead of doing them.
 - If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go.
 
+Tools:
+- Explore with ls (glob), grep and read, not shell cat/find/grep. Put independent reads/searches in one message: they run in parallel.
+- Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, keep it short but unique; several changes to one file go in one call (edits=[…]). If an edit fails, read that part again, then retry. write only for new files or full rewrites.
+- bash runs non-interactively (no prompts: pass -y / --yes, CI=1); dev servers and watchers need background=true.
+- Never undo or delete work you did not make, and no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked.
+- Lines in [brackets] from the "user" mid-task come from me (self-check, a message the user queued, an interruption).
+
 Work:
-- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd. Batch independent reads.
+- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd.
 - For 3+ step tasks keep a todo list current; skip it for small ones.
 - Match the project's style; clean small functions; no hacks, no needless deps.
 - After changing code, verify it (run tests, build, lint or the code). Never claim untested success.
@@ -23,6 +30,37 @@ Reply: in the user's language, concise. After changes say what changed and how y
 
 class LimitHit(Exception):
     pass
+
+
+def parse_args(raw):
+    """Tool-call arguments → dict, or None. Tolerates what models commonly get wrong: a code fence around the JSON,
+    text after it, a JSON object sent as a string."""
+    raw = (raw or "").strip() or "{}"
+    for cand in (raw, re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)):
+        try:
+            v = json.JSONDecoder().raw_decode(cand)[0]
+        except ValueError:
+            continue
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                continue
+        if isinstance(v, dict):
+            return v
+    return None
+
+
+TRUNCATED = object()  # marker: tool arguments cut off by the output limit
+LOOP_NUDGE = ("[you made the same call three times and got the same result — it will not change. Try a different approach, "
+              "or stop and tell the user what blocks you]")
+THINK_NUDGE = "[your reasoning used up the output token limit before you answered — think less and act or answer now]"
+CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue exactly where it stopped, without repeating]"
+DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
+
+
+def tc_args(tc):
+    return parse_args(tc["function"]["arguments"])
 
 
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
@@ -71,7 +109,7 @@ class Agent:
             text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
             budget -= len(text)
             project += f"\n\n# {name}\n{text}"
-        if "AGENTS.md" in self.context_files():
+        if "AGENTS.md" in self.context_files() or any(n.endswith("/AGENTS.md") for n in self.context_files()):
             project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
         else:
             project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
@@ -96,15 +134,37 @@ class Agent:
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
         return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
-                             shell="cmd.exe (bash tool runs Windows commands: dir, type, findstr, set; or powershell -NoProfile -Command \"...\"; no POSIX syntax)" if WIN else os.environ.get("SHELL", "/bin/sh"),
+                             shell=shell_note(self.s.config["settings"].get("shell")),
                              extra=extra, skills=skills, project=project, user=user)
 
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
 
+    @property
+    def cwd(self):
+        return self.session.get("cwd") or os.getcwd()
+
+    def abspath(self, path):
+        """A tool path as the model meant it: relative to the session's project folder, ~ expanded."""
+        return os.path.abspath(os.path.join(self.cwd, os.path.expanduser(str(path or ""))))
+
     def context_files(self):
-        cwd = Path(self.session.get("cwd") or ".")
-        return [n for n in CONTEXT_FILES if (cwd / n).is_file()]
+        """Project instructions: CONTEXT_FILES in cwd, plus AGENTS.md / CLAUDE.md of parent folders up to the repo root
+        (a monorepo's root rules apply in its subfolders). Parents come first; names are relative to cwd."""
+        cwd = Path(self.session.get("cwd") or ".").resolve()
+        out = [n for n in CONTEXT_FILES if (cwd / n).is_file()]
+        if (cwd / ".git").exists():
+            return out
+        up, d, home = [], cwd, Path.home().resolve()
+        for _ in range(6):
+            if d.parent == d or d == home:
+                break
+            d = d.parent
+            rel = os.path.relpath(d, cwd)
+            up = [os.path.join(rel, n).replace("\\", "/") for n in ("AGENTS.md", "CLAUDE.md") if (d / n).is_file()][:1] + up
+            if (d / ".git").exists():
+                break
+        return up + out
 
     def tool_schemas(self):
         allowed = preset_tools(self.preset())
@@ -126,9 +186,10 @@ class Agent:
 
     def _run(self, text, images=()):
         pr = self.preset()
-        m = self.s.model(pr.get("model") or None)
-        if m and pr.get("effort"):
-            m = dict(m, effort=pr["effort"])
+        m = self.s.model(self.session.get("model") or pr.get("model") or None)  # a session (e.g. a studio task) may pin its own model
+        effort = self.session.get("effort") or pr.get("effort")
+        if m and effort:
+            m = dict(m, effort="" if effort == "none" else effort)
         if not m:
             self.emit({"type": "error", "text": "no model configured — use /provider then /models"})
             return
@@ -141,8 +202,10 @@ class Agent:
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
-        t0, tin, tout, cost = time.time(), 0, 0, 0.0
+        self._trim_history(start_idx)
+        t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
         wrote, ran, nudged = False, False, False
+        squeezed, cutoffs, empties, seen = False, 0, 0, []
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
         st = self.s.config["settings"]
@@ -150,12 +213,27 @@ class Agent:
             while True:
                 limit = self.compact_threshold(m)
                 if limit and self.ctx_used > limit:
-                    self.compact(reason="auto")
-                msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel,
-                                         cache_key=self.session["id"])
+                    self.compact(reason="auto", model=m)
+                schemas = self.tool_schemas()
+                self._tool_names = {t["name"] for t in schemas}
+                system = self.system_prompt()
+                try:
+                    msg, usage = prov.stream(system, self.session["messages"], schemas, self.emit, self.cancel, cache_key=self.session["id"])
+                except ProviderError as e:
+                    # the history outgrew the model: summarize the older part once and try again
+                    if e.overflow and not squeezed and self.compact(reason="context full", model=m, keep_frac=0.15):
+                        squeezed = True
+                        continue
+                    raise
+                if not usage["in"]:  # provider sent no usage (some proxies drop stream_options): estimate, ~4 chars per token
+                    usage = dict(usage, est=True, **{"in": len(system + json.dumps(self.session["messages"], ensure_ascii=False)
+                                                                    + json.dumps(schemas)) // 4,
+                                                     "out": usage["out"] or len(json.dumps(msg, ensure_ascii=False)) // 4})
                 c = usage_cost(m, usage)
                 tin += usage["in"]
                 tout += usage["out"]
+                tcached += min(usage.get("cached", 0), usage["in"])
+                steps += 1
                 cost += c
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
                 self.session["ctx"] = self.ctx_used
@@ -165,41 +243,63 @@ class Agent:
                 u["cached"] = u.get("cached", 0) + usage.get("cached", 0)
                 u["cost"] = round(u.get("cost", 0) + c, 6)
                 today = add_day_cost(self.s.home, c) if c and self.persist else day_cost(self.s.home)
-                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": usage.get("cached", 0),
+                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": tcached, "steps": steps, "est": bool(usage.get("est")),
                            "cost": cost, "session_cost": u["cost"], "day_cost": today})
+                cut = msg.get("_finish") == "length"
+                if not msg.get("content") and not msg.get("tool_calls"):  # nothing to keep: an empty assistant message breaks the history
+                    if cut and cutoffs < 2:  # the whole output limit went into reasoning
+                        cutoffs += 1
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": THINK_NUDGE})
+                        continue
+                    if empties < 1 and not cut:  # an empty reply (no text, no tool call): ask once more
+                        empties += 1
+                        self.emit({"type": "retry", "attempt": 1, "of": 1, "delay": 0, "error": "empty reply", "discard": True})
+                        continue
+                    raise ProviderError("the model ran out of output tokens before answering — raise max_out or lower effort in /models" if cut
+                                        else "the model returned an empty reply — try again, or pick another model (/model)")
                 self.session["messages"].append(msg)
                 self.checkpoint()
                 if not msg.get("tool_calls"):
-                    if wrote and not ran and not nudged and "bash" in {t["name"] for t in self.tool_schemas()} and not st.get("no_verify"):
+                    if cut and cutoffs < 2:  # the reply hit the output limit: let it carry on where it stopped
+                        cutoffs += 1
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
+                        continue
+                    if wrote and not ran and not nudged and "bash" in self._tool_names and not st.get("no_verify"):
                         nudged = True  # self-check before "done": changes were made but nothing was run since
                         self.emit({"type": "verify"})
-                        self.session["messages"].append({"role": "user", "content": VERIFY_NUDGE})
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": VERIFY_NUDGE})
                         continue
                     break
                 self._limits(cost, st)
-                results = self._run_calls(msg["tool_calls"], pr)
+                results = self._run_calls(msg["tool_calls"], pr, cut)
                 imgs = []
                 for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
-                    if ok and name in ("write", "edit"):
-                        wrote, ran = True, False
+                    if ok and name in ("write", "edit") and not re.search(DOC_EXT, str((tc_args(tc) or {}).get("path", "")), re.I):
+                        wrote, ran = True, False  # docs/config prose needs no test run: nudging there only burned a model call
                     elif name == "bash" or name == "task":
                         ran = ran or wrote
                     if img:
                         imgs.append(img)
                 if self.cancel.is_set():
                     raise Cancelled()
+                sig = json.dumps([(tc["function"]["name"], tc["function"]["arguments"], r[1][:2000]) for tc, r in results])
+                seen = (seen + [sig])[-3:]
+                if len(seen) == 3 and len(set(seen)) == 1:  # the same calls with the same results three times: a loop
+                    seen = []
+                    self.session["messages"].append({"role": "user", "_aux": True, "content": LOOP_NUDGE})
                 if imgs and m.get("vision", True):
-                    self.session["messages"].append({"role": "user", "content": [{"type": "text", "text": "(images from read)"}] +
+                    self.session["messages"].append({"role": "user", "_aux": True, "content": [{"type": "text", "text": "(images from read)"}] +
                                                      [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
                 queued = self.take_queued() if self.depth == 0 else []
                 if queued:  # the user wrote while tools ran: hand it to the model now instead of after the whole turn
                     self.emit({"type": "queued_sent", "texts": queued})
-                    self.session["messages"].append({"role": "user", "content": "[message from the user while you were working — take it into account]\n"
+                    self.session["messages"].append({"role": "user", "_aux": True,
+                                                     "content": "[message from the user while you were working — take it into account]\n"
                                                      + "\n\n".join(queued)})
         except Cancelled:
             self._fix_dangling()
-            self.session["messages"].append({"role": "user", "content": "[interrupted by user]"})
+            self.session["messages"].append({"role": "user", "_aux": True, "content": "[interrupted by user]"})
             self.emit({"type": "error", "text": "interrupted"})
         except LimitHit as e:
             self._fix_dangling()
@@ -217,8 +317,23 @@ class Agent:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
             if self.persist:
                 self.s.save_session(self.session)
-            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,
+            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "cached": tcached, "steps": steps,
+                       "ctx": self.ctx_used, "cost": cost,
                        "session_cost": self.session["usage"].get("cost", 0)})
+
+    TRIM_AT, TRIM_KEEP = 4000, 1500
+
+    def _trim_history(self, upto):
+        """Before a new user turn: shrink bulky tool results and drop image payloads of earlier turns.
+        Every step re-sends the whole history, so a 40 KB file read once was paid for again on every later step. The model can
+        re-read anything it still needs. Only messages before `upto` change, once, so the cached prompt prefix stays stable after."""
+        for m in self.session["messages"][:upto]:
+            c = m.get("content")
+            if m["role"] == "tool" and isinstance(c, str) and len(c) > self.TRIM_AT and not c.startswith("[trimmed"):
+                k = self.TRIM_KEEP
+                m["content"] = f"[trimmed old output: {len(c)} chars; read again if needed]\n{c[:k]}\n…\n{c[-k // 3:]}"
+            elif isinstance(c, list) and any(x.get("type") == "image_url" for x in c):
+                m["content"] = [x if x.get("type") != "image_url" else {"type": "text", "text": "[image shown earlier]"} for x in c]
 
     def _limits(self, cost, st):
         mt, md = float(st.get("max_turn_cost") or 0), float(st.get("max_day_cost") or 0)
@@ -227,29 +342,27 @@ class Agent:
         if md and day_cost(self.s.home) >= md:
             raise LimitHit(f"stopped: today's spending reached the {money(md)} daily limit (/config to change)")
 
-    def _run_calls(self, calls, pr):
+    def _run_calls(self, calls, pr, cut=False):
         """Independent read-only calls run in parallel; anything that changes state runs in order."""
         prepared = []
         for tc in calls:
             name = tc["function"]["name"]
-            try:
-                args = json.loads(tc["function"]["arguments"] or "{}")
-                if not isinstance(args, dict):
-                    raise ValueError
-            except ValueError:
-                args = None
+            args = parse_args(tc["function"]["arguments"])
+            if args is None and cut:
+                args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
+            ui = args if isinstance(args, dict) else {}
             tid = tc["id"]
-            ev = {"type": "tool_start", "id": tid, "name": name, "args": args or {}, "label": self.tools.preview(name, args or {})}
+            ev = {"type": "tool_start", "id": tid, "name": name, "args": ui, "label": self.tools.preview(name, ui, self.cwd)}
             cli = (self.preset().get("cli") or {}).get(name)
             if cli:
                 pr = self.preset()
                 ev["cli"] = {"agent": pr["name"], "label": cli["label"], "color": pr.get("color", ""), "icon": pr.get("icon", "")}
-            if name == "skill" and args:
-                sk = self.skills.all().get(args.get("name"), {})
+            if name == "skill" and ui:
+                sk = self.skills.all().get(ui.get("name"), {})
                 ev["skill"] = {"color": sk.get("color", ""), "icon": sk.get("icon", "")}
             prepared.append((tc, name, args, tid, ev))
         results = {}
-        par = len(prepared) > 1 and all(n in READONLY_TOOLS and a is not None for _, n, a, _, _ in prepared)
+        par = len(prepared) > 1 and all(n in READONLY_TOOLS and isinstance(a, dict) for _, n, a, _, _ in prepared)
         if par:
             for p in prepared:
                 self.emit(p[4])
@@ -285,13 +398,16 @@ class Agent:
     def _exec(self, name, args, tid, pr):
         """Checks + runs one tool. Returns (ok, output, image)."""
         temit = lambda e, _id=tid: self.emit({"type": "tool_event", "id": _id, **e})
+        if args is TRUNCATED:
+            return False, ("error: your reply hit the output token limit, so these arguments were cut off and nothing ran. Send less per "
+                           "call: write a big file in parts (write the first part, then add the rest with edit), or raise max_out in /models."), None
         if not isinstance(args, dict):
             return False, "error: arguments were not valid JSON — send a JSON object", None
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
-        if name not in {t["name"] for t in self.tool_schemas()}:
+        if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
-        if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(args.get("path", "")), self.session["cwd"])):
+        if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
@@ -305,7 +421,7 @@ class Agent:
         cli = (pr.get("cli") or {}).get(name)
         if cli:
             return self._cli(cli, args, temit)
-        need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
+        need = self.tools.needs_confirm(name, dict(args, path=self.abspath(args["path"])) if isinstance(args.get("path"), str) else args, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need:
@@ -318,9 +434,9 @@ class Agent:
                 self.s.save()
         args = self.remap(args)
         if name in ("write", "edit"):
-            self._snapshot(args.get("path", ""))
+            self._snapshot(self.abspath(args.get("path", "")))
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask)
+            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
         except Cancelled:
             raise
         except Exception as e:
@@ -331,7 +447,7 @@ class Agent:
         cmd, err = render_cli(spec, args)
         if err:
             return False, err, None
-        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.session.get("cwd"))
+        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need and not self.confirm("bash", {"cmd": cmd}):
@@ -347,8 +463,9 @@ class Agent:
                 last[0] = time.time()
                 temit({"t": "status", "text": l.strip()[:160]})
                 temit({"t": "progress", "v": None, "label": f"{n[0]} lines", "n": n[0]})
-        out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line)
-        return "[exit " not in out[-12:], out or "(no output)", None
+        ok, out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line,
+                            cwd=self.cwd, pref=self.s.config["settings"].get("shell"))
+        return ok, out or "(no output)", None
 
     def _memory(self, a):
         try:
@@ -447,11 +564,11 @@ class Agent:
 
     # ─── checkpoints / undo ───
     def _snapshot(self, path):
-        p = os.path.abspath(os.path.expanduser(path))
+        p = self.abspath(path)
         if p not in self.snap:
             try:
-                self.snap[p] = Path(p).read_text("utf-8") if os.path.isfile(p) else None
-            except (OSError, UnicodeDecodeError):
+                self.snap[p] = snapshot_file(p)
+            except OSError:
                 pass
 
     def _finish_checkpoint(self, start_idx):
@@ -462,7 +579,7 @@ class Agent:
         # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
         msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
         Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
-        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+        diffs = [{"path": relp(p, self.cwd), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
 
@@ -477,7 +594,7 @@ class Agent:
         if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
-        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        names = [relp(p, self.cwd) for p in cp["files"]]
         ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
         self.emit(ev)
         return dict(ev, ok=True)
@@ -505,41 +622,63 @@ class Agent:
         ctx = int(m.get("context") or 128000)
         return min(int(ctx * float(pct) / 100), 1_000_000)
 
-    def compact(self, keep_turns=2, reason="manual"):
-        """Replace older history with a model-written summary; keep the last `keep_turns` user turns verbatim."""
+    def compact(self, reason="manual", model=None, keep_frac=0.25):
+        """Replace older history with a model-written summary. The most recent messages (about `keep_frac` of the model's
+        context) stay verbatim. The cut may fall inside one long turn (an assistant step and its tool results stay together),
+        so a single big task can be compacted too."""
         msgs = self.session["messages"]
-        starts = [i for i, m in enumerate(msgs) if m["role"] == "user" and isinstance(m.get("content"), str)
-                  and not m["content"].startswith(("[interrupted", "[Summary"))]
-        if len(starts) <= keep_turns:
+        m = model or self.s.model()
+        if not m or len(msgs) < 3:
             return False
-        cut = starts[-keep_turns]
+        size = lambda x: len(json.dumps(x, ensure_ascii=False)) // 4
+        ctx = int(m.get("context") or 128000)
+        budget = max(2000, min(int(ctx * keep_frac), sum(size(x) for x in msgs) // 3))
+        acc, cut, last_ok = 0, None, None
+        for i in range(len(msgs) - 1, 1, -1):
+            acc += size(msgs[i])
+            ok = msgs[i]["role"] in ("user", "assistant")  # never cut between a tool call and its result
+            if ok and last_ok is None:
+                last_ok = i
+            if acc > budget:
+                break
+            if ok:
+                cut = i
+        cut = cut or last_ok
+        if not cut or cut < 2:
+            return False
         lines = []
-        for m in msgs[:cut]:
-            c = m.get("content")
+        for x in msgs[:cut]:
+            c = x.get("content")
             if isinstance(c, list):
-                c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
-            if m["role"] == "tool":
-                lines.append(f"[tool result] {str(c)[:600]}")
+                c = " ".join(y.get("text", "") for y in c if y.get("type") == "text")
+            if x["role"] == "tool":
+                lines.append(f"[tool result] {str(c)[:1200]}")
             else:
                 if c:
-                    lines.append(f"[{m['role']}] {str(c)[:4000]}")
-                for tc in m.get("tool_calls") or []:
+                    lines.append(f"[{x['role']}] {str(c)[:4000]}")
+                for tc in x.get("tool_calls") or []:
                     lines.append(f"[tool call] {tc['function']['name']} {tc['function']['arguments'][:300]}")
-        m = self.s.model()
         self.emit({"type": "compacting", "reason": reason})
-        msg, usage = Provider(m, self.s.provider(m)).stream(self.COMPACT_PROMPT, [{"role": "user", "content": "\n".join(lines)[-400000:]}],
+        msg, usage = Provider(m, self.s.provider(m)).stream(self.COMPACT_PROMPT, [{"role": "user", "content": "\n".join(lines)[-min(400000, ctx * 2):]}],
                                                             None, lambda e: None, self.cancel)
         summary = (msg.get("content") or "").strip()
         if not summary:
             return False
+        real = [i for i, x in enumerate(msgs) if x["role"] == "user" and not x.get("_aux") and isinstance(x.get("content"), str)
+                and not x["content"].startswith("[Summary")]
+        if real and real[-1] < cut:  # the cut went through the current task: keep its request word for word
+            summary += "\n\nThe request being worked on now (verbatim):\n" + msgs[real[-1]]["content"][:6000]
+        head = [{"role": "user", "content": "[Summary of the earlier conversation]\n" + summary}]
+        if msgs[cut]["role"] == "user":
+            head.append({"role": "assistant", "content": "Understood — continuing from this summary."})
         before = len(msgs)
-        self.session["messages"] = [{"role": "user", "content": "[Summary of the earlier conversation]\n" + summary},
-                                    {"role": "assistant", "content": "Understood — continuing from this summary."}] + msgs[cut:]
+        self.session["messages"] = head + msgs[cut:]
         self.session["compactions"] = self.session.get("compactions", 0) + 1
         self.ctx_used = self.session["ctx"] = len(json.dumps(self.session["messages"], ensure_ascii=False)) // 4
         self.emit({"type": "compacted", "before": before, "after": len(self.session["messages"]), "ctx": self.ctx_used,
                    "reason": reason, "summary": summary[:2000]})
-        self.s.save_session(self.session)
+        if self.persist:
+            self.s.save_session(self.session)
         return True
 
     def checkpoint(self, every=1.0):

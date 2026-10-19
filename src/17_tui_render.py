@@ -28,21 +28,22 @@ class TUIRender:
             out.append(Line().add("  ").add("◆ " + ", ".join(ctxf) + " loaded into this session", rgb(TH["ok"])) if ctxf else
                        Line().add("  ").add("◇ no AGENTS.md — run /init so I remember this project", rgb(TH["warn"])))
             out.append(Line().add("  ").add("/ ", rgb(TH["accent"])).add("commands   ", dim).add("@ ", rgb(TH["accent"])).add("files   ", dim)
-                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("alt+enter ", rgb(TH["accent"])).add("newline", dim))
+                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("shift+enter ", rgb(TH["accent"])).add("newline   ", dim)
+                       .add("alt+v ", rgb(TH["accent"])).add("paste image   ", dim).add("drag ", rgb(TH["accent"])).add("copy", dim))
             out.append(Line())
             return out
         if b.kind == "user":
             bar = rgb(TH["user"])
-            txt = b.text
+            paras = b.text.split("\n")
+            if len(paras) > 30:  # a long message (a big paste) shows its start; the model gets all of it
+                paras = paras[:20] + [f"… +{len(paras) - 20} more lines"]
             ls = []
-            for i, para in enumerate(txt.split("\n")):
+            for i, para in enumerate(paras):
                 ls.extend(wrap_segs([(para, fg)], W - 2, first_prefix=[("› " if i == 0 else "  ", bar)], prefix=[("  ", "")]))
             bg = rgb(TH["sel"], True)
             for l in ls:
                 l.segs = [(t, bg + s) for t, s in l.segs]
-                pad = W - l.width()
-                if pad > 0:
-                    l.add(" " * pad, bg)
+                l.pad(W, bg)
             return [Line()] + ls + [Line()]
         if b.kind == "assistant":
             return render_md(b.text.strip("\n"), W - 2, 2)
@@ -50,6 +51,7 @@ class TUIRender:
             col = rgb(TH["dim"]) + CSI + "3m"
             if b.done:
                 head = Line().add("  ∴ ", rgb(TH["faint"])).add(f"thought for {dur(b.elapsed or 0)}", col)
+                head.pre = head.width()
                 if b.collapsed is False and self.s.config["settings"].get("show_thinking"):
                     return [head] + wrap_segs([(b.text.strip(), col)], W - 4, 4) + [Line()]
                 return [head]
@@ -63,7 +65,9 @@ class TUIRender:
         if b.kind == "skill":
             return self._render_skill(b, W)
         if b.kind == "stats":
-            return [Line().add("  ").add("✓ ", rgb(TH["ok"])).add(b.text, dim), Line()]
+            l = Line().add("  ").add("✓ ", rgb(TH["ok"])).add(b.text, dim)
+            l.pre = 4
+            return [l, Line()]
         if b.kind == "info":
             col = rgb(TH.get(b.data.get("color", "dim"), TH["dim"]))
             out = []
@@ -88,30 +92,32 @@ class TUIRender:
         else:
             lbl = label[: max(0, room - 1)] + "…"
         head.add(lbl, dim)
+        head.pre = 4
+        head.end = head.width()
         if b.done:
             head.add(f"  {dur(b.elapsed)}", rgb(TH["faint"]))
         out = [head]
         if b.data.get("diff"):
             for dl in b.data["diff"].split("\n")[: (8 if b.collapsed else 40)]:
                 col = TH["add"] if dl.startswith("+") else TH["del"] if dl.startswith("-") else TH["dim"]
-                out.append(Line().add("    │ ", rgb(TH["faint"])).add(dl[: W - 8], rgb(col)))
+                out.append(gutter("    │ ", rgb(TH["faint"])).add(dl[: W - 8], rgb(col)))
         elif b.done:
             o = (b.data.get("output") or "").rstrip()
             lines = o.split("\n")
             show = 1 if b.ok and name in ("read", "ls", "grep") else 3 if b.ok else 6
             if b.collapsed:
                 for l in lines[:show]:
-                    out.append(Line().add("    │ ", rgb(TH["faint"])).add(l[: W - 8], rgb(TH["dim"] if b.ok else TH["err"])))
+                    out.append(gutter("    │ ", rgb(TH["faint"])).add(l[: W - 8], rgb(TH["dim"] if b.ok else TH["err"])))
                 if len(lines) > show:
-                    out.append(Line().add("    └ ", rgb(TH["faint"])).add(f"{len(lines) - show} more lines", rgb(TH["faint"])))
+                    out.append(gutter("    └ ", rgb(TH["faint"])).add(f"{len(lines) - show} more lines", rgb(TH["faint"])))
             else:
                 for l in lines[:200]:
-                    out.append(Line().add("    │ ", rgb(TH["faint"])).add(l[: W - 8], dim))
+                    out.append(gutter("    │ ", rgb(TH["faint"])).add(l[: W - 8], dim))
         elif name == "bash":
-            out.append(Line().add("    └ ", rgb(TH["faint"])).add(f"running {dur(time.time() - b.t0)}", dim))
+            out.append(gutter("    └ ", rgb(TH["faint"])).add(f"running {dur(time.time() - b.t0)}", dim))
         elif b.status or b.progress:
             if b.status:
-                out.append(Line().add("    └ ", rgb(TH["faint"])).add(b.status[: W - 10], dim))
+                out.append(gutter("    └ ", rgb(TH["faint"])).add(b.status[: W - 10], dim))
             if b.progress and b.progress.get("v") is not None:
                 l = Line().add("      ")
                 l.segs.extend(self._bar(b.progress["v"], min(40, W - 12), TH["accent"]))
@@ -146,23 +152,23 @@ class TUIRender:
         if b.collapsed and b.done:
             mark = ("✓", rgb(TH["ok"])) if b.ok else ("✗", rgb(TH["err"]))
             summary = (b.data.get("output") or "").strip().split("\n")[0][: W - 40] if b.ok else (b.data.get("output") or "").split("\n")[0][: W - 40]
-            return [Line().add("  ").add(mark[0] + " ", mark[1]).add(f"{icon} ", rgb(color)).add(name, rgb(color) + CSI + "1m")
-                    .add(" · ", rgb(TH["dim"])).add(act, rgb(TH["fg"])).add(f"  {t}", rgb(TH["faint"]))
-                    .add(("  " + summary) if summary else "", rgb(TH["dim"]))] + \
-                [Line().add("    │ ", rgb(color)).add(pl[: W - 8], rgb(TH["fg"])) for pl in b.data.get("panel", [])[:40]]
+            head = Line().add("  ").add(mark[0] + " ", mark[1]).add(f"{icon} ", rgb(color)).add(name, rgb(color) + CSI + "1m") \
+                .add(" · ", rgb(TH["dim"])).add(act, rgb(TH["fg"])).add(f"  {t}", rgb(TH["faint"])) \
+                .add(("  " + summary) if summary else "", rgb(TH["dim"]))
+            head.pre = 4
+            return [head] + [gutter("    │ ", rgb(color)).add(pl[: W - 8], rgb(TH["fg"])) for pl in b.data.get("panel", [])[:40]]
         inner = W - 6
         title = f" {icon} {name} · {act} "
         top = Line().add("  ╭─", bc).add(title, rgb(color) + CSI + "1m")
         top.add("─" * max(1, inner - swidth(title) - swidth(t) - 3), bc).add(f" {t} ", rgb(TH["dim"])).add("─╮", bc)
+        top.pre = top.width()
         out = [top]
 
         def row(segs):
-            l = Line().add("  │ ", bc)
+            l = gutter("  │ ", bc)
             for s in segs:
                 l.add(*s)
-            pad = W - 2 - l.width()
-            if pad > 0:
-                l.add(" " * pad)
+            l.pad(W - 2)
             l.add("│", bc)
             return l
 
@@ -190,7 +196,9 @@ class TUIRender:
             col = color if b.ok else TH["err"]
             msg = f" {'ok' if b.ok else 'failed'} · {t}"
             out.append(row(self._bar(1.0, max(10, inner - swidth(msg) - 2), col) + [(msg, rgb(col))]))
-        out.append(Line().add("  ╰" + "─" * (W - 5) + "╯", bc))
+        bottom = Line().add("  ╰" + "─" * (W - 5) + "╯", bc)
+        bottom.pre = bottom.width()
+        out.append(bottom)
         return out
 
     def shimmer_style(self, i):
@@ -404,27 +412,39 @@ class TUIRender:
                     pop.append(l)
             avail = max(1, H - len(bottom) - len(pop))
             # transcript
-            lines = []
+            lines, owners = [], []
             for b in self.blocks:
-                lines.extend(self.block_lines(b, W - 1))
+                bl = self.block_lines(b, W - 1)
+                lines.extend(bl)
+                owners.extend([b] * len(bl))
             maxscroll = max(0, len(lines) - avail)
             self.scroll = min(self.scroll, maxscroll)
             end = len(lines) - self.scroll
-            view = lines[max(0, end - avail):end]
+            top = end - avail  # transcript line on screen row 1 (negative while the transcript is shorter than the screen)
+            view = lines[max(0, top):end]
             view = [Line()] * (avail - len(view)) + view
+            self._tx = (lines, owners, top, avail, maxscroll)
             if self.scroll and view:
                 view[0] = Line().add(f" ↑ {self.scroll} more lines below · pgdn ", rgb(TH["accent"]))
             screen = view + pop + bottom
             out = []
             # repaint only the rows that changed (a full repaint every frame flickers badly in the Windows console)
-            rows = [l.render(W, bgc) for l in screen[:H]]
+            sel = self.sel_range()
+            rows = []
+            for r, l in enumerate(screen[:H]):
+                hl = None
+                if sel and r < avail and sel[0][0] <= top + r <= sel[1][0]:
+                    i = top + r
+                    hl = (sel[0][1] if i == sel[0][0] else 0, sel[1][1] + 1 if i == sel[1][0] else W)
+                rows.append(l.render(W, bgc, hl))
             prev = getattr(self, "_prev_rows", None)
             full = prev is None or len(prev) != len(rows) or getattr(self, "_prev_wh", None) != (W, H) or self.modal or getattr(self, "_prev_modal", False)
             for i, r in enumerate(rows):
                 if full or prev[i] != r:
                     out.append(f"{CSI}{i + 1};1H" + r)
             self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
-            out.insert(0, CSI + "?25l")  # hide the cursor while painting
+            changed = bool(out)
+            out.insert(0, CSI + "?2026h" + CSI + "?25l")  # synchronized update (Windows Terminal, kitty…); hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))
@@ -437,7 +457,11 @@ class TUIRender:
                 out.append(f"{CSI}{row};{col}H{CSI}?25h")
             else:
                 out.append(f"{CSI}?25l")
-            self.term.write("".join(out))
+            out.append(CSI + "?2026l")
+            frame = "".join(out)
+            if changed or self.modal or frame != getattr(self, "_prev_frame_tail", None):
+                self.term.write(frame)  # an unchanged frame writes nothing: cursor hide/show every tick flickered in cmd.exe
+            self._prev_frame_tail = frame if not changed else None
             self.dirty = False
 
     def _draw_modal(self, W, H, bgc):
@@ -527,3 +551,10 @@ class TUIRender:
             r, c = m["_cur"]
             out.append(f"{CSI}{y + 1 + r};{x + 1 + c}H")
         return "".join(out)
+
+
+def gutter(text, style):
+    """A line that starts with decoration (tool output bar, box border): left out when the line is copied."""
+    l = Line().add(text, style)
+    l.pre = swidth(text)
+    return l

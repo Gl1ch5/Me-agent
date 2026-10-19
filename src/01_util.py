@@ -24,6 +24,25 @@ def jsave(p, data):
             time.sleep(0.05 * (i + 1))
 
 
+def read_raw(p):
+    """File text exactly as stored (no newline translation: on Windows read_text/write_text turned LF files into CRLF)."""
+    with open(p, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def write_raw(p, text):
+    with open(p, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def relp(path, start=None):
+    """os.path.relpath that never raises: on Windows a path on another drive (C: vs D:) has no relative form, keep it absolute."""
+    try:
+        return os.path.relpath(path, start or os.getcwd())
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def human(n):
     n = int(n or 0)
     if n < 1000:
@@ -40,3 +59,40 @@ def dur(s):
 def clip(s, n):
     s = str(s)
     return s if len(s) <= n else s[: n // 2] + f"\n…[{len(s) - n} chars cut]…\n" + s[-n // 2:]
+
+
+_CACHE = {}
+
+
+def dir_sig(d, pattern="*"):
+    """Cheap fingerprint of a folder's files (name, mtime, size): one listdir + stat per file, no reads."""
+    try:
+        return tuple((p.name, st.st_mtime_ns, st.st_size) for p in sorted(Path(d).glob(pattern)) for st in (p.stat(),))
+    except OSError:
+        return ()
+
+
+def cached(key, sig, fn):
+    """fn() once per distinct sig: parsing every skill/agent/theme file on each call made each tool step and TUI frame hit the disk."""
+    hit = _CACHE.get(key)
+    if hit and hit[0] == sig:
+        return hit[1]
+    val = fn()
+    _CACHE[key] = (sig, val)
+    return val
+
+
+_LOGGED = set()
+
+
+def log_error(where):
+    """Append the current exception's traceback to ~/.me/error.log (each distinct one once per run)."""
+    tb = traceback.format_exc()
+    if tb in _LOGGED:
+        return
+    _LOGGED.add(tb)
+    try:
+        with open(HOME / "error.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%F %T')} me {VERSION} [{where}]\n{tb}\n")
+    except OSError:
+        pass

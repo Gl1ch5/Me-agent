@@ -38,7 +38,7 @@ def repo_map(root, sub="", home=HOME, limit=12000):
     fresh, lines = {}, []
     base = os.path.join(root, sub) if sub else root
     for f in sorted(walk_files(base, 5000)):
-        rel = os.path.relpath(f, root)
+        rel = os.path.relpath(f, root).replace("\\", "/")
         if os.path.splitext(f)[1].lower() not in MAP_EXT:
             continue
         try:
@@ -87,7 +87,7 @@ def mem_add(home, text, source=""):
 
 
 def mem_forget(home, mid):
-    p = mem_dir(home) / f"{re.sub(r'[^\w-]', '', mid)}.json"
+    p = mem_dir(home) / (re.sub(r"[^\w-]", "", mid) + ".json")  # (no backslash inside an f-string: Python < 3.12)
     if not p.exists():
         raise ValueError(f"no memory note {mid}")
     p.unlink()
@@ -130,6 +130,21 @@ class Checkpoints:
         return cp
 
 
+def snapshot_file(p):
+    """A file's exact content for /undo: text as is (line ends kept), other bytes as {"b64": …}; None = did not exist."""
+    if not os.path.isfile(p):
+        return None
+    data = Path(p).read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"b64": base64.b64encode(data).decode()}
+
+
+def _snap_text(old):
+    return decode_text(base64.b64decode(old["b64"]))[0] if isinstance(old, dict) else (old or "")
+
+
 def restore_files(files):
     for path, old in files.items():
         p = Path(path)
@@ -140,15 +155,15 @@ def restore_files(files):
                 pass
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(old, "utf-8")
+            p.write_bytes(base64.b64decode(old["b64"]) if isinstance(old, dict) else old.encode("utf-8"))
 
 
 def file_diff(path, old):
     try:
-        new = Path(path).read_text("utf-8", "replace")
+        new = decode_text(Path(path).read_bytes())[0]
     except OSError:
         new = ""
-    d = list(difflib.unified_diff((old or "").splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
+    d = list(difflib.unified_diff(_snap_text(old).splitlines(), new.splitlines(), "a/" + path, "b/" + path, n=2, lineterm=""))
     return "\n".join(d[:400]) + ("\n…" if len(d) > 400 else "")
 
 
@@ -240,7 +255,8 @@ class MCPClient:
         if not self.proc or self.proc.poll() is not None:
             env = dict(os.environ, **{k: str(v) for k, v in (self.spec.get("env") or {}).items()})
             self.proc = subprocess.Popen([self.spec["command"], *self.spec.get("args", [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", bufsize=1)
+                                         stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                         **NO_WINDOW)
             self._init()
         self.proc.stdin.write(json.dumps(msg) + "\n")
         self.proc.stdin.flush()

@@ -37,7 +37,13 @@ const A = {
     if (MODE === "local") { await api(base + "/load", {id}); return api(base + "/state"); }
     const w = await api("/api/cloud", {session: id}); return A.attach(w);
   },
-  async newChat() { await api(base + "/new", {}); return A.state(state.worker); },
+  async newChat() {
+    await api(base + "/new", {});
+    if (MODE === "local") return A.state();
+    // the sandbox starts the new session asynchronously: never reload the old one through the worker's previous session id
+    const w = {...(state.worker || {}), session: null}, s = await A.state(w);
+    return {...s, session: null, ctx: 0, after};  // keep the live event cursor: older events must not replay
+  },
   async setAgent(name) {
     if (MODE === "local") return api(base + "/agent", {name});
     const d = await api("/api/doc?key=config"); const cfg = JSON.parse(d.content); cfg.agent = name;

@@ -1,5 +1,5 @@
 // ─── i18n: English is the source text; RU is a lookup table. t("English") / tt("English") (retranslatable span) ───
-const RU = {
+const RU = {"files": "файлы", "empty folder": "пустая папка", "back": "назад", "ask about this file": "спросить про этот файл", "open a project folder": "открыть папку проекта", "(no folder)": "(без папки)", "cached": "из кэша", "context": "контекст", "every step re-sends the context; cached input costs a fraction": "каждый шаг заново отправляет контекст; кэшированный ввод стоит в разы дешевле", 
   "New chat": "Новый чат", "Chat": "Чат", "close menu": "закрыть меню", "account": "аккаунт", "local": "локально", "cloud": "облако",
   "notify me when a task is done": "уведомлять о завершении задачи", "theme": "тема", "Language": "Язык", "checklist": "чек-лист",
   "preview": "просмотр", "open the site the agent built": "открыть сайт, созданный агентом", "workspace": "рабочая область",
@@ -37,7 +37,7 @@ const RU = {
   "notifications: {m}": "уведомления: {m}",
   "notifications on — you will hear when a task is done or needs you": "уведомления включены — вы узнаете, когда задача выполнена или нужна ваша помощь",
 };
-const RUPL = {file: ["файл", "файла", "файлов"], image: ["изображение", "изображения", "изображений"]};
+const RUPL = {"step": ["шаг", "шага", "шагов"], file: ["файл", "файла", "файлов"], image: ["изображение", "изображения", "изображений"]};
 const RUINV = Object.fromEntries(Object.entries(RU).map(([k, v]) => [v, k]));
 let LANG = "en";
 try { LANG = localStorage.getItem("me-lang") || ""; } catch (e) {}
@@ -49,6 +49,7 @@ function t(s, v) {
   return r;
 }
 const untr = s => RUINV[s] || s;  // back to the English key (for text we stored translated)
+const T = (s, v) => t(s, v);  // for code where a local `t` (an event type) hides the translator
 function pl(n, one, many) {  // "1 file" / "3 files"; Russian has three forms
   if (LANG === "ru" && RUPL[one]) { const f = RUPL[one], a = n % 100, b = n % 10; return f[a > 10 && a < 20 ? 2 : b === 1 ? 0 : b > 1 && b < 5 ? 1 : 2]; }
   return n === 1 ? one : many;

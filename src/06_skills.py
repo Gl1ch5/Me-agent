@@ -70,9 +70,17 @@ except Exception as e:
 '''
 
 
+def _src(text, node):
+    """Source of a default value (ast.unparse is 3.9+)."""
+    try:
+        return repr(ast.literal_eval(node))
+    except ValueError:
+        return ast.unparse(node) if hasattr(ast, "unparse") else (ast.get_source_segment(text, node) or "…")
+
+
 def parse_skill(path):
     p = Path(path)
-    text = p.read_text("utf-8")
+    text = p.read_text("utf-8").replace("\r\n", "\n")
     meta, body, actions = {"name": p.stem, "description": ""}, "", {}
     if p.suffix == ".py":
         try:
@@ -91,7 +99,7 @@ def parse_skill(path):
                 kw = {k.arg: ast.literal_eval(k.value) for k in getattr(dec, "keywords", []) if isinstance(k.value, ast.Constant)}
                 a = node.args
                 names = [x.arg for x in a.args][1:]
-                defaults = [ast.unparse(d) for d in a.defaults] if hasattr(ast, "unparse") else []
+                defaults = [_src(text, d) for d in a.defaults]
                 sig = []
                 for i, n in enumerate(names):
                     j = i - (len(names) - len(defaults))
@@ -118,10 +126,18 @@ class Skills:
         self.s = store
 
     def all(self):
+        d = self.s.home / "skills"
+        return dict(cached(("skills", str(d)), dir_sig(d), lambda: self._load(d)))
+
+    @staticmethod
+    def _load(d):
         out = {}
-        for p in sorted((self.s.home / "skills").iterdir()):
+        for p in sorted(d.iterdir()) if d.is_dir() else []:
             if p.is_file() and p.suffix in (".py", ".md"):
-                sk = parse_skill(p)
+                try:
+                    sk = parse_skill(p)
+                except (OSError, UnicodeDecodeError) as e:
+                    sk = {"name": p.stem, "description": "", "error": str(e), "body": "", "actions": {}, "path": str(p)}
                 out[sk["name"]] = sk
         return out
 
@@ -129,21 +145,24 @@ class Skills:
         dis = set(self.s.config["settings"].get("disabled_skills", []))
         return {k: v for k, v in self.all().items() if k not in dis}
 
-    def run(self, sk, action, args, emit, cancel, ask=None):
+    def run(self, sk, action, args, emit, cancel, ask=None, cwd=None):
         if sk.get("requires"):
             deps = Path(sk["path"]).parent / ".deps"
             mark = deps / (".ok-" + hashlib.sha1(sk["requires"].encode()).hexdigest()[:8])
             if not mark.exists():
                 emit({"t": "status", "text": f"pip install {sk['requires']}"})
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps)] + sk["requires"].replace(",", " ").split(),
-                               capture_output=True)
+                r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps)] + sk["requires"].replace(",", " ").split(),
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", **NO_WINDOW)
+                if r.returncode:  # remember success only: a failed install is retried next time, and the reason is shown now
+                    return False, f"could not install {sk['requires']}: {(r.stderr or r.stdout).strip()[-1200:]}"
                 deps.mkdir(exist_ok=True)
                 mark.touch()
         env = dict(os.environ)
         env.update({k: str(v) for k, v in self.s.config.get("secrets", {}).items()})
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen([sys.executable, "-c", SKILL_RUNNER, sk["path"], action, json.dumps(args)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                cwd=cwd if cwd and os.path.isdir(cwd) else None, **NO_WINDOW)
         result = None
 
         def watch():

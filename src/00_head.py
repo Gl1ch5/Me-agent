@@ -11,13 +11,15 @@ Layers (top → bottom), each usable on its own:
   Store     : ~/.me (config, skills, sessions)  ⇄  Cloud sync
 Stdlib only. Python 3.8+.
 """
-import ast, base64, difflib, fnmatch, glob, hashlib, io, json, os, platform, queue, re
+import ast, atexit, base64, collections, difflib, fnmatch, glob, hashlib, http.client, io, json, os, platform, queue, re
 import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
+# Windows: children get their own hidden console, so they can neither read our keystrokes nor change our console modes
+NO_WINDOW = {"creationflags": 0x08000000} if WIN else {}
 EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"]

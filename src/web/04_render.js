@@ -38,7 +38,9 @@ function onEvent(e) {
   if (t === "text") {
     endThink();
     if (!cur.text) { cur.text = el(`<div class="msg md"></div>`); cur.raw = ""; }
-    cur.raw += e.text; cur.text.innerHTML = md(cur.raw); scroll(); return;
+    cur.raw += e.text; const node = cur.text; node._raw = cur.raw;
+    if (!node._raf) node._raf = requestAnimationFrame(() => { node._raf = 0; node.innerHTML = md(node._raw); scroll(); });  // once per frame, not per token
+    return;
   }
   if (t === "tool_start") {
     endThink(); cur.text = null; cur.think = null; cur.thinkDone = false;
@@ -89,13 +91,18 @@ function onEvent(e) {
     n.onclick = () => { api(base + "/confirm", {id: e.id, ok: false}); c.remove(); };
     return;
   }
+  if (t === "retry") {  // the provider failed mid-answer: drop what was shown of that attempt
+    if (e.discard) { cur.text?.remove(); cur.think?.remove(); cur.text = null; cur.think = null; cur.thinkDone = false; }
+    el(`<div class="info warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 140))}</div>`); return;
+  }
   if (t === "compacting") { el(`<div class="info">${tt("compacting history…")}</div>`); return; }
   if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">${tt("compacted {a} → {b} messages · ~{c} tokens", {a: e.before, b: e.after, c: human(e.ctx)})}</div>`); return; }
   if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
   if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(e.text)}</div>`); return; }
   if (t === "turn_end") {
     const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();
-    el(`<div class="stats">${failed ? I.x : I.check}${tt("{a} · ↑ {i} ↓ {o} · {n} tokens{c}", {a: dur(e.time), i: human(e.in), o: human(e.out), n: human(e.in + e.out), c: e.cost ? " · " + money(e.cost) : ""})}</div>`);
+    const st = e.steps || 1, cp = e.cached && e.in ? ` (${Math.round(100 * e.cached / e.in)}% ${T("cached")})` : "";
+    el(`<div class="stats" title="${esc(T("every step re-sends the context; cached input costs a fraction"))}">${failed ? I.x : I.check}${esc(`${dur(e.time)} · ${st} ${pl(st, "step", "steps")} · ${T("context")} ${human(e.ctx || 0)} · ↑${human(e.in)}${cp} ↓${human(e.out)}${e.cost ? " · " + money(e.cost) : ""}`)}</div>`);
     state.ctx = e.ctx; renderStatus(); refreshSessions(); return;
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
@@ -103,6 +110,7 @@ function onEvent(e) {
   if (t === "verify") { el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
   if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
+  if (t === "loaded" && e.session && state.worker) state.worker.session = e.session;  // later reloads must read this session
   if (t === "loaded" && e.title) $("title").textContent = e.title;
   if (t === "reload") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }
   if (t === "exit") { busy = false; setBusy(); restartSandbox(); }
@@ -115,7 +123,8 @@ function renderHistory(s) {
   const outs = {};
   s.messages.forEach(m => { if (m.role === "tool") outs[m.tool_call_id] = m.content; });
   s.messages.forEach(m => {
-    if (m.role === "user" && txt(m.content) !== "(images from read)") userMsg(txt(m.content));
+    if (m.role === "user" && m._aux) { if (/^\[message from the user/.test(txt(m.content))) userMsg(txt(m.content).split("\n").slice(1).join("\n")); }
+    else if (m.role === "user" && txt(m.content) !== "(images from read)") userMsg(txt(m.content));
     else if (m.role === "assistant") {
       if (m.content) el(`<div class="msg md">${md(m.content)}</div>`);
       (m.tool_calls || []).forEach(tc => {
@@ -152,11 +161,23 @@ function renderStatus(tin, tout) {
 }
 function renderSessions() {
   const ss = state.sessions || [], sid = state.session?.id;
+  const item = s => `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`;
+  const projects = {};  // Codex-style: chats grouped by project folder, the most recently used project first
+  if (MODE === "local") ss.forEach(s => (projects[s.cwd || ""] ??= []).push(s));
+  if (MODE === "local" && Object.keys(projects).length) {
+    const cur = state.cwd || "";
+    if (cur && !projects[cur]) projects[cur] = [];
+    const order = Object.keys(projects).sort((a, b) => (a === cur ? -1 : b === cur ? 1 : 0) || Math.max(0, ...projects[b].map(x => x.updated || 0)) - Math.max(0, ...projects[a].map(x => x.updated || 0)));
+    $("slist").innerHTML = order.map(p => {
+      const name = p.split(/[\\/]/).filter(Boolean).pop() || p || t("(no folder)"), open = p === cur || projects[p].some(x => x.id === sid);
+      return `<details class="proj" ${open ? "open" : ""}><summary title="${esc(p)}"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>${esc(name)}</span><b class="n">${projects[p].length || ""}</b><button class="ib pnew" title="${esc(t("New chat"))}" onclick="event.preventDefault();event.stopPropagation();newChatIn('${esc(p.replace(/\\/g, "\\\\").replace(/'/g, "\\'"))}')"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></summary>${projects[p].slice(0, 40).map(item).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`}</details>`;
+    }).join("") + `<button class="si addp" onclick="$('wsPill').click()">+ ${esc(t("open a project folder"))}</button>`;
+    return;
+  }
   const groups = {};
   ss.forEach(s => { const d = new Date((s.updated || 0) * 1000), age = (Date.now() - d) / 864e5;
     const g = age < 1 ? t("Today") : age < 7 ? t("This week") : t("Older"); (groups[g] ??= []).push(s); });
-  $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(s =>
-    `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
+  $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(item).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
 }
 async function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }
 function setBusy() {

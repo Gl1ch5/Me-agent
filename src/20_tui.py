@@ -31,6 +31,9 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.update_avail = None
         self.files_cache = None
         self.notice = ("", 0)
+        self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
+        self.attached = []  # image files attached to the message being typed ([image #n] in the input)
+        self.pastes = []  # big pastes, shown as [paste #n · N lines] in the input and expanded when it is sent
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -126,12 +129,22 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         b.events.append(e.get("text", ""))
                     b.touch()
             elif t == "tool_end":
+                self.term.reassert()  # the command may have changed the console's modes (Windows)
                 b = self.tools_live.pop(e["id"], None)
                 if b:
                     b.done, b.ok, b.elapsed = True, e["ok"], e["time"]
                     b.data["output"] = e["output"]
                     b.collapsed = True
                     b.touch()
+            elif t == "retry":
+                if e.get("discard"):  # the failed attempt's partial answer is not part of the reply
+                    for b in (self.cur_text, self.cur_reason):
+                        if b is not None and b in self.blocks:
+                            self.blocks.remove(b)
+                    self.cur_text = self.cur_reason = None
+                why = (e.get("error") or "").split("\n")[0][:140]
+                self.add("info", text=f"↻ {why} — retrying" + (f" in {e['delay']:.0f}s" if e.get("delay") else "")
+                         + (f" ({e['attempt']}/{e['of']})" if e.get("of", 1) > 1 else ""), color="warn")
             elif t == "compacting":
                 self.add("info", text=f"◌ compacting history ({e['reason']})…", color="accent")
             elif t == "compacted":
@@ -178,8 +191,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     b.data.setdefault("output", "interrupted")
                     b.touch()
                 self.tools_live.clear()
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
-                                       + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
+                self.add("stats", text=turn_stats(e))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
             self.redraw()
@@ -253,6 +265,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         elif self.cloud.online:
             n = self.cloud.sync()
             if n > 0:
+                self.retheme()
                 self.toast(f"☁ {n} items synced from cloud", "ok")
             elif n < 0:
                 self.toast(f"☁ sync failed: {self.cloud.last_error[:60]}", "err")
@@ -265,6 +278,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.update_avail = r["version"]
         except Exception:
             pass
+
+    def safe_key(self, k):
+        """A key that trips a bug is logged and shown, never fatal: a crash here used to drop the user into the shell with the
+        rest of a big paste still queued — and cmd.exe ran every pasted line as a command."""
+        try:
+            with self.lock:
+                self.handle_key(k)
+        except Exception as e:
+            log_error("key")
+            self.toast(f"✗ {type(e).__name__}: {e} (details: {HOME / 'error.log'})", "err")
 
     def take_pending(self):
         "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
@@ -282,7 +305,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
 
     def run(self):
         self.restart = False
-        self.term.start(self.s.config["settings"].get("mouse", not WIN))
+        self.term.start(self.s.config["settings"].get("mouse", True))
         if not WIN:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()
@@ -297,15 +320,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.sync_ws()
                 try:
                     k = self.term.q.get(timeout=0.05)
-                    with self.lock:
-                        self.handle_key(k)
+                    self.safe_key(k)
                     while not self.term.q.empty():
-                        with self.lock:
-                            self.handle_key(self.term.q.get_nowait())
+                        self.safe_key(self.term.q.get_nowait())
                     self.dirty = True
                 except queue.Empty:
                     pass
-                self.drain_pending()
+                try:
+                    self.drain_pending()
+                except Exception:
+                    log_error("queue")
                 # window size is polled: resize / minimize+restore events are not delivered reliably (SIGWINCH does not exist on
                 # Windows, and Windows Terminal does not forward buffer-size records), so a stale size leaves a box wider than the window
                 sz = self.term.size()
@@ -351,6 +375,17 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 sys.exit(subprocess.call(args))
             os.execv(*(args[0], args))
 
+
+
+def turn_stats(e):
+    """One honest line per turn: every step re-sends the context, so ↑ is the sum over steps; cached input is billed at a fraction."""
+    steps = e.get("steps") or 1
+    cached = e.get("cached", 0)
+    parts = [dur(e["time"]), f"{steps} step{'s' if steps != 1 else ''}", f"context {human(e.get('ctx', 0))}",
+             f"sent ↑{human(e['in'])}" + (f" ({int(100 * cached / e['in'])}% cached)" if cached and e["in"] else ""), f"↓{human(e['out'])}"]
+    if e.get("cost"):
+        parts.append(money(e["cost"]))
+    return "  ·  ".join(parts)
 
 
 def fuzzy(q, s):

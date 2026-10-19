@@ -6,7 +6,7 @@ Object.assign(RU, {
   "auto-compact threshold": "порог автосжатия", "work autonomously until done": "работать автономно до результата", "revert the last turn's files": "откатить файлы последнего хода",
   "permissions": "разрешения", "spending": "расходы", "the agent's checklist": "чек-лист агента", "full access on/off": "полный доступ вкл/выкл", "sync now": "синхронизировать",
   "color theme": "цветовая тема", "project folder / workspaces": "папка проекта / рабочие области", "open on the site": "открыть на сайте", "do this in the terminal": "это делается в терминале",
-  "unknown command": "неизвестная команда", "Commands": "Команды", "no skills yet": "навыков пока нет", "copied": "скопировано", "nothing to copy": "нечего копировать",
+  "unknown command": "неизвестная команда", "Commands": "Команды", "no skills yet": "навыков пока нет", "copied": "скопировано", "copy failed": "не удалось скопировать", "nothing to copy": "нечего копировать",
   "saved": "сохранено", "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -66,7 +66,7 @@ const CMDS = {
   clear: ["new chat", "", () => newChat()],
   sessions: ["past chats", "", () => openSide()],
   workspace: ["project folder / workspaces", "", () => $("wsPill").click()],
-  copy: ["copy last answer", "", async () => { const x = lastAnswer(); if (!x) return note(t("nothing to copy"), "warn"); try { await navigator.clipboard.writeText(x); note(t("copied"), "ok"); } catch (e) { note(e.message, "err"); } }],
+  copy: ["copy last answer", "", async () => { const x = lastAnswer(); if (!x) return note(t("nothing to copy"), "warn"); const ok = await copyText(x); note(t(ok ? "copied" : "copy failed"), ok ? "ok" : "err"); }],
   compact: ["summarize history to free context", "", () => api(base + "/compact", {})],
   autocompact: ["auto-compact threshold", "[50…95|off]", async a => {
     const go = async v => { await cfgSet("autocompact", v); note("auto-compact → " + (v === "off" ? "off" : v + "%"), "ok"); };

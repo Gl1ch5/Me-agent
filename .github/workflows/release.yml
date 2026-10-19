@@ -18,8 +18,14 @@ jobs:
       - run: pip install pywebview==5.3.2 pyinstaller==6.11.1
       - run: copy me.py apps\desktop\me.py
       - run: pyinstaller --noconfirm --onefile --windowed --name me-desktop --paths apps/desktop --hidden-import me apps/desktop/me_desktop.py
+      - run: copy me.py apps\studio\me.py
+      - run: pyinstaller --noconfirm --onefile --windowed --name me-studio --paths apps/studio --hidden-import me apps/studio/me_studio.py
       - uses: actions/upload-artifact@v4
-        with: {name: windows, path: dist/me-desktop.exe}
+        with:
+          name: windows
+          path: |
+            dist/me-desktop.exe
+            dist/me-studio.exe
 
   android:
     runs-on: ubuntu-latest
@@ -37,8 +43,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: {name: android, path: me-android.apk}
 
+  ide:
+    uses: ./.github/workflows/ide.yml
+
   release:
-    needs: [windows, android]
+    needs: [windows, android, ide]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,4 +63,8 @@ jobs:
           files: |
             me.py
             dist/me-desktop.exe
+            dist/me-studio.exe
             dist/me-android.apk
+            dist/me-agent.vsix
+            dist/me-ide-linux-x64.tar.gz
+            dist/me-ide-windows-x64.zip
