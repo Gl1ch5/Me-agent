@@ -581,8 +581,8 @@ def test_bash_timeout_background_and_cwd(tmp=Path(tempfile.mkdtemp())):
     assert not ok and "timed out" in out, out
     ok, out, _ = tb.run("bash", {"cmd": "printf '\\033[31mred\\033[0m 10%%\\r100%%\\n'; exit 3"}, print, threading.Event(), cwd=str(tmp))
     assert not ok and "\x1b" not in out and out.startswith("100%") and "10%" not in out and "[exit 3]" in out, repr(out)
-    if not me.WIN:  # the pattern is in this shell's own command line, so pkill -f kills it
-        ok, out, _ = tb.run("bash", {"cmd": "sleep 0.1; pkill -f 'xyzzy-self'; echo after"}, print, threading.Event(), cwd=str(tmp))
+    if not me.WIN:  # a shell killed by its own pkill -f (Linux pkill matches the shell; macOS does not, so kill it directly)
+        ok, out, _ = tb.run("bash", {"cmd": "kill -TERM $$; echo after # pkill -f vite"}, print, threading.Event(), cwd=str(tmp))
         assert not ok and "[v]ite" in out and "after" not in out, out
     ok, out, _ = tb.run("bash", {"cmd": "echo started; sleep 30", "background": True}, print, threading.Event(), cwd=str(tmp))
     assert ok and "pid" in out and "started" in out, out
