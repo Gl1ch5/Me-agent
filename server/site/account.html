@@ -188,6 +188,11 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
       <textarea id="prompt" rows="6" placeholder="e.g. Answer in Russian. Prefer uv over pip."></textarea>
       <div class="btns"><button onclick="savePrompt()">save</button></div>
     </div>
+    <div class="card">
+      <h2>behavior</h2>
+      <p class="dim" style="margin-bottom:10px">Switches for how the agent works, on every machine (also <code>/behavior</code> in the terminal and the web chat).</p>
+      <div id="behavior"></div>
+    </div>
   </div>
 
   <div data-pane="skills">
@@ -359,6 +364,13 @@ const RU_D = {
   "Groq API key": "API-ключ Groq", "model": "модель", "language (blank = auto)": "язык (пусто = авто)", "get a key →": "получить ключ →",
   "theme": "тема", "more themes": "другие темы", "Applies to the terminal, the web app and this site on every device.": "Применяется к терминалу, веб-приложению и этому сайту на всех устройствах.",
   "light": "светлая", "dark": "тёмная",
+  "behavior": "поведение", "Switches for how the agent works, on every machine (also": "Переключатели того, как работает агент, на всех устройствах (а также",
+  "in the terminal and the web chat).": "в терминале и веб-чате).",
+  "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "off: you test; the agent ends with the commands to run — saves tokens": "выкл: тестируете вы; агент в конце пишет, что запустить — экономит токены",
+  "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах", "search the web for current facts and docs": "ищет в интернете актуальные факты и доки",
+  "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»", "very short replies": "очень короткие ответы",
+  "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи", "never pushes without asking": "без вашего разрешения не пушит",
+  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
   "system prompt": "системный промпт", "Appended to me's tiny base prompt on every machine.": "Добавляется к короткому базовому промпту me на каждой машине.",
   "e.g. Answer in Russian. Prefer uv over pip.": "напр. Отвечай по-русски. Предпочитай uv вместо pip.",
   "memory": "память", "Notes the agent keeps for itself across every chat and device, newest first. It reads them at the start of each chat. You can delete any note.": "Заметки, которые агент ведёт для себя во всех чатах и на всех устройствах, сначала новые. Он читает их в начале каждого чата. Любую заметку можно удалить.",
@@ -572,6 +584,7 @@ function renderModels() {
      <td style="text-align:right;white-space:nowrap">${m.name !== cfg.model ? `<button class="ghost sm" onclick="useModel(${i})">use</button> ` : ""}<button class="ghost sm" onclick="editModel(${i})">edit</button></td></tr>`).join("")
     : '<tr><td class="dim">No models yet — add a provider and fetch its models.</td></tr>';
   $("prompt").value = cfg.prompt || "";
+  renderBehavior();
 }
 function editProvider(name) {
   const p = name ? cfg.providers[name] : {base_url: "https://api.openai.com/v1", api_key: ""};
@@ -613,6 +626,19 @@ async function saveModel(i) {
   closeModal(); await saveCfg();
 }
 async function delModel(i) { const n = cfg.models[i].name; cfg.models.splice(i, 1); if (cfg.model === n) cfg.model = cfg.models[0]?.name || null; closeModal(); await saveCfg(); }
+const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "off: you test; the agent ends with the commands to run — saves tokens"],
+  ["todo", true, "keep a todo checklist on multi-step tasks", ""], ["web", true, "search the web for current facts and docs", ""],
+  ["plan_first", false, "show a plan and wait for a go before big changes", ""], ["brief", false, "very short replies", ""],
+  ["explain", false, "explain the why (learning mode)", ""], ["commit", false, "git commit each finished task", "never pushes without asking"],
+  ["agents_md", true, "offer to create AGENTS.md in new projects", ""]];
+function behaviorOn(k, d) { const b = cfg.settings.behavior || {}; return k in b ? !!b[k] : (k === "tests" && cfg.settings.no_verify ? false : d); }
+function renderBehavior() {
+  $("behavior").innerHTML = BEHAVIOR.map(([k, d, l, h]) => `<label style="display:flex;gap:10px;align-items:flex-start;color:var(--fg);margin:8px 0">
+    <input type="checkbox" style="width:auto;margin-top:3px" ${behaviorOn(k, d) ? "checked" : ""} onchange="setBehavior('${k}',this.checked)">
+    <span><span data-t>${esc(l)}</span>${h ? `<br><span class="dim" style="font-size:12.5px" data-t>${esc(h)}</span>` : ""}</span></label>`).join("");
+  if (typeof translate === "function") translate($("behavior"));
+}
+async function setBehavior(k, on) { cfg.settings.behavior = {...(cfg.settings.behavior || {}), [k]: on}; if (k === "tests") delete cfg.settings.no_verify; await saveCfg(); }
 async function savePrompt() { cfg.prompt = $("prompt").value.trim(); await saveCfg("prompt saved"); }
 async function fetchModels() {
   const pv = Object.keys(cfg.providers);

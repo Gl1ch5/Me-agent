@@ -28,7 +28,11 @@ def apply_setting(cfg, key, value, model=None):
     """Settings the web UI may change by name (same keys on the local agent and, client side, on the cloud config doc).
     `model`: the chat's model (effort is set on it), default the config's."""
     st = cfg["settings"]
-    if key == "prompt":
+    if key.startswith("behavior:") and key[9:] in BEHAVIOR:
+        st.setdefault("behavior", {})[key[9:]] = bool(value) and value not in ("off", "0", "false")
+        if key == "behavior:tests":
+            st.pop("no_verify", None)
+    elif key == "prompt":
         cfg["prompt"] = str(value or "")
     elif key == "autocompact":
         st["autocompact"] = 0 if value in (0, "0", "off", None) else max(10, min(95, int(str(value).rstrip("%"))))
@@ -98,7 +102,7 @@ class WebSession:
                            "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
-                "day_cost": day_cost(self.s.home), "preview": "",
+                "day_cost": day_cost(self.s.home), "preview": "", "behavior": behavior(self.s.config["settings"]),
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd"), "n": x.get("n", 0)}
@@ -148,6 +152,11 @@ class WebSession:
             if b"\0" in data[:8192]:
                 return {"path": body.get("path"), "text": "", "note": f"binary file, {len(data)} bytes"}
             return {"path": body.get("path"), "text": data.decode("utf-8", "replace")}
+        if path == "/retry":  # the browser re-sends the request itself, right after
+            text, err = a.retry()
+            if err:
+                raise ValueError(err)
+            return {"text": text}
         if path == "/undo":
             r = a.undo()
             if not r["ok"]:

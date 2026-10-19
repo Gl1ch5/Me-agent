@@ -7,13 +7,23 @@ Object.assign(RU, {
   "permissions": "разрешения", "spending": "расходы", "the agent's checklist": "чек-лист агента", "full access on/off": "полный доступ вкл/выкл", "sync now": "синхронизировать",
   "color theme": "цветовая тема", "project folder / workspaces": "папка проекта / рабочие области", "open on the site": "открыть на сайте", "do this in the terminal": "это делается в терминале",
   "unknown command": "неизвестная команда", "Commands": "Команды", "no skills yet": "навыков пока нет", "copied": "скопировано", "copy failed": "не удалось скопировать", "nothing to copy": "нечего копировать",
-  "saved": "сохранено", "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
+  "saved": "сохранено", "nothing to retry": "нечего повторять", "take back the last request and run it again": "отменить последний запрос и выполнить заново",
+  "save this chat as Markdown": "сохранить чат в Markdown", "switches: self-testing, todo, web, plan first, brief…": "переключатели: самопроверка, todo, веб, сначала план, кратко…",
+  "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах",
+  "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
+  "very short replies": "очень короткие ответы", "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
+  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const note = (txt, cls = "") => el(`<div class="info ${cls}">${esc(txt)}</div>`);
 const say = txt => el(`<div class="msg md">${md(txt)}</div>`);
+const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", todo: "keep a todo checklist on multi-step tasks", web: "search the web for current facts and docs",
+  plan_first: "show a plan and wait for a go before big changes", brief: "very short replies", explain: "explain the why (learning mode)",
+  commit: "git commit each finished task", agents_md: "offer to create AGENTS.md in new projects"};
+const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true};
 function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
+  if (key.startsWith("behavior:")) { cfg.settings.behavior = {...(cfg.settings.behavior || {}), [key.slice(9)]: !!v}; if (key === "behavior:tests") delete cfg.settings.no_verify; return; }
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));
   else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === (model || cfg.model)); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
@@ -74,6 +84,32 @@ const CMDS = {
   }],
   goal: ["work autonomously until done", "<objective>", a => a ? (inp.value = "/goal " + a, send()) : note("/goal <objective>", "warn")],
   undo: ["revert the last turn's files", "", () => A.undo().then(() => 0)],
+  retry: ["take back the last request and run it again", "", async () => {
+    const ms = state.session?.messages || [], i = ms.map(m => m.role === "user" && !m._aux).lastIndexOf(true);
+    if (i < 0) return note(t("nothing to retry"), "warn");
+    const c = ms[i].content, text = Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : c;
+    await api(base + "/retry", {});
+    state.session = {...state.session, messages: ms.slice(0, i)}; renderHistory(state.session);
+    inp.value = text; send();
+  }],
+  export: ["save this chat as Markdown", "", () => {
+    const s = state.session; if (!s?.messages?.length) return note(t("nothing to copy"), "warn");
+    const txt = c => Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : (c || "");
+    const out = ["# " + (s.title || "chat"), ""];
+    for (const m of s.messages) {
+      if (m.role === "user" && !m._aux) out.push("## You", "", txt(m.content), "");
+      else if (m.role === "assistant") { if (m.content) out.push("## me", "", txt(m.content), ""); (m.tool_calls || []).forEach(tc => out.push("- `" + tc.function.name + "` " + tc.function.arguments.slice(0, 120))); }
+    }
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([out.join("\n")], {type: "text/markdown"}));
+    a.download = "me-chat-" + (s.id || "chat") + ".md"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }],
+  behavior: ["switches: self-testing, todo, web, plan first, brief…", "[name on|off]", async a => {
+    const B = state.behavior || {}, [k, v] = (a || "").split(/\s+/);
+    const go = async (key, on) => { await cfgSet("behavior:" + key, on); state.behavior = {...(state.behavior || {}), [key]: on}; note(`${key} ${on ? "on" : "off"}`, "ok"); };
+    if (k && k in B) return go(k, v ? /^(on|1|true|yes)$/.test(v) : !B[k]);
+    const show = () => popupList(Object.keys(B).map(n => [n, t(BEHAVIOR_LABELS[n] || n), n, state.behavior[n]]), async n => { await go(n, !state.behavior[n]); show(); });
+    show();
+  }],
   perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) ? setPerm(a) : pickPerm()],
   yolo: ["full access on/off", "", () => setPerm(state.perm === "full" ? "ask" : "full")],
   cost: ["spending", "", () => {

@@ -28,6 +28,37 @@ Reply: in the user's language, concise. After changes: what changed, how you ver
 
 
 
+# Behavior switches (/behavior, web /behavior): one checkbox each, applied to the system prompt and the loop.
+# key: (default, label, prompt line when on, prompt line when off)
+BEHAVIOR = {
+    "tests": (True, "verify changes itself (tests, build, run)", "",
+              "Do NOT run tests, builds, linters or the app to verify your changes: the user tests. Finish with the exact commands or "
+              "steps for the user to check, and say what is untested."),
+    "todo": (True, "keep a todo checklist on multi-step tasks", "", ""),
+    "web": (True, "search the web for current facts and docs", "", ""),
+    "plan_first": (False, "show a plan and wait for a go before big changes",
+                   "Before any change bigger than a small fix (several files, new features, refactors), give a short plan and wait for "
+                   "the user's go.", ""),
+    "brief": (False, "very short replies",
+              "Be terse: the fewest words that answer; after changes one line on what changed. No recaps, no lists of options.", ""),
+    "explain": (False, "explain the why (learning mode)",
+                "The user is learning: explain the reasoning behind each change and any concept they may not know, briefly.", ""),
+    "commit": (False, "git commit each finished task",
+               "In a git repo, when a task is done (and verified, if you verify), commit just its changes with a clear message. "
+               "Never push unless asked.", ""),
+    "agents_md": (True, "offer to create AGENTS.md in new projects", "", ""),
+}
+
+
+def behavior(settings):
+    """Effective switches: defaults, then the user's choices (settings.behavior); the old no_verify setting means tests off."""
+    b = {k: v[0] for k, v in BEHAVIOR.items()}
+    if settings.get("no_verify"):
+        b["tests"] = False
+    b.update({k: bool(v) for k, v in (settings.get("behavior") or {}).items() if k in BEHAVIOR})
+    return b
+
+
 class LimitHit(Exception):
     pass
 
@@ -148,9 +179,10 @@ class Agent:
             text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
             budget -= len(text)
             project += f"\n\n# {name}\n{text}"
+        bh = behavior(self.s.config["settings"])
         if "AGENTS.md" in self.context_files() or any(n.endswith("/AGENTS.md") for n in self.context_files()):
             project += "\n\nAGENTS.md is this project's memory: update it when you learn something durable (commands, structure, conventions, decisions)."
-        else:
+        elif bh["agents_md"]:
             project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
                         "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
         pr = self.preset()
@@ -172,7 +204,15 @@ class Agent:
         if os.environ.get("ME_PREVIEW"):
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
-        return SYSTEM.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
+        prefs = [BEHAVIOR[k][2 if on else 3] for k, on in bh.items() if BEHAVIOR[k][2 if on else 3]]
+        if prefs:
+            extra += "\nUser's settings (they override the rules above):\n" + "\n".join("- " + x for x in prefs)
+        base = SYSTEM
+        if not bh["tests"]:
+            base = base.replace("- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.\n", "")
+        if not bh["todo"]:
+            base = base.replace("- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.\n", "")
+        return base.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              shell=shell_note(self.s.config["settings"].get("shell")),
                              extra=extra, skills=skills, project=project, user=user)
 
@@ -224,6 +264,11 @@ class Agent:
         allowed = preset_tools(self.preset())
         if self.depth:
             allowed.discard("task")
+        bh = behavior(self.s.config["settings"])
+        if not bh["todo"]:
+            allowed.discard("todo")
+        if not bh["web"]:
+            allowed -= {"web_search", "web_fetch"}
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
             out.append(NOTIFY_TOOL)
@@ -335,7 +380,7 @@ class Agent:
                             "\nMark finished ones done (todo done=[…]) and do the rest. If you stopped on purpose (blocked, or waiting "
                             "for the user's go), keep them open and say so.")})
                         continue
-                    if wrote and not ran and not nudged and "bash" in self._tool_names and not st.get("no_verify"):
+                    if wrote and not ran and not nudged and "bash" in self._tool_names and behavior(st)["tests"]:
                         nudged = True  # self-check before "done": changes were made but nothing was run since
                         self.emit({"type": "verify"})
                         self.session["messages"].append({"role": "user", "_aux": True, "content": VERIFY_NUDGE})
@@ -701,6 +746,63 @@ class Agent:
         ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
         self.emit(ev)
         return dict(ev, ok=True)
+
+    def retry(self):
+        """Take back the last request (its file changes and its part of the history) and return its text to run again."""
+        if self.busy:
+            return None, "busy"
+        msgs = self.session["messages"]
+        i = max((i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("_aux")), default=-1)
+        if i < 0:
+            return None, "nothing to retry"
+        c = msgs[i]["content"]
+        text = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+        cps = Checkpoints(self.s, self.session["id"]).load()
+        if cps and cps[-1].get("msgs") == i and cps[-1].get("gen", 0) == self.session.get("compactions", 0):
+            self.undo()  # the turn changed files: restore them too
+        self.session["messages"] = self.session["messages"][:i]
+        self.s.save_session(self.session)
+        return text, ""
+
+    def context_report(self):
+        """What the next request sends, in tokens (about 4 chars each): prompt, tools, history by kind, the biggest messages."""
+        tok = lambda x: len(x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)) // 4
+        sysp, tools, msgs = self.system_prompt(), self.tool_schemas(), self.session["messages"]
+        kinds = collections.Counter()
+        for m in msgs:
+            kinds["tool results" if m["role"] == "tool" else "your messages" if m["role"] == "user" and not m.get("_aux")
+                  else "notes from me" if m["role"] == "user" else "answers + tool calls"] += tok(m)
+        total = tok(sysp) + tok(tools) + sum(kinds.values())
+        m = self.model() or {}
+        ctx = int(m.get("context") or 0)
+        rows = [("system prompt", tok(sysp)), (f"tools ({len(tools)})", tok(tools))] + kinds.most_common()
+        out = [f"## Context · ~{human(total)} tokens" + (f" of {human(ctx)} ({total * 100 // ctx}%)" if ctx else "")]
+        out += [f"- {k}: ~{human(v)}" for k, v in rows]
+        big = sorted(((tok(x), i, x) for i, x in enumerate(msgs)), key=lambda t: -t[0])[:5]
+        if big and big[0][0] > 500:
+            out.append("\nBiggest messages:")
+            for n, i, x in big:
+                c = x.get("content")
+                c = c if isinstance(c, str) else json.dumps(x.get("tool_calls") or c, ensure_ascii=False)
+                out.append(f"- #{i} {x['role']}: ~{human(n)} — {(c or '').strip().splitlines()[0][:80] if (c or '').strip() else ''}")
+        out.append("\n/compact summarizes old history; old tool output is trimmed automatically before each new request.")
+        return "\n".join(out)
+
+    def export_md(self):
+        """The chat as Markdown: requests, answers, and one line per tool call."""
+        out = [f"# {self.session.get('title') or 'chat'}\n"]
+        for m in self.session["messages"]:
+            c = m.get("content")
+            c = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if x.get("type") == "text")
+            if m["role"] == "user" and not m.get("_aux"):
+                out.append("## You\n\n" + c + "\n")
+            elif m["role"] == "assistant":
+                if c:
+                    out.append("## me\n\n" + c + "\n")
+                for tc in m.get("tool_calls") or []:
+                    a = parse_args(tc["function"]["arguments"]) or {}
+                    out.append(f"- `{tc['function']['name']}` {self.tools.preview(tc['function']['name'], a, self.cwd)}")
+        return "\n".join(out) + "\n"
 
     def _fix_dangling(self):
         """Every tool_call must have a tool result, or APIs reject the history."""
