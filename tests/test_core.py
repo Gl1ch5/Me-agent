@@ -895,6 +895,13 @@ def test_act_nudge():
     assert me.should_have_acted("Создай файл game.js с игрой", "```js\na\nb\nc\n```") and not me.should_have_acted("create game.js", "no code")
 
 
+def test_output_loop_stopped():
+    s = make()
+    ag, ev = run(s, "loop: go")
+    assert ag.session["messages"][-1]["content"] == "Intro. The b method is called when b is created.", ag.session["messages"][-1]
+    assert any(e["type"] == "notice" and "repeating" in e["text"] for e in ev)
+
+
 def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
     s = make()
     cwd = os.getcwd()

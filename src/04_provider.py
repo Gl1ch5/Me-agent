@@ -5,6 +5,18 @@ class Cancelled(Exception):
     pass
 
 
+def looping(text, n=5, size=100):
+    """Where a model stuck in an output loop started repeating itself (the last `size` chars occur n+ times in the last
+    3000), or None. Weak/free models can spin like this until the output limit — minutes of the same sentence."""
+    tail = text[-size:]
+    if len(text) < size * n or len(set(tail)) < 8 or text[-3000:].count(tail) < n:
+        return None
+    first = text.find(tail, max(0, len(text) - 3000))
+    second = text.find(tail, first + 1)  # keep one copy, ending at a sentence or line end when there is one
+    end = max(text.rfind(". ", first, second), text.rfind("\n", first, second))
+    return end + 1 if end > first else second
+
+
 def no_images(messages, note="[image: this model cannot see images]"):
     """Messages with every image part replaced by a text note (copies; the originals stay)."""
     return [dict(m, content=[x if x.get("type") != "image_url" else {"type": "text", "text": note} for x in m["content"]])
@@ -218,8 +230,10 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, reason, details, calls, usage, finish = "", "", {}, {}, {}, ""
+        checked = 0
         resp = self._post("/chat/completions", body)
-        for ev in self._sse(resp, cancel):
+        events = self._sse(resp, cancel)
+        for ev in events:
             if ev.get("error"):  # OpenRouter & co report upstream failures inside the stream
                 e = ev["error"]
                 msg = (e.get("message") if isinstance(e, dict) else str(e)) or "stream error"
@@ -245,6 +259,10 @@ class Provider:
                 if d.get("content"):
                     text += d["content"]
                     emit({"type": "text", "text": d["content"]})
+                    if len(text) - checked > 400:
+                        checked, cut = len(text), looping(text)
+                        if cut:
+                            text, finish = text[:cut], "loop"
                 for j, tc in enumerate(d.get("tool_calls") or []):
                     c = calls.setdefault(tc.get("index", j), {"id": "", "name": "", "args": ""})
                     c["id"] = tc.get("id") or c["id"]
@@ -253,6 +271,10 @@ class Provider:
                     c["args"] += f.get("arguments") or ""
                     if tc.get("extra_content"):  # Gemini thought signature: must come back with this call
                         c["extra"] = tc["extra_content"]
+            if finish == "loop":
+                events.close()
+                emit({"type": "notice", "text": "stopped the reply: the model kept repeating itself"})
+                break
         if not (text or calls or reason or usage or finish):
             raise ProviderError("the stream ended before any reply (connection dropped)", retryable=True)
         msg = {"role": "assistant", "content": text or None, "_model": self.m.get("id")}
@@ -304,11 +326,20 @@ class Provider:
         if self.m.get("temperature") not in (None, ""):
             body["temperature"] = float(self.m["temperature"])
         text, calls, usage, reasoning, finish = "", {}, {}, [], ""
-        for ev in self._sse(self._post("/responses", body), cancel):
+        checked = 0
+        events = self._sse(self._post("/responses", body), cancel)
+        for ev in events:
             t = ev.get("type", "")
             if t == "response.output_text.delta":
                 text += ev["delta"]
                 emit({"type": "text", "text": ev["delta"]})
+                if len(text) - checked > 400:
+                    checked, cut = len(text), looping(text)
+                    if cut:
+                        text, finish = text[:cut], "loop"
+                        events.close()
+                        emit({"type": "notice", "text": "stopped the reply: the model kept repeating itself"})
+                        break
             elif t in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
                 emit({"type": "reasoning", "text": ev["delta"]})
             elif t == "response.output_item.done" and ev.get("item", {}).get("type") == "function_call":
