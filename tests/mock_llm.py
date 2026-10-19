@@ -130,6 +130,14 @@ class H(BaseHTTPRequestHandler):
             if text.startswith("tools:"):  # several calls in one message: tools:[["read", {...}], ["ls", {...}]]
                 for i, (name, args) in enumerate(json.loads(text[6:])):
                     sse(self, {"choices": [{"delta": {"tool_calls": [{"index": i, "id": f"c{i}", "function": {"name": name, "arguments": json.dumps(args)}}]}}]})
+            elif text.startswith("talk:"):  # answers a coding task with a pasted code block instead of a tool call
+                sse(self, {"choices": [{"delta": {"content": "Here it is:\n```python\nclass LRU:\n    def __init__(self):\n        self.d = {}\n```"}}]})
+            elif text.startswith("loop:"):  # a degenerate model repeating one sentence until the output limit
+                try:
+                    for i in range(400):
+                        sse(self, {"choices": [{"delta": {"content": "Intro. " if i == 0 else "The b method is called when b is created. "}}]})
+                except OSError:
+                    return  # the client hung up on the loop
             elif text.startswith("GOAL:"):
                 sse(self, {"choices": [{"delta": {"content": "all criteria pass\nGOAL: DONE tests green"}}]})
             elif text.startswith("tool:"):

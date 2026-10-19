@@ -105,6 +105,12 @@ class Store:
             cache.pop(k, None)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
 
+    def latest(self, cwd):
+        """id of the newest chat started in `cwd` (me -c), or None."""
+        key = lambda p: os.path.normcase(os.path.realpath(str(p)))  # realpath: macOS /var is /private/var
+        here = key(cwd)
+        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n") and key(x.get("cwd") or "/") == here), None)
+
     def search(self, q, limit=40):
         """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""
         words = [w for w in q.lower().split() if w]

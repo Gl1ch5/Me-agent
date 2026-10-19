@@ -7,6 +7,7 @@ Scope (most important):
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
 - No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
+- "Like X" / "a clone of X": keep X's genre, core mechanics and controls; don't swap in a different kind of thing.
 - If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go. Once you start a task, finish all of it.
 
 Tools:
@@ -34,7 +35,8 @@ BEHAVIOR = {
     "tests": (True, "verify changes itself (tests, build, run)", "",
               "Self-testing is OFF: the user tests everything. Never run tests, builds, linters, type checks, the app, servers, browsers "
               "or screenshots to check your work, never install tools for checking (puppeteer, playwright…), and put no checking step "
-              "in your plan. When done, list the exact commands or steps for the user to check."),
+              "in your plan. Since nothing gets checked, prefer setups that run as written (no build step); never serve uncompiled "
+              "TypeScript/JSX with a static server: start the project's dev server. When done, list the exact commands or steps for the user to check."),
     "todo": (True, "keep a todo checklist on multi-step tasks", "", ""),
     "web": (True, "search the web for current facts and docs", "", ""),
     "stay_in_project": (True, "stay in the project folder unless asked",
@@ -51,6 +53,16 @@ BEHAVIOR = {
                "In a git repo, when a task is done (and verified, if you verify), commit just its changes with a clear message. "
                "Never push unless asked.", ""),
     "agents_md": (True, "offer to create AGENTS.md in new projects", "", ""),
+    "minimal_diff": (False, "change only what the task needs",
+                     "Change only what the task needs: no refactors, renames, reformatting or extra improvements of code you were not "
+                     "asked to touch. Mention other problems you notice instead of fixing them.", ""),
+    "no_new_deps": (False, "ask before adding dependencies",
+                    "Don't add dependencies (packages, libraries, CDN scripts) without asking: use what the project already has or the "
+                    "standard library.", ""),
+    "ask_unclear": (False, "ask when the request is unclear",
+                    "If a request is ambiguous or misses a key detail, ask one short question before starting instead of guessing.", ""),
+    "subagents": (True, "use subagents for big separate jobs", "", ""),
+    "memory": (True, "global memory across chats", "", ""),
 }
 
 
@@ -60,7 +72,7 @@ NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). D
 CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
                       r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
                       r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|check|typecheck)|go\s+(?:test|vet|build)|cargo\s+(?:test|build|check|clippy)|"
-                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
+                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|node\s+(?:\S*/)?(?:check|test|verify|smoke)(?:[-_.]\w+)?\.[cm]?js|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
 
 
 def behavior(settings):
@@ -142,8 +154,47 @@ def tc_args(tc):
 TODO_EVERY = 4  # tool rounds without a todo update (while steps are open) before the checklist is shown again
 
 
+TODO_STATE = {"x": "done", "✓": "done", "done": "done", "completed": "done", "complete": "done", "finished": "done",
+              ">": "doing", "doing": "doing", "in_progress": "doing", "in progress": "doing", "active": "doing", "current": "doing",
+              " ": "todo", "todo": "todo", "pending": "todo", "open": "todo", "not_started": "todo"}
+TODO_DONE_RX = re.compile(r"\s*[—–-]+\s*(?:done|готово|сделано|выполнено)\W*$", re.I)
+
+
+def todo_parse(x, st=None):
+    """todo items in whatever shape a model sends: "x step" / "[>] step" / "step — DONE", {t|text|title|task: …, s|status: …,
+    done: true}, {"x": "step"}, nested lists. → [(text, state or None)]; None = no mark given."""
+    if isinstance(x, (list, tuple)):
+        return [r for i in x for r in todo_parse(i, st)]
+    if isinstance(x, dict):
+        mark = x.get("s") or x.get("status") or x.get("state") or ("done" if x.get("done") in (True, "true") else None)
+        mark = TODO_STATE.get(str(mark).strip().lower()) if mark else st
+        for k in ("t", "text", "title", "task", "step", "content", "name", "item", "items", "description"):
+            if x.get(k):
+                return todo_parse(x[k], mark)
+        return [r for k, v in x.items() if isinstance(v, str) for r in todo_parse(v, TODO_STATE.get(k.split()[0].lower() if k.strip() else " "))]
+    t = str(x).strip()
+    m = re.match(r"^(?:\[(x|X|>| |✓)\]|(x|X|>|✓|-))\s+", t)
+    if m:
+        t, st = t[m.end():], TODO_STATE.get((m.group(1) or m.group(2)).lower()) or st
+    if TODO_DONE_RX.search(t):
+        t, st = TODO_DONE_RX.sub("", t), "done"
+    return [(t.strip(), st)] if t.strip() else []
+
+
 def todo_lines(items):
     return "\n".join(f"{n}. [{'x' if i['s'] == 'done' else '>' if i['s'] == 'doing' else ' '}] {i['t']}" for n, i in enumerate(items, 1))
+
+
+ACT_NUDGE = ("[self-check] You answered with code but changed no files, and the user asked for a change in the project. Make it now with "
+             "write/edit (do not paste the code again). If they only wanted to see code, say so in one line.")
+ACT_RX = re.compile(r"\b(?:create|write|add|implement|fix|make|change|update|refactor|edit|build|"
+                    r"созда\w*|напиши|напис\w*|добав\w*|реализ\w*|исправ\w*|сделай|измени|поправь|обнови)\b", re.I)
+FILE_RX = re.compile(r"\b[\w./-]+\.(?:py|js|mjs|ts|tsx|jsx|go|rs|java|c|cc|cpp|h|hpp|cs|rb|php|html|css|scss|json|sh|ps1|ya?ml|toml|sql|kt|swift|vue|svelte|lua|gd|dart)\b")
+
+
+def should_have_acted(request, reply):
+    """A first reply that is all talk: the user asked to create/change a named file, the model pasted code instead of calling a tool."""
+    return bool(ACT_RX.search(request or "") and FILE_RX.search(request or "") and re.search(r"```[^\n]*\n(?:.*\n){3,}?```", reply or ""))
 
 
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
@@ -186,7 +237,7 @@ class Agent:
 
     def system_prompt(self):
         sks = self.skills.enabled()
-        skills = ("\nSkills (load via skill tool):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
+        skills = ("\nSkills (skill tool: name alone loads the guide; name + action + args runs a tool skill — not shell commands):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
         project, budget = "", 24000
         for name in self.context_files():
             text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
@@ -206,7 +257,7 @@ class Agent:
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
-        mem = mem_prompt(self.s.home)
+        mem = mem_prompt(self.s.home) if bh["memory"] else ""
         if mem:
             extra += "\nGlobal memory (notes you kept earlier, newest first; use memory tool to add or forget):\n" + mem
         if "task" in {t["name"] for t in self.tool_schemas()}:
@@ -282,6 +333,10 @@ class Agent:
             allowed.discard("todo")
         if not bh["web"]:
             allowed -= {"web_search", "web_fetch"}
+        if not bh["subagents"]:
+            allowed.discard("task")
+        if not bh["memory"]:
+            allowed.discard("memory")
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
             out.append(NOTIFY_TOOL)
@@ -290,6 +345,34 @@ class Agent:
         pr = self.preset()
         out += [cli_schema(n, c, pr["name"]) for n, c in (pr.get("cli") or {}).items()]
         return out + PLUGINS.tool_schemas()
+
+    MENTION_RX = re.compile(r"(?<![\w/@])@([\w.~/\\-]*[\w/])(?::(\d+)(?:-(\d+))?)?")
+
+    def mentions(self, text):
+        """@path or @path:10-40 in a message attaches that file (or line range), like other agents do: the model starts
+        with the code instead of spending a step on read. Returns (names, text) or None."""
+        names, parts = [], []
+        for mt in self.MENTION_RX.finditer(text or ""):
+            p = self.abspath(mt.group(1))
+            try:
+                if len(names) >= 8 or not os.path.isfile(p) or os.path.getsize(p) > 2_000_000 or Path(p).suffix.lower() in IMAGE_EXT:
+                    continue
+                with open(p, "rb") as f:
+                    data = f.read()
+                if b"\0" in data[:4096]:
+                    continue
+                lines = decode_text(data)[0].splitlines()
+            except (OSError, ValueError):
+                continue
+            a = int(mt.group(2) or 1)
+            b = int(mt.group(3) or (mt.group(2) and a + 99) or len(lines))
+            a, b = max(1, a), min(len(lines), b, a + 799)
+            name = relp(p, self.cwd).replace(os.sep, "/") + (f":{a}-{b}" if mt.group(2) or b < len(lines) else "")
+            if name in names:
+                continue
+            names.append(name)
+            parts.append(f"[{name}]\n" + clip("\n".join(f"{i}\t{l}" for i, l in enumerate(lines[a - 1:b], a)), 40000))
+        return (names, "[files the user attached with @]\n\n" + "\n\n".join(parts)) if names else None
 
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""
@@ -314,11 +397,15 @@ class Agent:
         self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
+        att = self.mentions(text)
+        if att:
+            self.session["messages"].append({"role": "user", "_aux": True, "content": att[1]})
+            self.emit({"type": "notice", "level": "info", "text": "attached " + ", ".join(att[0])})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
         self._trim_history(start_idx)
         t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
-        wrote, ran, nudged = False, False, False
+        wrote, ran, nudged, acted = False, False, False, False
         todo_used, todo_idle, todo_nudged = False, 0, False
         squeezed, cutoffs, empties, seen = False, 0, 0, []
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
@@ -384,6 +471,10 @@ class Agent:
                     if cut and cutoffs < 2:  # the reply hit the output limit: let it carry on where it stopped
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
+                        continue
+                    if steps == 1 and not acted and self.depth == 0 and "write" in self._tool_names and should_have_acted(text, msg.get("content")):
+                        acted = True  # weak models sometimes "answer" a coding task with a code block: send them back to do it
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": ACT_NUDGE})
                         continue
                     open_steps = [i for i in self.session.get("todo") or [] if i["s"] != "done"]
                     if todo_used and open_steps and not todo_nudged and self.depth == 0:
@@ -555,6 +646,8 @@ class Agent:
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
+        if name == "skill" and args.get("name") == pr["name"] and args["name"] not in self.skills.enabled():
+            return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
         if name == "bash" and self._no_checks(args.get("cmd")):
             return False, NO_CHECKS, None
         if name == "todo":
@@ -588,7 +681,8 @@ class Agent:
             return False, f"error: {type(e).__name__}: {e}", None
 
     def _no_checks(self, cmd):
-        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(str(cmd or "")))
+        cmd = re.sub(r"\b(?:which|command\s+-v|type|where)\s+[^;&|\n]*", "", str(cmd or ""))  # looking a tool up is not checking work
+        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(cmd))
 
     def _cli(self, spec, args, temit):
         """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""
@@ -633,39 +727,39 @@ class Agent:
 
     # ─── todo / goal ───
     def _todo(self, a):
-        if not a.get("items") and (a.get("done") or a.get("doing")):  # mark steps by number, no need to resend the list
+        old = {i["t"]: i["s"] for i in self.session.get("todo") or []}
+        if a.get("items"):
+            items = []
+            for t, st in todo_parse(a["items"]):
+                t = t[:200]  # a step resent without a mark keeps its state: resending the list must not undo progress
+                items.append({"t": t, "s": st or old.get(t, "todo")})
+            if not items:
+                return False, 'error: no steps found — items is a list of strings, e.g. ["x read the code", "> fix it", "test"]', None
+        else:
             items = [dict(i) for i in self.session.get("todo") or []]
             if not items:
                 return False, "error: no checklist yet — set it with items=[…]", None
+        if a.get("done") or a.get("doing") or a.get("doing") == 0:  # mark steps by number (also on top of a resent list)
             try:
-                done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])}
+                done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])} if a.get("done") else set()
                 doing = int(a.get("doing") or 0)
             except (TypeError, ValueError):
                 return False, "error: done is a list of step numbers (1-based), doing one number", None
+            if 0 in done or a.get("doing") == 0:  # counted from 0
+                done, doing = {x + 1 for x in done}, doing + 1
             for n, i in enumerate(items, 1):
                 if n in done:
                     i["s"] = "done"
                 elif n == doing:
                     i["s"] = "doing"
                 elif i["s"] == "doing" and doing:
-                    i["s"] = "todo"
-            a = {"items": [{"t": i["t"], "s": i["s"]} for i in items]}
-        items = []
-        for i in a.get("items") or []:
-            if isinstance(i, dict):  # tolerate {t, s} / {text, done}
-                t, st = str(i.get("t") or i.get("text") or ""), i.get("s") or ("done" if i.get("done") else "todo")
-            else:
-                t = str(i).strip()
-                m = re.match(r"^(?:\[(x|X|>| )\]|(x|X|>|✓|-))\s+", t)
-                mark = (m.group(1) or m.group(2)) if m else ""
-                t, st = (t[m.end():] if m else t), {"x": "done", "X": "done", "✓": "done", ">": "doing"}.get(mark, "todo")
-            if t.strip():
-                items.append({"t": t.strip()[:200], "s": st if st in ("todo", "doing", "done") else "todo"})
+                    i["s"] = "done" if n < doing else "todo"  # moving on to a later step finishes the one in progress
         self.session["todo"] = items[:50]
         self.emit({"type": "todo", "items": self.session["todo"]})
         n = sum(1 for i in items if i["s"] == "done")
+        now = next((i["t"] for i in items if i["s"] == "doing"), None)
         nxt = next((i["t"] for i in items if i["s"] != "done"), None)
-        return True, (f"todo: {n}/{len(items)} done" + (f"; next: {nxt} — mark each step done right after finishing it" if nxt
+        return True, (f"todo: {n}/{len(items)} done" + (f"; {'now' if now else 'next'}: {now or nxt} — mark each step done right after finishing it" if nxt
                                                           else "; all done — verify, then report")), None
 
     def goal(self, objective, max_rounds=None):

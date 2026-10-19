@@ -48,6 +48,7 @@ header .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:e
 .tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}
 .tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}
 .tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tool .h .lab.link{cursor:pointer;flex:0 1 auto;margin-right:auto}.tool .h .lab.link:hover{color:var(--a);text-decoration:underline}
 .tool .h .t{color:var(--faint)}
 .tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}
 .tool.closed .body,.tool .body:empty{display:none}
@@ -186,3 +187,10 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .popup>div:has(.fview){width:min(900px,100%)}
 @media (max-width:760px){#filesBtn span{display:none}}
 .popup .fhead .ib{width:30px;height:30px;flex:0 0 30px;padding:0;justify-content:center;border-radius:8px}
+.psearch{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:9px;color:var(--fg);padding:9px 11px;font:inherit;outline:none;margin-bottom:6px}
+.psearch:focus{border-color:var(--a)}
+.pgroup{font:11px var(--mono);color:var(--faint);padding:8px 12px 2px;text-transform:lowercase}
+.popup button.on{background:color-mix(in srgb,var(--a) 12%,transparent)}.popup button.on>span:first-child{color:var(--a)}.popup button.sel{outline:1px solid var(--line)}
+.popup .mn{display:flex;flex-direction:column;min-width:0;flex:1}.popup .mn b{overflow:hidden;text-overflow:ellipsis}.popup .mn small{color:var(--faint);font:11px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.popup .tags{display:flex;gap:4px;flex-shrink:0}.popup .tags i{font:10.5px var(--mono);font-style:normal;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.phint{font-size:11.5px;color:var(--faint);padding:6px 12px 4px;margin:0}

@@ -10,7 +10,7 @@ const base = p => String(p || "").split(/[\\/]/).filter(Boolean).pop() || p;
 let LANG = "en";
 const L = () => LANG === "ru";
 const RU = {
-  "New task": "Новая задача", "Search tasks": "Поиск задач", "Add project": "Добавить проект", "Settings": "Настройки", "Changes": "Изменения", "Terminal": "Терминал",
+  "New task": "Новая задача", "Search tasks": "Поиск задач", "search…": "поиск…", "attach a file": "прикрепить файл", "Add project": "Добавить проект", "Settings": "Настройки", "Changes": "Изменения", "Terminal": "Терминал",
   "What should we work on?": "Над чем работаем?", "Describe a task — fix a bug, add a feature, explain the code…": "Опишите задачу — исправить баг, добавить функцию, объяснить код…",
   "Each task is its own agent. Start several — they run side by side.": "Каждая задача — отдельный агент. Запускайте несколько — они работают параллельно.",
   "Local": "Локально", "Worktree": "Worktree", "Start": "Начать", "Recent": "Недавние", "Choose a project": "Выберите проект", "no project": "нет проекта",
@@ -198,18 +198,39 @@ function closeSide() { $("side").classList.remove("open"); $("scrim").classList.
 function menu(anchor, items, opts = {}) {
   closeMenu();
   const m = document.createElement("div"); m.className = "menu"; m.id = "menu";
-  m.innerHTML = items.map((it, i) => it === "-" ? "<hr>" : typeof it === "string" ? `<div class="lbl">${esc(it)}</div>` :
+  m.innerHTML = (opts.search ? `<input class="msearch" placeholder="${esc(t("search…"))}" spellcheck="false">` : "") + items.map((it, i) => it === "-" ? "<hr>" : typeof it === "string" ? `<div class="lbl">${esc(it)}</div>` :
     `<button class="mi ${it[2] === "danger" ? "danger" : ""}" data-i="${i}"><span class="ck">${it[3] ? "✓" : ""}</span><span>${esc(it[0])}</span>${it[4] ? `<span class="d">${esc(it[4])}</span>` : ""}</button>`).join("");
   document.body.appendChild(m);
-  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
-  let x = opts.right ? r.right - mw : r.left, y = r.bottom + 6;
-  if (y + mh > innerHeight - 8) y = Math.max(8, r.top - mh - 6);
-  m.style.left = Math.max(8, Math.min(x, innerWidth - mw - 8)) + "px"; m.style.top = y + "px";
+  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, up = r.bottom + 6 + m.offsetHeight > innerHeight - 8;
+  const place = () => { const mh = m.offsetHeight; m.style.top = (up ? Math.max(8, r.top - mh - 6) : r.bottom + 6) + "px"; };  // an upward menu keeps its bottom edge by the anchor
+  m.style.left = Math.max(8, Math.min(opts.right ? r.right - mw : r.left, innerWidth - mw - 8)) + "px"; m.style.minWidth = mw + "px"; place();
   m.querySelectorAll(".mi").forEach(b => b.onclick = () => { closeMenu(); items[+b.dataset.i][1](); });
-  setTimeout(() => document.addEventListener("mousedown", outside), 0);
+  const q = m.querySelector(".msearch");
+  if (q) {
+    q.oninput = () => {  // filter by name or id; section labels and rules only make sense unfiltered
+      const v = q.value.trim().toLowerCase();
+      m.querySelectorAll(".mi").forEach(b => b.classList.toggle("hidden", !!v && !b.textContent.toLowerCase().includes(v)));
+      m.querySelectorAll(".lbl, hr").forEach(b => b.classList.toggle("hidden", !!v));
+      menuKey({key: "Home"}); place();
+    };
+    if (!matchMedia("(pointer: coarse)").matches) q.focus();
+  }
+  setTimeout(() => { document.addEventListener("mousedown", outside); document.addEventListener("keydown", menuKey, true); }, 0);
+}
+function menuKey(e) {  // arrows move, Enter picks — so a long model list works without the mouse
+  const m = $("menu"); if (!m) return;
+  const rows = [...m.querySelectorAll(".mi:not(.hidden)")], i = rows.findIndex(b => b.classList.contains("kb"));
+  let j = null;
+  if (e.key === "ArrowDown") j = i < 0 ? 0 : (i + 1) % rows.length;
+  else if (e.key === "ArrowUp") j = i <= 0 ? rows.length - 1 : i - 1;
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "Enter" && rows.length) { e.preventDefault(); e.stopPropagation(); (rows[i < 0 ? 0 : i]).click(); return; }
+  if (j == null || !rows.length) return;
+  if (e.preventDefault) e.preventDefault();
+  rows.forEach(b => b.classList.remove("kb")); rows[j].classList.add("kb"); rows[j].scrollIntoView({block: "nearest"});
 }
 function outside(e) { const m = $("menu"); if (m && !m.contains(e.target)) closeMenu(); }
-function closeMenu() { const m = $("menu"); if (m) m.remove(); document.removeEventListener("mousedown", outside); }
+function closeMenu() { const m = $("menu"); if (m) m.remove(); document.removeEventListener("mousedown", outside); document.removeEventListener("keydown", menuKey, true); }
 function modal(title, body, foot) {
   $("modal").innerHTML = `<div class="dlg" role="dialog" aria-label="${esc(title)}"><div class="dh"><b>${esc(title)}</b><button class="ib" onclick="closeModal()" aria-label="close">${I.x.replace('style="color:var(--err)"', "")}</button></div>
     <div class="db">${body}</div>${foot ? `<div class="df">${foot}</div>` : ""}</div>`;
@@ -278,13 +299,52 @@ function renderHome() {
         <span class="seg"><button class="${mode === "local" ? "on" : ""}" onclick="setMode('local')" title="${esc(t("Works in the project folder itself"))}">${esc(t("Local"))}</button><button class="${mode === "worktree" ? "on" : ""}" ${p && p.git ? "" : "disabled"} onclick="setMode('worktree')" title="${esc(p && p.git ? t("Its own git worktree and branch: your checkout stays untouched until you apply") : t("needs a git repository with a commit"))}">${I.branch}${esc(t("Worktree"))}</button></span>
         <button class="chip" onclick="pickModel(this)" title="${esc(t("Model"))}">${I.cpu}<span>${esc(m ? m.name : t("no models — add one with `me` → /models"))}${view.effort ? " · " + esc(view.effort) : ""}</span>${I.chev}</button>
         <span class="sp"></span><button class="send" id="startBtn" onclick="startTask()" title="${esc(t("Start"))}" ${p ? "" : "disabled"}>${I.up}</button></div></div>
-    <div class="hint"><span><kbd>Enter</kbd> ${esc(t("enter to start").replace(/^enter — |^enter to /, ""))}</span><span><kbd>Shift Enter</kbd> ${esc(t("shift+enter new line").replace(/^shift\+enter — |^shift\+enter /, ""))}</span><span>${esc(t("Ask in Russian or English — the agent answers in your language."))}</span></div>
+    <div class="hint"><span><kbd>Enter</kbd> ${esc(t("enter to start").replace(/^enter — |^enter to /, ""))}</span><span><kbd>Shift Enter</kbd> ${esc(t("shift+enter new line").replace(/^shift\+enter — |^shift\+enter /, ""))}</span><span><kbd>@</kbd> ${esc(t("attach a file"))}</span><span>${esc(t("Ask in Russian or English — the agent answers in your language."))}</span></div>
     ${p ? `<div class="starters">${["Fix the failing tests", "Explain how this project is structured", "Review my uncommitted changes", "Add a README with setup steps"].map(s => `<button onclick='useStarter(${esc(JSON.stringify(t(s)))})'>${esc(t(s))}</button>`).join("")}</div>` : ""}
     ${recent.length ? `<div class="recent"><h3>${esc(t("Recent"))}</h3>${recent.map(x => `<button class="rc" onclick="go('${x.id}')"><span class="st ${statusOf(x)}"><i></i></span><span class="tt">${esc(x.title)}</span><span class="m">${esc(base(x.project))} · ${ago(x.updated)}</span></button>`).join("")}</div>` : ""}
   </div>`;
-  const ta = $("prompt"); ta.oninput = () => { draft.home = ta.value; grow(ta, 320); };
-  ta.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startTask(); } };
+  const ta = $("prompt"), src = () => view.project ? "path=" + encodeURIComponent(view.project) : "";
+  ta.oninput = () => { draft.home = ta.value; grow(ta, 320); atUpdate(ta, src()); };
+  ta.onkeydown = e => { if (atKey(e, ta)) return; if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startTask(); } };
+  ta.onblur = atClose;
   grow(ta, 320); if (has) setTimeout(() => ta.focus(), 0);
+}
+// ─── @file completion in the composers (the agent attaches @path mentions itself) ───
+const atCache = {};
+async function atFiles(src) {
+  const c = atCache[src]; if (c && Date.now() - c.t < 15000) return c.paths;
+  try { const d = await api("/api/files?" + src); atCache[src] = {t: Date.now(), paths: d.paths}; return d.paths; } catch (e) { return []; }
+}
+function atQuery(ta) { const m = /(?:^|\s)@([^\s@]*)$/.exec(ta.value.slice(0, ta.selectionStart)); return m ? m[1] : null; }
+function atClose() { const m = $("atmenu"); if (m) m.remove(); }
+async function atUpdate(ta, src) {
+  const q = atQuery(ta); if (q == null || !src) return atClose();
+  const paths = await atFiles(src), ql = q.toLowerCase(), base = p => p.slice(p.lastIndexOf("/") + 1).toLowerCase();
+  if (atQuery(ta) !== q || document.activeElement !== ta) return;  // typed on (or left) while the list loaded
+  const hits = paths.filter(p => p.toLowerCase().includes(ql)).sort((a, b) => (base(b).startsWith(ql) - base(a).startsWith(ql)) || a.length - b.length).slice(0, 30);
+  if (!hits.length) return atClose();
+  let m = $("atmenu"); if (!m) { m = document.createElement("div"); m.id = "atmenu"; m.className = "menu"; document.body.appendChild(m); }
+  m.innerHTML = hits.map((p, i) => `<button class="mi${i ? "" : " kb"}" data-p="${esc(p)}"><span>${esc(p)}</span></button>`).join("");
+  m.querySelectorAll(".mi").forEach(b => b.onmousedown = e => { e.preventDefault(); atPick(ta, b.dataset.p); });
+  const r = ta.closest(".composer").getBoundingClientRect(), h = m.offsetHeight;
+  m.style.left = r.left + "px"; m.style.width = Math.min(r.width, 520) + "px"; m.style.maxWidth = "none";
+  m.style.top = (r.top - h - 6 >= 8 ? r.top - h - 6 : r.bottom + 6) + "px";
+}
+function atPick(ta, p) {
+  const pos = ta.selectionStart, before = ta.value.slice(0, pos).replace(/@[^\s@]*$/, "@" + p + " ");
+  ta.value = before + ta.value.slice(pos); ta.selectionStart = ta.selectionEnd = before.length;
+  atClose(); ta.focus(); ta.dispatchEvent(new Event("input"));
+}
+function atKey(e, ta) {  // true when the open list took the key
+  const m = $("atmenu"); if (!m || e.isComposing) return false;
+  const rows = [...m.querySelectorAll(".mi")], i = Math.max(0, rows.findIndex(b => b.classList.contains("kb")));
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const j = (i + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length;
+    rows.forEach(b => b.classList.remove("kb")); rows[j].classList.add("kb"); rows[j].scrollIntoView({block: "nearest"});
+  } else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") atPick(ta, rows[i].dataset.p);
+  else if (e.key === "Escape") atClose();
+  else return false;
+  e.preventDefault(); e.stopPropagation(); return true;
 }
 function useStarter(s) { draft.home = s; renderHome(); }
 function setMode(m) { view.mode = m; PREF.mode = m; savePref(); renderHome(); }
@@ -297,7 +357,7 @@ function pickModel(el, onPick) {
   const curM = onPick ? (task(cur) || {}).model || S.model : view.model || S.model, curE = onPick ? (task(cur) || {}).effort || "" : view.effort || "";
   const set = onPick || ((k, v) => { view[k] = v; renderHome(); });
   menu(el, [t("Model"), ...S.models.map(x => [x.name, () => set("model", x.name), "", x.name === curM, x.id]),
-            "-", t("effort"), ...EFFORTS.map(e => [e || t("default"), () => set("effort", e), "", e === curE])]);
+            "-", t("effort"), ...EFFORTS.map(e => [e || t("default"), () => set("effort", e), "", e === curE])], {search: S.models.length > 6});
 }
 async function startTask() {
   const ta = $("prompt"), prompt = ta.value.trim(), p = view.project;
@@ -351,8 +411,9 @@ async function openTask(id) {
       <div class="crow"><span class="mini"><button class="chip" style="height:26px" onclick="pickModel(this, setTaskModel)">${I.cpu}<span id="tModel"></span>${I.chev}</button></span>
         <span class="sp"></span><button class="send" id="sendBtn" onclick="sendOrStop()">${I.up}</button></div></div></div>`;
   const ta = $("msg"); ta.value = draft[id] || "";
-  ta.oninput = () => { grow(ta); setSendBtn(); };
-  ta.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMsg(); } };
+  ta.oninput = () => { grow(ta); setSendBtn(); atUpdate(ta, "id=" + encodeURIComponent(id)); };
+  ta.onkeydown = e => { if (atKey(e, ta)) return; if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMsg(); } };
+  ta.onblur = atClose;
   renderTop(); setSendBtn(); renderTaskModel();
   let d;
   try { d = await api("/api/task?id=" + encodeURIComponent(id)); } catch (e) { return fail(e); }
@@ -406,6 +467,7 @@ function finishCard(c, ok, out, time) {
   const b = c.querySelector(".body"); if (!b.dataset.diff) b.textContent = String(out || "").slice(0, 30000) || "—";
   if (!ok) c.classList.add("err");
 }
+const atNames = s => "attached " + [...s.matchAll(/^\[([^\]\n]+)\]$/gm)].slice(1).map(x => x[1]).join(", ");  // headers of the @ attachment message
 function renderHistory(msgs) {
   lw().innerHTML = "";
   const outs = {};
@@ -413,7 +475,11 @@ function renderHistory(msgs) {
   msgs.forEach(m => {
     if (m.role === "user") {
       const s = txt(m.content);
-      if (m._aux) { if (/^\[message from the user/.test(s)) userMsg(s.split("\n").slice(1).join("\n"), "while working"); return; }
+      if (m._aux) {
+        if (/^\[message from the user/.test(s)) userMsg(s.split("\n").slice(1).join("\n"), "while working");
+        else if (/^\[files the user attached with @\]/.test(s)) add(`<div class="note">@ ${esc(atNames(s))}</div>`);
+        return;
+      }
       if (s && s !== "(images from read)") userMsg(s);
     } else if (m.role === "assistant") {
       if (m.content) add(`<div class="md">${md(m.content)}</div>`);
@@ -439,6 +505,7 @@ function renderPlan(items) {
 }
 let raf = 0;
 function flushText() { if (live.text) live.text.innerHTML = md(live.raw); }  // the last streamed piece must not wait for a frame that may never come
+function breakText() { endThink(); flushText(); live.text = null; }  // a note between two replies must not glue them together
 function endThink() { if (live.think && !live.thinkDone) { live.think.querySelector("summary").innerHTML = esc(t("thought for {}", dur((Date.now() - live.thinkT) / 1000))); live.thinkDone = true; } }
 function onEvent(e) {
   const k = e.type;
@@ -491,16 +558,17 @@ function onEvent(e) {
   }
   if (k === "retry") {
     if (e.discard) { live.text && live.text.remove(); live.think && live.think.remove(); live.text = live.think = null; }
-    add(`<div class="note warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 160))} — ${esc(t("retrying"))}</div>`); return;
+    breakText(); add(`<div class="note warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 160))} — ${esc(t("retrying"))}</div>`); return;
   }
-  if (k === "compacting") { add(`<div class="note">${esc(t("compacting history…"))}</div>`); return; }
+  if (k === "compacting") { breakText(); add(`<div class="note">${esc(t("compacting history…"))}</div>`); return; }
   if (k === "compacted") { add(`<div class="note">${esc(t("history compacted · ~{} tokens", human(e.ctx)))}</div>`); return; }
-  if (k === "verify") { add(`<div class="note">${esc(t("self-check: running checks before finishing"))}</div>`); return; }
-  if (k === "notice") { add(`<div class="note warn">${esc(e.text)}</div>`); return; }
+  if (k === "verify") { breakText(); add(`<div class="note">${esc(t("self-check: running checks before finishing"))}</div>`); return; }
+  if (k === "notice") { breakText(); add(`<div class="note${e.level === "info" ? "" : " warn"}">${e.level === "info" ? "@ " : ""}${esc(e.text)}</div>`); return; }
   if (k === "error") { flushText(); add(`<div class="note ${e.text === "interrupted" ? "warn" : "err"}">${I.x}${esc(e.text)}</div>`); return; }
   if (k === "todo") { renderPlan(e.items); return; }
   if (k === "turn_diff") {
     const fs = e.files || []; if (!fs.length) return;
+    breakText();
     const n = add(`<div class="note">${I.diff}<span>${esc(fs.length === 1 ? t("1 file changed") : t("{} files changed", fs.length))}</span> · <a>${esc(t("review"))}</a></div>`);
     n.querySelector("a").onclick = () => openPanel("changes");
     refreshDiff(); return;

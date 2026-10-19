@@ -1,40 +1,163 @@
 {
   "name": "me-agent",
   "displayName": "me — coding agent",
-  "description": "The me agent inside VS Code: chat, edits with diff review and undo, goals, skills — runs locally in your workspace folder, synced with your me account.",
-  "version": "0.1.0",
+  "description": "The me agent inside VS Code: a chat in the side bar, edits with diff review and undo, goals, skills — runs locally in your workspace folder, synced with your me account.",
+  "version": "0.2.0",
   "publisher": "me-agent",
   "license": "MIT",
-  "engines": {"vscode": "^1.80.0"},
-  "categories": ["AI", "Programming Languages", "Other"],
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
   "main": "./extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
-      {"command": "me.open", "title": "me: Open agent", "icon": "$(comment-discussion)"},
-      {"command": "me.askSelection", "title": "me: Ask about selection"},
-      {"command": "me.fixFile", "title": "me: Fix problems in this file"},
-      {"command": "me.restart", "title": "me: Restart agent"},
-      {"command": "me.terminal", "title": "me: Open agent in terminal (TUI)"}
+      {
+        "command": "me.open",
+        "title": "me: Open chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "me.newChat",
+        "title": "me: New chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "me.openPanel",
+        "title": "me: Open chat in editor tab",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "me.askSelection",
+        "title": "me: Add selection to chat"
+      },
+      {
+        "command": "me.addFile",
+        "title": "me: Add file to chat"
+      },
+      {
+        "command": "me.fixFile",
+        "title": "me: Fix problems in this file"
+      },
+      {
+        "command": "me.restart",
+        "title": "me: Restart agent",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "me.terminal",
+        "title": "me: Open agent in terminal (TUI)",
+        "icon": "$(terminal)"
+      }
     ],
     "keybindings": [
-      {"command": "me.open", "key": "ctrl+alt+m", "mac": "cmd+alt+m"},
-      {"command": "me.askSelection", "key": "ctrl+alt+k", "mac": "cmd+alt+k", "when": "editorHasSelection"}
+      {
+        "command": "me.open",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m"
+      },
+      {
+        "command": "me.askSelection",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      }
     ],
     "menus": {
       "editor/context": [
-        {"command": "me.askSelection", "when": "editorHasSelection", "group": "me@1"},
-        {"command": "me.fixFile", "group": "me@2"}
+        {
+          "command": "me.askSelection",
+          "when": "editorHasSelection",
+          "group": "me@1"
+        },
+        {
+          "command": "me.addFile",
+          "when": "!editorHasSelection",
+          "group": "me@1"
+        },
+        {
+          "command": "me.fixFile",
+          "group": "me@2"
+        }
       ],
-      "editor/title": [{"command": "me.open", "group": "navigation"}]
+      "explorer/context": [
+        {
+          "command": "me.addFile",
+          "group": "me@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "me.open",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "me.newChat",
+          "when": "view == me.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "me.openPanel",
+          "when": "view == me.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "me.terminal",
+          "when": "view == me.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "me.restart",
+          "when": "view == me.chat"
+        }
+      ]
     },
     "configuration": {
       "title": "me",
       "properties": {
-        "me.python": {"type": "string", "default": "", "description": "Python 3.8+ to run the agent (empty = python3 / py / python on PATH)."},
-        "me.agentPath": {"type": "string", "default": "", "description": "Path to me.py (empty = the copy installed by the me installer, else downloaded from the server)."},
-        "me.server": {"type": "string", "default": "https://me-agent.ru", "description": "me cloud server (for downloading me.py and sync)."}
+        "me.python": {
+          "type": "string",
+          "default": "",
+          "description": "Python 3.8+ to run the agent (empty = python3 / py / python on PATH)."
+        },
+        "me.agentPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to me.py (empty = the copy installed by the me installer, else downloaded from the server)."
+        },
+        "me.server": {
+          "type": "string",
+          "default": "https://me-agent.ru",
+          "description": "me cloud server (for downloading me.py and sync)."
+        }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "me",
+          "title": "me",
+          "icon": "media/me.svg"
+        }
+      ]
+    },
+    "views": {
+      "me": [
+        {
+          "type": "webview",
+          "id": "me.chat",
+          "name": "Chat"
+        }
+      ]
     }
   }
 }

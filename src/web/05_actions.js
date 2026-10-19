@@ -61,9 +61,35 @@ async function newChatIn(cwd) {  // a new chat inside a given project folder (si
 async function newChat() { closeSide(); polling++; busy = false; await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
 async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
-  const ms = state.config?.models || [];
-  $("pbody").innerHTML = ms.map(m => `<button onclick="setModel('${esc(m.name)}')"><span>${m.name === state.config.model ? "●" : "○"}</span>${esc(m.name)}<span class="d">${esc(m.id)}</span></button>`).join("") || `<p style="padding:12px;color:var(--dim)">${esc(t("No models — add one in your account or with /models."))}</p>`;
+  const ms = state.config?.models || [], cur = state.config?.model;
+  if (!ms.length) { $("pbody").innerHTML = `<p style="padding:12px;color:var(--dim)">${esc(t("No models — add one in your account or with /models."))}</p>`; return $("popup").classList.remove("hidden"); }
+  $("pbody").innerHTML = `<input class="psearch" id="msearch" placeholder="${esc(t("search models…"))}" autocomplete="off" spellcheck="false"><div id="mlist"></div>`
+    + `<p class="phint">${esc(t("This chat keeps the model you pick; new chats start with it."))}</p>`;
+  const prov = new Set(ms.map(m => m.provider || "")).size > 1;
+  let hit = [], sel = 0;
+  const draw = () => {
+    const q = $("msearch").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    hit = ms.filter(m => q.every(w => `${m.name} ${m.id} ${m.provider || ""}`.toLowerCase().includes(w)));
+    sel = Math.max(0, Math.min(sel, hit.length - 1));
+    let last = null;
+    $("mlist").innerHTML = hit.map((m, i) => {
+      const g = prov && m.provider !== last ? `<div class="pgroup">${esc(m.provider || "")}</div>` : ""; last = m.provider;
+      const tags = [m.effort, m.context ? human(m.context) : "", m.vision ? "img" : ""].filter(Boolean).map(x => `<i>${esc(x)}</i>`).join("");
+      return g + `<button data-i="${i}" class="${m.name === cur ? "on" : ""}${i === sel ? " sel" : ""}"><span>${m.name === cur ? "●" : "○"}</span>`
+        + `<span class="mn"><b>${esc(m.name)}</b>${m.id !== m.name ? `<small>${esc(m.id)}</small>` : ""}</span><span class="tags">${tags}</span></button>`;
+    }).join("") || `<p style="padding:12px;color:var(--dim)">${esc(t("nothing found"))}</p>`;
+  };
+  $("mlist").onclick = e => { const b = e.target.closest("button[data-i]"); if (b) setModel(hit[+b.dataset.i].name); };
+  $("msearch").oninput = () => { sel = 0; draw(); };
+  $("msearch").onkeydown = e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + hit.length) % Math.max(1, hit.length); draw(); $("mlist").querySelector(".sel")?.scrollIntoView({block: "nearest"}); }
+    if (e.key === "Enter" && hit[sel]) setModel(hit[sel].name);
+  };
+  sel = Math.max(0, ms.findIndex(m => m.name === cur));
+  draw();
   $("popup").classList.remove("hidden");
+  $("mlist").querySelector(".on")?.scrollIntoView({block: "center"});
+  if (!TOUCH) $("msearch").focus();
 }
 function pickAgent() {
   $("pbody").innerHTML = (state.agents || []).map(a => `<button onclick="setAgent('${esc(a.name)}')"><span>${a.name === state.agent ? "●" : "○"}</span><b>${esc(a.label)}</b><span class="d">${esc(a.description)}</span></button>`).join("")
@@ -71,11 +97,15 @@ function pickAgent() {
   $("popup").classList.remove("hidden");
 }
 async function setAgent(n) { $("popup").classList.add("hidden"); state.agent = n; renderStatus(); await A.setAgent(n); }
-async function setModel(n) { $("popup").classList.add("hidden"); await A.setModel(n); state.config.model = n; renderStatus(); }
+async function setModel(n) {  // switch at once; roll back if the server says no
+  $("popup").classList.add("hidden"); const old = state.config.model; if (n === old) return;
+  state.config.model = n; renderStatus();
+  try { await A.setModel(n); } catch (e) { state.config.model = old; renderStatus(); el(`<div class="info err">${esc(t("could not switch the model: {m}", {m: e.message}))}</div>`); }
+}
 const inp = $("input");
 function grow() { inp.style.height = "auto"; inp.style.height = Math.min(220, inp.scrollHeight) + "px"; setBusy(); }
 inp.addEventListener("input", grow);
-inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === "Escape" && busy) api(base + "/cancel", {}); });
+inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); } if (e.key === "Escape" && busy) api(base + "/cancel", {}); });
 // voice: hold the mic button (or hold space in an empty input)
 let rec = null, chunks = [];
 async function recStart() {
@@ -109,4 +139,11 @@ $("wsPill").onclick = async () => {
   if (!p) return;
   try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };
+if (EMBED) window.addEventListener("message", e => {  // the IDE puts a selection / file reference into the input, or sends a prompt
+  if (e.source !== window.parent || !e.data) return;
+  if (e.data.type === "new") return newChat();
+  if (typeof e.data.text !== "string") return;
+  if (e.data.type === "insert") { inp.value += (inp.value && !/\s$/.test(inp.value) ? "\n" : "") + e.data.text; grow(); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  if (e.data.type === "send" && !busy) { inp.value = e.data.text; send(); }
+});
 A.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));

@@ -1,5 +1,5 @@
 """Run: python3 tests/test_core.py   (no deps; spins up the mock LLM)"""
-import json, os, re, subprocess, sys, tempfile, threading, time
+import contextlib, io, json, os, re, subprocess, sys, tempfile, threading, time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -713,6 +713,26 @@ def test_todo_marks_by_number_and_reminds():
     ag.session["messages"].append({"role": "user", "content": "x"})
     ok, out, _ = ag._todo({"done": "x"})
     assert not ok and "numbers" in out
+    ag._todo({"items": ["read", "fix", "test", "docs"]})  # resent without marks: progress stays, a new step is added
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo", "todo"], ag.session["todo"]
+    ok, out, _ = ag._todo({"items": ["read", "fix", "test", "docs"], "done": [2], "doing": 3})  # marks on top of the list
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "done", "doing", "todo"] and "2/4" in out, ag.session["todo"]
+    ag._todo({"items": ["[ ] read", "x fix"]})  # explicit marks still win
+    assert [i["s"] for i in ag.session["todo"]] == ["todo", "done"]
+    # shapes real models send
+    ag._todo({"items": [{"text": "a", "status": "completed"}, {"text": "b", "status": "in_progress"}, {"x": "c"}, "d — готово", {"items": ["e"]}]})
+    assert [(i["t"], i["s"]) for i in ag.session["todo"]] == [("a", "done"), ("b", "doing"), ("c", "done"), ("d", "done"), ("e", "todo")]
+    ag._todo({"done": [0, 1], "doing": 4})  # counted from 0
+    assert [i["s"] for i in ag.session["todo"]][:2] == ["done", "done"] and ag.session["todo"][4]["s"] == "doing", ag.session["todo"]
+    ok, out, _ = ag._todo({"items": [{"x": "", "": ""}]})
+    assert not ok and "no steps" in out and len(ag.session["todo"]) == 5
+    ag._todo({"items": ["write", "test", "docs"]})  # what DeepSeek does: only moves "doing" forward
+    ag._todo({"doing": 1})
+    ok, out, _ = ag._todo({"doing": 2})
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo"] and "now: test" in out, (ag.session["todo"], out)
+    assert ag.tools.preview("todo", {"done": [1, 2], "doing": 3}) == "done 1, 2 · doing 3"
+    ag._todo({"items": ["a", "b"], "doing": 0})  # Gemini: 0-based, first step started
+    assert [i["s"] for i in ag.session["todo"]] == ["doing", "todo"] and ag.tools.preview("todo", {"items": ["a", "b"], "done": [0]}) == "1/2 done"
 
 
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):
@@ -808,9 +828,11 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
     assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
     for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png", "npx vite build",
-                "godot --headless --path . --quit-after 300"):
+                "godot --headless --path . --quit-after 300", "cd /tmp/chk && node check.mjs main.js"):
         ag.run("tool:bash " + json.dumps({"cmd": cmd}))
         assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
+    assert not me.CHECK_RX.search("node server.js") and not me.CHECK_RX.search("node scripts/checkout.js")
+    assert not ag._no_checks("which python3 chromium google-chrome; command -v playwright") and ag._no_checks("which node; npx playwright test")
     ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
     assert "fine" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
     ok, out, _ = ag._cli({"cmd": "npx vite build", "params": {}}, {}, lambda e: None)  # an agent's own CLI tools obey it too
@@ -822,6 +844,10 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     cfg = {"settings": {}}
     me.apply_setting(cfg, "behavior:commit", True)
     assert cfg["settings"]["behavior"] == {"commit": True}
+    st["behavior"] = {"subagents": False, "memory": False, "minimal_diff": True}
+    names = [t["name"] for t in ag.tool_schemas()]
+    assert "task" not in names and "memory" not in names and "Change only what the task needs" in ag.system_prompt()
+    st.pop("behavior")
 
 
 def test_retry_and_export(tmp=Path(tempfile.mkdtemp())):
@@ -864,6 +890,65 @@ def test_chat_diff(tmp=Path(tempfile.mkdtemp())):
     ag.run("tool:write " + json.dumps({"path": str(f), "content": "three\n"}))
     (path, d), = ag.chat_diff()
     assert "-one" in d and "+three" in d and "two" not in d  # the whole chat: first snapshot against now
+
+
+def test_mentions(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    (tmp / "src").mkdir()
+    (tmp / "src" / "a.py").write_text("".join(f"line{i}\n" for i in range(1, 301)))
+    ag = me.Agent(s, lambda e: None)
+    ag.session["cwd"] = str(tmp)
+    names, body = ag.mentions("look at @src/a.py:10-12 and @nothing.py, mail me@x.org, then @src/a.py")
+    assert names == ["src/a.py:10-12", "src/a.py"] and "10\tline10" in body and "12\tline12" in body and "13\tline13" in body
+    (tmp / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0")
+    assert ag.mentions("no refs here, @types/node, @pic.png") is None
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.session["cwd"] = str(tmp)
+    ag.run("what is in @src/a.py:5")
+    assert any(e["type"] == "notice" and "src/a.py:5-104" in e["text"] for e in ev)
+    assert "5\tline5" in json.dumps(mock_llm.LAST, ensure_ascii=False).encode().decode("unicode_escape") and [r for _, r in ag.requests()] == ["what is in @src/a.py:5"]
+
+
+def test_act_nudge():
+    s = make()
+    ag, ev = run(s, "talk: create lru.py with an LRU cache class")
+    assert sum(m.get("content") == me.ACT_NUDGE for m in ag.session["messages"]) == 1
+    ag, ev = run(s, "talk: explain how an LRU cache works")
+    assert not any(m.get("content") == me.ACT_NUDGE for m in ag.session["messages"])
+    assert me.should_have_acted("Создай файл game.js с игрой", "```js\na\nb\nc\n```") and not me.should_have_acted("create game.js", "no code")
+
+
+def test_output_loop_stopped():
+    s = make()
+    ag, ev = run(s, "loop: go")
+    assert ag.session["messages"][-1]["content"] == "Intro. The b method is called when b is created.", ag.session["messages"][-1]
+    assert any(e["type"] == "notice" and "repeating" in e["text"] for e in ev)
+
+
+def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        ag, ev = run(s, "remember kiwi")
+        assert s.latest(tmp) == ag.session["id"] and s.latest(tmp / "elsewhere") is None
+        s.config["models"].append({"name": "deep", "id": "deepseek-x", "provider": "mock", "api": "chat"})
+        assert me.pick_model(s, "m") == "m" and me.pick_model(s, "SEEK") == "deep" and me.pick_model(s, "-") is None  # ambiguous
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            me.run_headless(s, "and now?", True, s.latest(tmp))  # me -p -c: the follow-up lands in the same chat
+        assert out.getvalue().strip() == "Hello world!\n\n```py\nprint(1)\n```" or "· " not in out.getvalue(), out.getvalue()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            me.run_headless(s, "tool:bash " + json.dumps({"cmd": "echo hi"}), True)
+        assert "· bash" in err.getvalue() and "· bash" not in out.getvalue() and out.getvalue().strip(), (out.getvalue(), err.getvalue())
+        d = json.loads(s.session_path(ag.session["id"]).read_text())
+        assert [m["content"] for m in d["messages"] if m["role"] == "user"][:2] == ["remember kiwi", "and now?"]
+        assert me.parse_flags(["-y", "-m", "deep", "-p", "fix", "it"]) == (["-p", "fix", "it"], False, True, "deep")
+        assert me.parse_flags(["-c", "task"]) == (["task"], True, False, None)
+    finally:
+        os.chdir(cwd)
 
 
 def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):

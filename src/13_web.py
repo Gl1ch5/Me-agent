@@ -138,6 +138,8 @@ class WebSession:
             p = os.path.realpath(os.path.join(root, body.get("path") or ""))
             if p != root and not p.startswith(root.rstrip(os.sep) + os.sep):
                 raise ValueError("outside the project")
+            if path == "/files" and body.get("all"):  # @ completion in the composer
+                return {"paths": [relp(f, root).replace("\\", "/") for f in walk_files(root, 5000)]}
             if path == "/files":
                 items = []
                 for e in sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name.lower())):

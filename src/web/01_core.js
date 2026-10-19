@@ -1,6 +1,9 @@
 const MODE = "__MODE__";
 const $ = id => document.getElementById(id);
 const side = $("side");
+const TOUCH = matchMedia("(pointer: coarse)").matches;  // phones: Enter makes a new line; a narrow IDE panel still sends on Enter
+const EMBED = new URLSearchParams(location.search).get("embed") || "";  // "vscode": inside the IDE side bar
+if (EMBED) document.documentElement.classList.add("embed");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const human = n => !n ? "0" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
 const money = x => !x ? "$0" : x < 0.01 ? "$" + x.toFixed(4) : x < 1 ? "$" + x.toFixed(3) : "$" + x.toFixed(2);
@@ -23,4 +26,8 @@ function copyCode(b) {
   copyText(b.closest("pre").querySelector("code").innerText).then(ok => { b.textContent = ok ? "✓" : "✗"; setTimeout(() => b.textContent = t("copy"), 1200); });
 }
 var atts = [];  // pending attachments: {name, image, url | b64}
-let token = localStorage.getItem("me_token") || "", base = "", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;
+const store = {  // localStorage throws in some embeds (an IDE webview's iframe, blocked third-party storage): never let that stop the UI
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} },
+};
+let token = store.get("me_token") || "", base = "", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;

@@ -11,7 +11,7 @@ async function api(path, body, method) {
 const A = {
   async boot() {
     if (MODE === "local") {
-      const k = new URLSearchParams(location.search).get("k"); if (k) { token = k; localStorage.setItem("me_token", k); }
+      const k = new URLSearchParams(location.search).get("k"); if (k) { token = k; store.set("me_token", k); }
       base = "/api/agent"; return api(base + "/state");
     }
     if (!token) { location.href = "/account#cloud"; return; }
@@ -67,6 +67,10 @@ const A = {
   prompt: (text, images) => api(base + "/prompt", {text, images: images || []}),
   goal: (text) => api(base + "/goal", {text}),
   undo: () => api(base + "/undo", {}),
+  async listFiles() {  // every project file, for @ completion
+    if (MODE === "local") return (await api(base + "/files", {all: true})).paths;
+    return state.ws ? Object.keys((await api(`/api/ws/${state.ws}/manifest`)).files || {}) : [];
+  },
   async upload(name, b64) {  // non-image attachments go into the project so the agent can read them
     if (MODE === "local") return (await api(base + "/upload", {name, b64})).path;
     const path = "uploads/" + name.replace(/[^\w.-]+/g, "_").slice(0, 80);

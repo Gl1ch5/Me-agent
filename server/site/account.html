@@ -374,6 +374,12 @@ const RU_D = {
   "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»", "very short replies": "очень короткие ответы",
   "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи", "never pushes without asking": "без вашего разрешения не пушит",
   "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
+  "change only what the task needs": "меняет только то, что нужно для задачи",
+  "ask before adding dependencies": "спрашивает перед добавлением зависимостей",
+  "ask when the request is unclear": "переспрашивает, если запрос неясен",
+  "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач",
+  "global memory across chats": "глобальная память между чатами",
+  "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
   "another model already has this name": "модель с таким именем уже есть",
   "system prompt": "системный промпт", "Appended to me's tiny base prompt on every machine.": "Добавляется к короткому базовому промпту me на каждой машине.",
   "e.g. Answer in Russian. Prefer uv over pip.": "напр. Отвечай по-русски. Предпочитай uv вместо pip.",
@@ -638,7 +644,10 @@ const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "
   ["stay_in_project", true, "stay in the project folder unless asked", "does not wander through other folders; anywhere you ask is still fine"],
   ["plan_first", false, "show a plan and wait for a go before big changes", ""], ["brief", false, "very short replies", ""],
   ["explain", false, "explain the why (learning mode)", ""], ["commit", false, "git commit each finished task", "never pushes without asking"],
-  ["agents_md", true, "offer to create AGENTS.md in new projects", ""]];
+  ["agents_md", true, "offer to create AGENTS.md in new projects", ""],
+  ["minimal_diff", false, "change only what the task needs", "no refactors or cleanups of code you did not ask about"],
+  ["no_new_deps", false, "ask before adding dependencies", ""], ["ask_unclear", false, "ask when the request is unclear", ""],
+  ["subagents", true, "use subagents for big separate jobs", ""], ["memory", true, "global memory across chats", ""]];
 function behaviorOn(k, d) { const b = cfg.settings.behavior || {}; return k in b ? !!b[k] : (k === "tests" && cfg.settings.no_verify ? false : d); }
 function renderBehavior() {
   $("behavior").innerHTML = BEHAVIOR.map(([k, d, l, h]) => `<label style="display:flex;gap:10px;align-items:flex-start;color:var(--fg);margin:8px 0">

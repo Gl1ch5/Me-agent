@@ -21,8 +21,11 @@ class ToolBox:
             return a.get("url", "")
         if name == "task":
             return f"{a.get('agent') or 'code'}: {a.get('prompt', '')[:80]}"
+        if name == "todo" and not a.get("items"):  # marking steps by number
+            return " · ".join(f"{k} {a[k]}".replace("[", "").replace("]", "") for k in ("done", "doing") if a.get(k) not in (None, [], ""))
         if name == "todo":
-            return f"{sum(1 for i in a.get('items') or [] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a.get('items') or [])} done"
+            done = a.get("done") if isinstance(a.get("done"), list) else []
+            return f"{len(done) or sum(1 for i in a['items'] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a['items'])} done"
         if name == "mcp":
             return a.get("server", "") + (f" · {a['tool']}" if a.get("tool") else "")
         if name == "notify":

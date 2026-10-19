@@ -1,4 +1,4 @@
-// me for VS Code: runs `me web` (the local agent) in the workspace folder and shows its UI in an editor panel.
+// me for VS Code: runs `me web` (the local agent) in the workspace folder and shows its UI in the side bar (or an editor tab).
 // The agent works on the real files of the open folder; edits show up in the editor, /undo reverts them.
 const vscode = require("vscode");
 const cp = require("child_process");
@@ -106,23 +106,90 @@ function stop() {
 
 function setStatus(text) { if (status) { status.text = text; status.show(); } }
 
-async function open(ctx) {
-  try { await start(ctx); } catch (e) { return vscode.window.showErrorMessage("me: " + e.message); }
-  if (panel) { panel.reveal(vscode.ViewColumn.Beside, true); return panel; }
-  panel = vscode.window.createWebviewPanel("me", "me", {viewColumn: vscode.ViewColumn.Beside, preserveFocus: false},
-    {enableScripts: true, retainContextWhenHidden: true});
-  const uri = await vscode.env.asExternalUri(vscode.Uri.parse(`http://localhost:${port}/`));
-  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${uri.scheme}://${uri.authority}; style-src 'unsafe-inline';">
+// the chat page: an iframe of the local web UI. The extension talks to it through postMessage (insert text, send, new chat).
+async function chatHtml(webview) {
+  const uri = await vscode.env.asExternalUri(vscode.Uri.parse(`http://localhost:${port}/?embed=vscode`));
+  const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${uri.scheme}://${uri.authority}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>html,body,iframe{margin:0;padding:0;border:0;width:100%;height:100%;overflow:hidden;background:#0b0c10}</style></head>
-<body><iframe src="${uri.toString(true)}" allow="clipboard-read; clipboard-write; microphone"></iframe></body></html>`;
-  panel.onDidDispose(() => panel = null);
+<body><iframe id="f" src="${uri.toString(true)}" allow="clipboard-read; clipboard-write; microphone"></iframe>
+<script nonce="${nonce}">
+const f = document.getElementById("f"), host = acquireVsCodeApi(); let ready = false; const q = [];
+f.addEventListener("load", () => { ready = true; setTimeout(() => q.splice(0).forEach(m => f.contentWindow.postMessage(m, "*")), 600); });
+window.addEventListener("message", e => { if (e.source === f.contentWindow) { if (e.data && e.data.meOut) host.postMessage(e.data.meOut); return; }
+  if (!e.data || !e.data.me) return; ready ? f.contentWindow.postMessage(e.data.me, "*") : q.push(e.data.me); });
+</script></body></html>`;
+}
+
+const views = new Set();  // live chat webviews (the side bar view and/or an editor tab)
+
+function post(msg) { for (const w of views) w.postMessage({me: msg}); return views.size > 0; }
+
+async function attach(ctx, webview, onGone) {
+  webview.options = {enableScripts: true};
+  webview.html = `<body style="font:13px sans-serif;color:#9aa;padding:14px">starting the me agent…</body>`;
+  try { await start(ctx); } catch (e) { webview.html = `<body style="font:13px sans-serif;color:#f88;padding:14px">me: ${String(e.message).replace(/</g, "&lt;")}</body>`; return; }
+  webview.html = await chatHtml(webview);
+  webview.onDidReceiveMessage(m => m && m.type === "open" && openFile(m.path, m.line, m.diff));
+  views.add(webview);
+  onGone(() => views.delete(webview));
+}
+
+class ChatView {
+  constructor(ctx) { this.ctx = ctx; }
+  resolveWebviewView(view) { this.view = view; attach(this.ctx, view.webview, f => view.onDidDispose(f)); }
+}
+
+async function focusChat() {
+  if (panel) { panel.reveal(undefined, true); return; }
+  await vscode.commands.executeCommand("me.chat.focus");
+}
+
+async function openPanel(ctx) {  // the chat as an editor tab beside the code
+  if (panel) { panel.reveal(vscode.ViewColumn.Beside, true); return panel; }
+  panel = vscode.window.createWebviewPanel("me", "me", {viewColumn: vscode.ViewColumn.Beside, preserveFocus: false}, {enableScripts: true, retainContextWhenHidden: true});
+  panel.iconPath = vscode.Uri.joinPath(ctx.extensionUri, "media", "me.svg");
+  await attach(ctx, panel.webview, f => panel.onDidDispose(() => { f(); panel = null; }));
   return panel;
 }
 
+async function insert(ctx, text) {  // into the chat input: the user finishes the question there
+  await focusChat();
+  for (let i = 0; i < 40 && !views.size; i++) await new Promise(r => setTimeout(r, 250));
+  post({type: "insert", text});
+}
+
 async function ask(ctx, text) {
-  await open(ctx);
-  try { await call("/prompt", {text}); } catch (e) { vscode.window.showWarningMessage("me: " + (String(e.message).includes("still working") ? "the agent is busy — try again when it finishes" : e.message)); }
+  await focusChat();
+  for (let i = 0; i < 40 && !views.size; i++) await new Promise(r => setTimeout(r, 250));
+  if (post({type: "send", text})) return;
+  try { await start(ctx); await call("/prompt", {text}); } catch (e) { vscode.window.showWarningMessage("me: " + (String(e.message).includes("still working") ? "the agent is busy — try again when it finishes" : e.message)); }
+}
+
+async function openFile(p, line, diff) {  // a path the agent read or changed, clicked in the chat
+  const root = (vscode.workspace.workspaceFolders || [])[0];
+  const uri = path.isAbsolute(p) || !root ? vscode.Uri.file(p) : vscode.Uri.joinPath(root.uri, p);
+  if (diff && changed(uri)) {  // a changed file: its git diff
+    try { await vscode.commands.executeCommand("git.openChange", uri); return; } catch (e) { /* fall back to the file */ }
+  }
+  try {
+    const ed = await vscode.window.showTextDocument(uri, {viewColumn: vscode.ViewColumn.One, preview: true});
+    if (line > 0) { const pos = new vscode.Position(line - 1, 0); ed.selection = new vscode.Selection(pos, pos); ed.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter); }
+  } catch (e) { vscode.window.showWarningMessage("me: cannot open " + p); }
+}
+
+function changed(uri) {  // does git see changes in this file? (false without the git extension or outside a repo)
+  try {
+    const git = vscode.extensions.getExtension("vscode.git")?.exports?.getAPI(1), repo = git && git.getRepository(uri);
+    const st = repo && repo.state;
+    return !!st && [...st.workingTreeChanges, ...st.indexChanges].some(c => c.uri.fsPath === uri.fsPath);
+  } catch (e) { return false; }
+}
+
+function ref(uri, sel) {
+  const rel = vscode.workspace.asRelativePath(uri);
+  return sel && !sel.isEmpty ? `@${rel}:${sel.start.line + 1}-${sel.end.line + (sel.end.character ? 1 : 0)}` : `@${rel}`;
 }
 
 function activate(ctx) {
@@ -130,16 +197,24 @@ function activate(ctx) {
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "me.open"; status.tooltip = "Open the me agent"; setStatus("$(comment-discussion) me");
   ctx.subscriptions.push(out, status,
-    vscode.commands.registerCommand("me.open", () => open(ctx)),
-    vscode.commands.registerCommand("me.restart", async () => { stop(); if (panel) panel.dispose(); await open(ctx); }),
+    vscode.window.registerWebviewViewProvider("me.chat", new ChatView(ctx), {webviewOptions: {retainContextWhenHidden: true}}),
+    vscode.commands.registerCommand("me.open", () => focusChat()),
+    vscode.commands.registerCommand("me.openPanel", () => openPanel(ctx)),
+    vscode.commands.registerCommand("me.newChat", async () => { await focusChat(); post({type: "new"}); }),
+    vscode.commands.registerCommand("me.restart", async () => {
+      stop(); folder = "";
+      try { await start(ctx); } catch (e) { return vscode.window.showErrorMessage("me: " + e.message); }
+      for (const w of views) w.html = await chatHtml(w);
+    }),
     vscode.commands.registerCommand("me.askSelection", async () => {
       const ed = vscode.window.activeTextEditor; if (!ed) return;
       const sel = ed.document.getText(ed.selection);
-      const rel = vscode.workspace.asRelativePath(ed.document.uri);
-      const q = await vscode.window.showInputBox({prompt: "Ask me about the selection", placeHolder: "explain / refactor / find the bug…"});
-      if (q === undefined) return;
-      const a = ed.selection.start.line + 1, b = ed.selection.end.line + 1;
-      await ask(ctx, `${q || "Explain this code."}\n\n${rel}:${a}-${b}\n\`\`\`${ed.document.languageId}\n${sel}\n\`\`\``);
+      const r = ref(ed.document.uri, ed.selection);
+      await insert(ctx, sel && sel.length < 4000 ? `${r}\n\`\`\`${ed.document.languageId}\n${sel}\n\`\`\`\n` : r + " ");
+    }),
+    vscode.commands.registerCommand("me.addFile", async (uri, uris) => {
+      const list = (uris && uris.length ? uris : [uri || vscode.window.activeTextEditor?.document.uri]).filter(Boolean);
+      if (list.length) await insert(ctx, list.map(u => ref(u)).join(" ") + " ");
     }),
     vscode.commands.registerCommand("me.fixFile", async () => {
       const ed = vscode.window.activeTextEditor; if (!ed) return;
