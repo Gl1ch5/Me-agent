@@ -58,7 +58,11 @@ async function addFiles(list) {
   renderAtts(); setBusy();
 }
 $("file").addEventListener("change", e => { addFiles([...e.target.files]); e.target.value = ""; });
-$("input").addEventListener("paste", e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
+$("input").addEventListener("paste", e => {  // screenshots come as clipboard items in some browsers, not as files
+  const cd = e.clipboardData; let fs = [...(cd?.files || [])];
+  if (!fs.length) fs = [...(cd?.items || [])].filter(i => i.kind === "file").map(i => i.getAsFile()).filter(Boolean);
+  if (fs.length) { e.preventDefault(); addFiles(fs); }
+});
 document.addEventListener("dragover", e => e.preventDefault());
 document.addEventListener("drop", e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles([...e.dataTransfer.files]); } });
 // ─── PWA + push ("done", "waiting for you") ───

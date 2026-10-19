@@ -173,6 +173,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         stats.append(f"{f['path']} +{add} −{rem}")
                     self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6} more" if len(stats) > 6 else "") + "   /undo reverts",
                              color="dim")
+            elif t == "notice":
+                self.add("info", text="! " + e["text"], color="warn")
             elif t == "undone":
                 self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":
@@ -210,14 +212,18 @@ class TUI(TUIRender, TUIInput, TUICommands):
             self.redraw()
         return m["value"]
 
-    def pick(self, title, items, hint="", current=None):
-        """items: list of (value, label, detail). Returns value or None."""
+    def pick(self, title, items, hint="", current=None, keep=None):
+        """items: list of (value, label, detail). Returns value or None. `keep` (a dict) carries the typed filter from one
+        call to the next, for pickers reopened in a loop."""
         items = [i if isinstance(i, tuple) else (i, str(i), "") for i in items]
-        sel = 0
-        for i, it in enumerate(items):
-            if current is not None and it[0] == current:
-                sel = i
-        return self._modal({"kind": "pick", "title": title, "items": items, "sel": sel, "filter": "", "hint": hint})
+        flt = (keep or {}).get("filter", "")
+        shown = [it for it in items if fuzzy(flt.lower(), it[1] + " " + it[2]) is not None] if flt else items
+        sel = next((i for i, it in enumerate(shown) if current is not None and it[0] == current), 0)
+        m = {"kind": "pick", "title": title, "items": items, "sel": sel, "filter": flt, "hint": hint}
+        v = self._modal(m)
+        if keep is not None:
+            keep["filter"] = m["filter"]
+        return v
 
     def prompt(self, title, default="", secret=False, multiline=False, hint=""):
         return self._modal({"kind": "input", "title": title, "text": str(default or ""), "cur": len(str(default or "")), "secret": secret,

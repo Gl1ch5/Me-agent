@@ -78,7 +78,7 @@ class TUICommands:
                 return
         st["autocompact"] = 0 if arg == "off" else max(10, min(95, int(str(arg).rstrip("%"))))
         self.s.save()
-        m = self.s.model()
+        m = self.agent.model()
         lim = self.agent.compact_threshold(m) if m else 0
         self.toast(f"auto-compact {'off' if not lim else f'at {human(lim)} tokens'}", "ok")
 
@@ -229,7 +229,7 @@ class TUICommands:
     def cmd_cost(self, arg):
         st = self.s.config["settings"]
         u = self.agent.session.get("usage", {})
-        m = self.s.model() or {}
+        m = self.agent.model() or {}
         pin, pout, pc = model_price(m)
         if arg:
             k, _, v = arg.partition(" ")
@@ -290,14 +290,13 @@ class TUICommands:
             name = arg
         else:
             name = self.pick("Model", [(m["name"], m["name"], f"{m['id']} · {m.get('provider')} · {human(m.get('context') or 0)} ctx"
-                                        + (f" · {m['effort']}" if m.get("effort") else "")) for m in ms], current=self.s.config.get("model"))
+                                        + (f" · {m['effort']}" if m.get("effort") else "")) for m in ms], current=self.agent.model_name())
         if name:
-            self.s.config["model"] = name
-            self.s.save()
-            self.toast(f"model → {name}", "ok")
+            self.agent.set_model(name)
+            self.toast(f"model → {name} (this chat; new chats start with it too)", "ok")
 
     def cmd_effort(self, arg):
-        m = self.s.model()
+        m = self.agent.model()
         if not m:
             return self.toast("no model", "warn")
         e = arg if arg in EFFORTS else self.pick("Reasoning effort", [(e, e, "") for e in EFFORTS], current=m.get("effort") or "none")
@@ -356,11 +355,12 @@ class TUICommands:
         if not remote:
             return self.info("provider returned no models", "warn")
         have = {(m.get("provider"), m["id"]) for m in self.s.config["models"]}
-        added = 0
+        added, keep = 0, {}  # keep: the filter and the picked row survive each toggle, so several models can be added from one search
         while True:
             items = [("*", "✓ done", f"{added} added")] + [(r["id"], ("✓ " if (pname, r["id"]) in have else "  ") + r["id"],
                                                              human(r["context"]) + " ctx" if r.get("context") else "") for r in remote]
-            v = self.pick(f"Add models from {pname} ({len(remote)})", items, hint="enter toggles · type to filter")
+            v = self.pick(f"Add models from {pname} ({len(remote)})", items, hint="enter toggles · type to filter", current=keep.get("v"), keep=keep)
+            keep["v"] = v
             if v in (None, "*"):
                 break
             if (pname, v) in have:
@@ -386,7 +386,7 @@ class TUICommands:
             ms = self.s.config["models"]
             items = [(i, m["name"], f"{m['id']} · {m.get('provider')} · {human(m.get('context') or 0)}") for i, m in enumerate(ms)]
             items += [("sync", "↻ sync from provider", ""), ("add", "+ add model manually", "")]
-            v = self.pick("Models", items, current=next((i for i, m in enumerate(ms) if m["name"] == self.s.config.get("model")), None))
+            v = self.pick("Models", items, current=next((i for i, m in enumerate(ms) if m["name"] == self.agent.model_name()), None))
             if v is None:
                 return
             if v == "sync":
@@ -424,8 +424,7 @@ class TUICommands:
             if f is None:
                 break
             if f == "use":
-                self.s.config["model"] = m["name"]
-                self.s.save()
+                self.agent.set_model(m["name"])
                 self.toast(f"model → {m['name']}", "ok")
                 break
             if f == "del":
@@ -467,6 +466,8 @@ class TUICommands:
                     continue
             if f == "name" and self.s.config.get("model") == m["name"]:
                 self.s.config["model"] = v
+            if f == "name" and self.agent.session.get("model") == m["name"]:
+                self.agent.session["model"] = v
             m[f] = v
             self.s.save()
 

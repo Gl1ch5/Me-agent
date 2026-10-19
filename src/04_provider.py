@@ -5,6 +5,12 @@ class Cancelled(Exception):
     pass
 
 
+def no_images(messages, note="[image: this model cannot see images]"):
+    """Messages with every image part replaced by a text note (copies; the originals stay)."""
+    return [dict(m, content=[x if x.get("type") != "image_url" else {"type": "text", "text": note} for x in m["content"]])
+            if isinstance(m.get("content"), list) else m for m in messages]
+
+
 class ProviderError(RuntimeError):
     """An API failure. `retryable`: worth another try (rate limit, overload, 5xx, dropped stream). `overflow`: the prompt
     no longer fits the model's context."""
@@ -19,6 +25,7 @@ RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524,
 RETRY_RX = re.compile(r"overload|rate.?limit|try again|temporar|capacity|unavailable|timeout|timed out", re.I)
 OVERFLOW_RX = re.compile(r"context.{0,24}(length|window|limit|size)|maximum context|too many (input )?tokens|prompt is too long|"
                          r"reduce the length|input is too long|exceeds? the (model|context|maximum)|context_length_exceeded", re.I)
+IMAGE_RX = re.compile(r"image|vision|multi.?modal|image_url|content.{0,20}(type|part)", re.I)
 RETRIES, RETRY_BASE = 4, 2.0  # waits 2, 4, 8, 16 s (or what the server's Retry-After asks, up to a minute)
 NET_ERRORS = (urllib.error.URLError, ConnectionError, TimeoutError, OSError, http.client.HTTPException)
 
@@ -167,10 +174,16 @@ class Provider:
             if cancel.wait(delay):
                 raise Cancelled()
 
+    def blind(self):
+        """vision off in /models: a model without vision rejects the whole request over one image."""
+        return str(self.m.get("vision", True)).lower() == "false"
+
     def wire(self, messages):
         """Session messages → request messages: internal keys dropped; reasoning replayed only to the model that wrote it,
         and only for the current turn (after the last real user message) — what DeepSeek, Kimi and Qwen expect."""
         mid = self.m.get("id")
+        if self.blind():
+            messages = no_images(messages)
         last = max((i for i, m in enumerate(messages) if m.get("role") == "user" and not m.get("_aux")), default=-1)
         out = []
         for i, m in enumerate(messages):
@@ -258,7 +271,7 @@ class Provider:
     def _responses(self, system, messages, tools, emit, cancel, cache_key=None):
         mid = self.m.get("id")
         items = []
-        for m in messages:
+        for m in no_images(messages) if self.blind() else messages:
             if m["role"] == "tool":
                 items.append({"type": "function_call_output", "call_id": m["tool_call_id"], "output": m["content"]})
             elif m["role"] == "assistant":

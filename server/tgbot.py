@@ -529,7 +529,9 @@ class Bot:
             cfg["model"] = val
             put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
             try:
-                self.runner.get(uid, st.get("worker", "")).send({"type": "sync"})
+                w = self.runner.get(uid, st.get("worker", ""))
+                w.send({"type": "sync"})
+                w.send({"type": "model", "name": val})  # the chat running now switches too; other chats keep theirs
             except KeyError:
                 pass
             self.send(chat, f"model → {val}")

@@ -400,7 +400,7 @@ class TUIInput:
         with self.lock:
             self.attached.append(path)
             self.insert(f"[image #{len(self.attached)}] ")
-        m = self.s.model() or {}
+        m = self.agent.model() or {}
         self.toast(f"image attached: {os.path.basename(path)}" + ("" if m.get("vision", True) else " — this model has vision off (/models)"),
                    "ok" if m.get("vision", True) else "warn")
 
@@ -438,7 +438,7 @@ class TUIInput:
         self.attached = []
         self.add("user", text=shown or text)
         self.ensure_ws()
-        if not self.s.model():
+        if not self.agent.model():
             self.info("no model yet — let's set one up", "warn")
             self.bg(self.setup_provider)
             return

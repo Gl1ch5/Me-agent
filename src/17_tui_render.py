@@ -262,7 +262,7 @@ class TUIRender:
     def status_line(self, W):
         if W < 90:
             return self.status_compact(W)
-        m = self.s.model()
+        m = self.agent.model()
         dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
         L = Line().add(" ")
         if m:
@@ -317,7 +317,7 @@ class TUIRender:
 
     def status_compact(self, W):
         """Narrow terminals (Termux on a phone): model · ctx% · cost · cloud, nothing that wraps."""
-        m = self.s.model()
+        m = self.agent.model()
         dim, faint = rgb(TH["dim"]), rgb(TH["faint"])
         L = Line().add(" ")
         if m:

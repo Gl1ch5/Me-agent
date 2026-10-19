@@ -87,6 +87,11 @@ class H(BaseHTTPRequestHandler):
         HISTORY.append(req)
         if self._special(req):
             return
+        if req.get("model") == "blind-1" and "image_url" in json.dumps(req.get("messages")):  # a text-only model
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'{"error":{"message":"No endpoints found that support image input"}}')
+            return
         first = (req.get("messages") or [{}])[-1].get("content") if "messages" in req else ""
         first = first if isinstance(first, str) else ""
         if first.startswith("flaky"):  # rate-limited once, then fine

@@ -41,10 +41,11 @@ class Store:
 
     # models
     def model(self, name=None):
-        name = name or self.config.get("model")
-        for m in self.config["models"]:
-            if m["name"] == name:
-                return m
+        """By name; an unknown name (a model deleted since) falls back to the default model, then to the first one."""
+        for n in (name, self.config.get("model")):
+            for m in self.config["models"]:
+                if n and m["name"] == n:
+                    return m
         return self.config["models"][0] if self.config["models"] else None
 
     def provider(self, m):

@@ -11,8 +11,8 @@ def run_headless(store, prompt, yolo):
             sys.stderr.write(f"\n· {e['name']} {e['label'][:100]}\n")
         elif t == "tool_end" and not e["ok"]:
             sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
-        elif t == "error":
-            sys.stderr.write(f"\nerror: {e['text']}\n")
+        elif t in ("error", "notice"):
+            sys.stderr.write(f"\n{t}: {e['text']}\n")
         elif t == "retry":
             sys.stderr.write(f"\n↻ {e['error'][:160]} — retrying in {e['delay']:.0f}s\n")
         elif t == "turn_end":
@@ -100,6 +100,9 @@ def run_rpc(store):
                 emit({"type": "error", "text": r["text"]})
         elif t == "cancel":
             ag.cancel.set()
+        elif t == "model" and cmd.get("name"):
+            store.config = jload(store.cfg_path) or store.config
+            ag.set_model(cmd["name"])
         elif t in ("confirm", "answer") and cmd.get("id") in waits:
             waits[cmd["id"]][1] = cmd.get("ok") if t == "confirm" else cmd.get("text")
             waits[cmd["id"]][0].set()

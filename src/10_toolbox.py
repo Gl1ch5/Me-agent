@@ -72,7 +72,7 @@ class ToolBox:
             content = str(a["content"])
             write_text_file(p, content, fmt)  # an existing file keeps its line ends and encoding
             emit({"t": "diff", "text": self._diff(old or "", content.replace("\r\n", "\n"), p.name)})
-            return True, f"{'overwrote' if old is not None else 'created'} {a['path']} ({len(content.splitlines())} lines)", None
+            return True, f"{'overwrote' if old is not None else 'created'} {a['path']} ({len(content.splitlines())} lines)" + syntax_note(p, content), None
         if name == "edit":
             p = at(a["path"])
             if not p.is_file():
@@ -83,7 +83,7 @@ class ToolBox:
                 return False, msg, None
             write_text_file(p, new, fmt)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
-            return True, f"edited {a['path']} ({msg})", None
+            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new), None
         if name == "bash":
             env, pref = shell_env(self.s.config.get("secrets")), self.s.config["settings"].get("shell")
             if a.get("background") in (True, "true", 1):
@@ -351,6 +351,23 @@ def _edit_keys(e):
             if k not in e and x in e:
                 e[k] = e.pop(x)
     return e
+
+
+def syntax_note(path, text):
+    """Python/JSON broken by a write or edit: say so in the same result, so the model fixes it now instead of at the test run."""
+    ext = Path(path).suffix.lower()
+    try:
+        if ext == ".py":
+            compile(text, str(path), "exec", dont_inherit=True)
+        elif ext == ".json":
+            json.loads(text)
+    except SyntaxError as e:
+        return f"\nwarning: the file no longer parses — line {e.lineno}: {e.msg}. Fix it now."
+    except ValueError as e:
+        return f"\nwarning: invalid JSON now — {e}. Fix it now."
+    except Exception:
+        pass
+    return ""
 
 
 def apply_edits(text, a):

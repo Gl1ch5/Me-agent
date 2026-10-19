@@ -12,18 +12,18 @@ Object.assign(RU, {
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const note = (txt, cls = "") => el(`<div class="info ${cls}">${esc(txt)}</div>`);
 const say = txt => el(`<div class="msg md">${md(txt)}</div>`);
-function applySetting(cfg, key, v) {  // mirror of apply_setting() in the agent, for the cloud config doc
+function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));
-  else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === cfg.model); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
+  else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === (model || cfg.model)); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
   else if (key.startsWith("skill:")) { const d = new Set(cfg.settings.disabled_skills || []); v ? d.delete(key.slice(6)) : d.add(key.slice(6)); cfg.settings.disabled_skills = [...d].sort(); }
   else throw new Error("unknown setting " + key);
 }
 async function cfgSet(key, value) {
   if (MODE === "local") { const s = await api(base + "/config", {key, value}); state.config = s.config; return; }
   const d = await api("/api/doc?key=config"), cfg = JSON.parse(d.content);
-  applySetting(cfg, key, value);
+  applySetting(cfg, key, value, state.config?.model);
   await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); await api(base + "/sync", {}).catch(() => {});
   state.config = (await A.state(state.worker)).config;
 }
