@@ -731,6 +731,8 @@ def test_todo_marks_by_number_and_reminds():
     ok, out, _ = ag._todo({"doing": 2})
     assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo"] and "now: test" in out, (ag.session["todo"], out)
     assert ag.tools.preview("todo", {"done": [1, 2], "doing": 3}) == "done 1, 2 · doing 3"
+    ag._todo({"items": ["a", "b"], "doing": 0})  # Gemini: 0-based, first step started
+    assert [i["s"] for i in ag.session["todo"]] == ["doing", "todo"] and ag.tools.preview("todo", {"items": ["a", "b"], "done": [0]}) == "1/2 done"
 
 
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):

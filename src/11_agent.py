@@ -739,7 +739,7 @@ class Agent:
             items = [dict(i) for i in self.session.get("todo") or []]
             if not items:
                 return False, "error: no checklist yet — set it with items=[…]", None
-        if a.get("done") or a.get("doing"):  # mark steps by number (also on top of a resent list)
+        if a.get("done") or a.get("doing") or a.get("doing") == 0:  # mark steps by number (also on top of a resent list)
             try:
                 done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])} if a.get("done") else set()
                 doing = int(a.get("doing") or 0)
