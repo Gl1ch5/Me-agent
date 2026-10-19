@@ -300,10 +300,13 @@ class Agent:
         for mt in self.MENTION_RX.finditer(text or ""):
             p = self.abspath(mt.group(1))
             try:
-                if len(names) >= 8 or not os.path.isfile(p) or os.path.getsize(p) > 2_000_000:
+                if len(names) >= 8 or not os.path.isfile(p) or os.path.getsize(p) > 2_000_000 or Path(p).suffix.lower() in IMAGE_EXT:
                     continue
                 with open(p, "rb") as f:
-                    lines = decode_text(f.read())[0].splitlines()
+                    data = f.read()
+                if b"\0" in data[:4096]:
+                    continue
+                lines = decode_text(data)[0].splitlines()
             except (OSError, ValueError):
                 continue
             a = int(mt.group(2) or 1)
@@ -342,7 +345,7 @@ class Agent:
         att = self.mentions(text)
         if att:
             self.session["messages"].append({"role": "user", "_aux": True, "content": att[1]})
-            self.emit({"type": "notice", "text": "attached " + ", ".join(att[0])})
+            self.emit({"type": "notice", "level": "info", "text": "attached " + ", ".join(att[0])})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
         self._trim_history(start_idx)

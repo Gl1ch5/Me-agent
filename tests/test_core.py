@@ -875,7 +875,8 @@ def test_mentions(tmp=Path(tempfile.mkdtemp())):
     ag.session["cwd"] = str(tmp)
     names, body = ag.mentions("look at @src/a.py:10-12 and @nothing.py, mail me@x.org, then @src/a.py")
     assert names == ["src/a.py:10-12", "src/a.py"] and "10\tline10" in body and "12\tline12" in body and "13\tline13" in body
-    assert ag.mentions("no refs here, @types/node") is None
+    (tmp / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0")
+    assert ag.mentions("no refs here, @types/node, @pic.png") is None
     ev = []
     ag = me.Agent(s, ev.append)
     ag.session["cwd"] = str(tmp)

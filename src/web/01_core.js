@@ -26,4 +26,8 @@ function copyCode(b) {
   copyText(b.closest("pre").querySelector("code").innerText).then(ok => { b.textContent = ok ? "✓" : "✗"; setTimeout(() => b.textContent = t("copy"), 1200); });
 }
 var atts = [];  // pending attachments: {name, image, url | b64}
-let token = localStorage.getItem("me_token") || "", base = "", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;
+const store = {  // localStorage throws in some embeds (an IDE webview's iframe, blocked third-party storage): never let that stop the UI
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} },
+};
+let token = store.get("me_token") || "", base = "", after = 0, state = {}, busy = false, live = {}, cur = {}, polling = 0, turnT0 = 0;

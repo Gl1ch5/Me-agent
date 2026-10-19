@@ -121,7 +121,7 @@ const CMDS = {
   theme: ["color theme", "[name]", a => { const x = themeList.find(th => th.name === a); x ? setTheme(x.name) : pickTheme(); }],
   sync: ["sync now", "", () => MODE === "cloud" ? api(base + "/sync", {}).then(() => note(t("saved"), "ok")) : note("local", "warn")],
   login: ["log in / register", "", () => MODE === "cloud" ? note(state.user || "") : note("/login — " + t("do this in the terminal"), "warn")],
-  logout: ["log out", "", () => MODE === "cloud" ? (localStorage.removeItem("me_token"), location.href = "/account") : note("/logout — " + t("do this in the terminal"), "warn")],
+  logout: ["log out", "", () => MODE === "cloud" ? (store.set("me_token", null), location.href = "/account") : note("/logout — " + t("do this in the terminal"), "warn")],
   "2fa": ["authenticator (TOTP)", "", () => site("security", "2fa")],
   config: ["settings", "", () => site("overview", "config")],
   update: ["update me", "", () => MODE === "cloud" ? note("cloud: always current", "ok") : note("/update — " + t("do this in the terminal"), "warn")],
@@ -144,20 +144,37 @@ async function runSlash(text) {
 // ─── "/" menu above the input ───
 const slashEl = document.createElement("div"); slashEl.id = "slash"; slashEl.className = "slash hidden"; $("input").parentNode.insertBefore(slashEl, $("input"));
 let slashSel = 0, slashRows = [];
+let atFiles = null, atT = 0, slashAt = null;  // slashAt: the "@query" being completed, else null (slash commands)
+function atQuery() { const m = inp.value.slice(0, inp.selectionStart).match(/(?:^|\s)@([^\s@]*)$/); return m ? m[1] : null; }
 function slashUpdate() {
-  const v = inp.value, m = v.match(/^\/([a-z0-9]*)$/i);
-  if (!m) { slashEl.classList.add("hidden"); slashRows = []; return; }
-  slashRows = Object.keys(CMDS).filter(k => k !== "quit" && k !== "clear" && k.startsWith(m[1].toLowerCase()));
+  const v = inp.value, m = v.match(/^\/([a-z0-9]*)$/i), q = m ? null : atQuery();
+  slashAt = q;
+  if (q !== null) {
+    if (!atFiles || Date.now() - atT > 15000) { atT = Date.now(); A.listFiles().then(f => { atFiles = f || []; if (atQuery() !== null) slashUpdate(); }).catch(() => { atFiles = atFiles || []; }); }
+    const lq = q.toLowerCase(), base = p => p.slice(p.lastIndexOf("/") + 1).toLowerCase();
+    slashRows = (atFiles || []).filter(p => p.toLowerCase().includes(lq))
+      .sort((a, b) => (base(b).startsWith(lq) - base(a).startsWith(lq)) || a.length - b.length).slice(0, 40);
+  } else if (m) slashRows = Object.keys(CMDS).filter(k => k !== "quit" && k !== "clear" && k.startsWith(m[1].toLowerCase()));
+  else { slashEl.classList.add("hidden"); slashRows = []; return; }
   slashSel = Math.min(slashSel, Math.max(0, slashRows.length - 1));
   slashEl.classList.toggle("hidden", !slashRows.length);
-  slashEl.innerHTML = slashRows.map((k, i) => `<button type="button" class="${i === slashSel ? "on" : ""}" data-k="${k}"><b>/${k}</b><span class="a">${esc(CMDS[k][1])}</span><span class="d">${esc(t(CMDS[k][0]))}</span></button>`).join("");
+  slashEl.innerHTML = slashRows.map((k, i) => q !== null
+    ? `<button type="button" class="${i === slashSel ? "on" : ""}" data-k="${esc(k)}"><b>@${esc(k.slice(k.lastIndexOf("/") + 1))}</b><span class="d">${esc(k)}</span></button>`
+    : `<button type="button" class="${i === slashSel ? "on" : ""}" data-k="${k}"><b>/${k}</b><span class="a">${esc(CMDS[k][1])}</span><span class="d">${esc(t(CMDS[k][0]))}</span></button>`).join("");
   slashEl.querySelectorAll("button").forEach(b => b.onmousedown = e => { e.preventDefault(); slashPick(b.dataset.k); });
 }
-function slashPick(k) { inp.value = "/" + k + (CMDS[k][1] ? " " : ""); grow(); slashEl.classList.add("hidden"); inp.focus(); if (!CMDS[k][1]) send(); }
+function slashPick(k) {
+  if (slashAt !== null) {  // replace "@query" before the cursor with "@path "
+    const c = inp.selectionStart, start = c - slashAt.length - 1, ins = "@" + k + " ";
+    inp.value = inp.value.slice(0, start) + ins + inp.value.slice(c); inp.setSelectionRange(start + ins.length, start + ins.length);
+    grow(); slashEl.classList.add("hidden"); slashRows = []; return inp.focus();
+  }
+  inp.value = "/" + k + (CMDS[k][1] ? " " : ""); grow(); slashEl.classList.add("hidden"); inp.focus(); if (!CMDS[k][1]) send();
+}
 inp.addEventListener("input", () => { slashSel = 0; slashUpdate(); });
 inp.addEventListener("keydown", e => {
   if (slashEl.classList.contains("hidden") || !slashRows.length) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); slashSel = (slashSel + (e.key === "ArrowDown" ? 1 : -1) + slashRows.length) % slashRows.length; slashUpdate(); }
-  else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && inp.value.trim() !== "/" + slashRows[slashSel] && !CMDS[inp.value.slice(1).toLowerCase()])) { e.preventDefault(); e.stopImmediatePropagation(); slashPick(slashRows[slashSel]); }
+  else if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && (slashAt !== null || (inp.value.trim() !== "/" + slashRows[slashSel] && !CMDS[inp.value.slice(1).toLowerCase()])))) { e.preventDefault(); e.stopImmediatePropagation(); slashPick(slashRows[slashSel]); }
   else if (e.key === "Escape") { slashEl.classList.add("hidden"); slashRows = []; e.stopImmediatePropagation(); }
 }, true);

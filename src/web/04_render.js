@@ -107,7 +107,7 @@ function onEvent(e) {
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
   if (t === "goal") { goalEvent(e); return; }
-  if (t === "notice") { el(`<div class="info warn">${esc(e.text)}</div>`); return; }
+  if (t === "notice") { el(`<div class="info${e.level === "info" ? "" : " warn"}">${esc(e.text)}</div>`); return; }
   if (t === "verify") { el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
   if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
