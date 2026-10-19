@@ -800,13 +800,18 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     assert "verify it (tests" in base and "Work inside cwd" in base
     st["behavior"] = {"tests": False, "todo": False, "web": False, "brief": True, "stay_in_project": False}
     p = ag.system_prompt()
-    assert "verify it (tests" not in p and "Do NOT run tests" in p and "Be terse" in p and "3+ steps" not in p and "Work inside cwd" not in p
+    assert "verify it (tests" not in p and "Self-testing is OFF" in p and "Be terse" in p and "3+ steps" not in p and "Work inside cwd" not in p
     names = {t["name"] for t in ag.tool_schemas()}
     assert not names & {"todo", "web_search", "web_fetch"} and "bash" in names
     ev = []
     ag = me.Agent(s, ev.append)
     ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
     assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
+    for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png"):
+        ag.run("tool:bash " + json.dumps({"cmd": cmd}))
+        assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
+    ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
+    assert "fine" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
     st.pop("behavior")
     st["no_verify"] = True  # the old setting still means tests off
     assert me.behavior(st)["tests"] is False

@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -2812,8 +2812,9 @@ Reply: in the user's language, concise. After changes: what changed, how you ver
 # key: (default, label, prompt line when on, prompt line when off)
 BEHAVIOR = {
     "tests": (True, "verify changes itself (tests, build, run)", "",
-              "Do NOT run tests, builds, linters or the app to verify your changes: the user tests. Finish with the exact commands or "
-              "steps for the user to check, and say what is untested."),
+              "Self-testing is OFF: the user tests everything. Never run tests, builds, linters, type checks, the app, servers, browsers "
+              "or screenshots to check your work, never install tools for checking (puppeteer, playwright…), and put no checking step "
+              "in your plan. When done, list the exact commands or steps for the user to check."),
     "todo": (True, "keep a todo checklist on multi-step tasks", "", ""),
     "web": (True, "search the web for current facts and docs", "", ""),
     "stay_in_project": (True, "stay in the project folder unless asked",
@@ -2831,6 +2832,13 @@ BEHAVIOR = {
                "Never push unless asked.", ""),
     "agents_md": (True, "offer to create AGENTS.md in new projects", "", ""),
 }
+
+
+# what "checking your work" looks like on the command line: blocked outright when self-testing is off
+CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
+                      r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
+                      r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|check|typecheck)|go\s+(?:test|vet|build)|cargo\s+(?:test|build|check|clippy)|"
+                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile)\b", re.I)
 
 
 def behavior(settings):
@@ -3325,6 +3333,9 @@ class Agent:
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
+        if name == "bash" and not behavior(self.s.config["settings"])["tests"] and CHECK_RX.search(str(args.get("cmd", ""))):
+            return False, ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
+                           "finish the work and tell the user which commands to run to check it."), None
         if name == "todo":
             return self._todo(args)
         if name == "memory":
