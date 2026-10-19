@@ -109,6 +109,22 @@ def cached(key, sig, fn):
     return val
 
 
+_LOGGED = set()
+
+
+def log_error(where):
+    """Append the current exception's traceback to ~/.me/error.log (each distinct one once per run)."""
+    tb = traceback.format_exc()
+    if tb in _LOGGED:
+        return
+    _LOGGED.add(tb)
+    try:
+        with open(HOME / "error.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%F %T')} me {VERSION} [{where}]\n{tb}\n")
+    except OSError:
+        pass
+
+
 # ───────────────────────────── store ─────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -3934,7 +3950,7 @@ BAR = " ▏▎▍▌▋▊▉█"
 
 def cw(ch):
     if ch < " ":
-        return 0
+        return 1 if ch == "\t" else 0  # a tab is drawn as one space
     if unicodedata.combining(ch):
         return 0
     return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
@@ -4005,6 +4021,10 @@ class Line:
                 break
             buf, inv = [], False
             for c in t:
+                if c < " ":  # control characters would move the real cursor: a tab is a space, the rest are dropped
+                    if c != "\t":
+                        continue
+                    c = " "
                 cwid = cw(c)
                 if w + cwid > width:
                     break
@@ -4081,6 +4101,19 @@ def wrap_segs(segs, width, indent=0, first_prefix=None, prefix=None, keep=0):
             cw_ += swidth(tok)
     lines.append(cur)
     return lines
+
+
+_CTRL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean_text(s):
+    """Typed or pasted text made safe to keep, save and print: surrogate halves joined (the Windows console splits emoji),
+    lone halves dropped (they made writing the screen or the history file raise), control characters removed (an ESC in a
+    paste would drive the terminal). Newlines and tabs stay."""
+    if not s:
+        return s
+    s = s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "ignore")
+    return _CTRL.sub("", s.replace("\r\n", "\n").replace("\r", "\n"))
 
 
 def selection_text(lines, a, b):
@@ -4213,7 +4246,8 @@ def win_paste_burst(keys):
     """Pasting into a console arrives as typed keys, one Enter per line. An Enter followed by more input in the same burst
     (no human types that fast) is a paste: fold the burst into one paste so it is not sent line by line."""
     first = next((i for i, k in enumerate(keys) if k == "enter"), -1)
-    if first < 0 or first == len(keys) - 1 or not any(isinstance(k, tuple) and k[0] == "char" for k in keys):
+    many = len(keys) > 64  # nobody types 64 characters between two reads
+    if (first < 0 or first == len(keys) - 1) and not many or not any(isinstance(k, tuple) and k[0] == "char" for k in keys):
         return keys
     simple = {"enter": "\n", "newline": "\n", "tab": "\t"}
     if not all((isinstance(k, tuple) and k[0] in ("char", "paste")) or k in simple for k in keys):
@@ -4287,9 +4321,12 @@ class Term:
 
     def stop(self):
         self.write(self._mouse_seq(False) + f"{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
+        # throw away keys still waiting (the rest of a big paste): after we exit they would be typed into the shell — cmd.exe
+        # would run every pasted line as a command
         if WIN:
             import ctypes
             k = ctypes.windll.kernel32
+            k.FlushConsoleInputBuffer(k.GetStdHandle(-10))
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
             if getattr(self, "old_out", None) is not None:
@@ -4297,11 +4334,18 @@ class Term:
                 k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
+            termios.tcflush(self.fd, termios.TCIFLUSH)
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 
     def write(self, s):
-        sys.stdout.write(s)
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(s)
+            sys.stdout.flush()
+        except UnicodeEncodeError:  # a stray surrogate must never take the app down
+            sys.stdout.write(s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace"))
+            sys.stdout.flush()
+        except OSError:
+            pass
 
     def _win_api(self):
         if hasattr(self, "_wapi"):
@@ -4347,9 +4391,9 @@ class Term:
                     e = r.u.mouse
                     out.append(["m", e.x, e.y, e.buttons, e.state, e.flags])
                     mouse = True
-            if out and out[-1][0] == "k" and out[-1][3] == 0x0D and len(out) < 20000:
+            if out and out[-1][0] == "k" and out[-1][3] == 0x0D and len(out) < 200000:
                 k.WaitForSingleObject(h, 15)  # an Enter at the end may be a pasted line break: is more coming right away?
-            if not k.GetNumberOfConsoleInputEvents(h, c.byref(pend)) or not pend.value or len(out) >= 20000:
+            if not k.GetNumberOfConsoleInputEvents(h, c.byref(pend)) or not pend.value or len(out) >= 200000:
                 break
         if mouse:
             info, left, top = CSBI(), 0, 0
@@ -4372,12 +4416,25 @@ class Term:
         return parse_keys(c, final=True)[0]
 
     def _reader(self):
+        """Keys → self.q. One bad read must not leave the app deaf: errors are logged and reading goes on (a dead console
+        that fails every time ends it)."""
+        fails = 0
+
+        def failed():
+            nonlocal fails
+            fails += 1
+            log_error("input")
+            time.sleep(0.05 * min(fails, 20))
+            return fails < 50
         if WIN:
             classic = os.environ.get("ME_WIN_INPUT") == "classic"
             while True:
                 try:
                     keys = self._read_win_classic() if classic else self._read_win()
+                    fails = 0
                 except Exception:
+                    if failed():
+                        continue
                     return
                 for k in keys:
                     self.q.put(k)
@@ -4394,7 +4451,11 @@ class Term:
                 if buf and not buf.startswith("\x1b[200~") and not select.select([self.fd], [], [], 0.05)[0]:
                     more, buf = parse_keys(buf, final=True)
                     keys += more
+                fails = 0
             except Exception:
+                buf = ""
+                if failed():
+                    continue
                 return
             for k in win_paste_burst(keys):
                 self.q.put(k)
@@ -4947,9 +5008,11 @@ class TUIRender:
             return out
         if b.kind == "user":
             bar = rgb(TH["user"])
-            txt = b.text
+            paras = b.text.split("\n")
+            if len(paras) > 30:  # a long message (a big paste) shows its start; the model gets all of it
+                paras = paras[:20] + [f"… +{len(paras) - 20} more lines"]
             ls = []
-            for i, para in enumerate(txt.split("\n")):
+            for i, para in enumerate(paras):
                 ls.extend(wrap_segs([(para, fg)], W - 2, first_prefix=[("› " if i == 0 else "  ", bar)], prefix=[("  ", "")]))
             bg = rgb(TH["sel"], True)
             for l in ls:
@@ -5473,6 +5536,8 @@ def gutter(text, style):
 
 # ───── TUI: keyboard + suggestions (mixin) ─────
 
+PASTE_FOLD, PASTE_FOLD_LINES = 1500, 15  # pastes bigger than this show as one [paste #n · N lines] marker in the input
+
 
 class TUIInput:
     # ─── input handling ───
@@ -5493,7 +5558,15 @@ class TUIInput:
             return self.paste_clipboard()
         if k == "alt-c":
             return self.copy_text(next((b.text for b in reversed(self.blocks) if b.kind == "assistant"), ""), "last answer")
+        if isinstance(k, tuple) and k[0] in ("paste", "char"):
+            k = (k[0], clean_text(k[1]))
+            if not k[1] and k[0] == "char":
+                return
         if isinstance(k, tuple) and k[0] == "paste":
+            if len(k[1]) > PASTE_FOLD or k[1].count("\n") >= PASTE_FOLD_LINES:  # a big paste: one short marker in the input
+                self.pastes.append(k[1])
+                self.insert(f"[paste #{len(self.pastes)} · {k[1].count(chr(10)) + 1} lines]")
+                return self.update_sugg()
             imgs = image_paths(k[1])
             if imgs:  # a file dragged into the terminal: attach it instead of pasting its path
                 for p in imgs:
@@ -5823,16 +5896,22 @@ class TUIInput:
                 s = k[1] if m["multiline"] else k[1].replace("\n", " ")
                 m["text"], m["cur"] = t[:c] + s + t[c:], c + len(s)
 
+    def expand_pastes(self, text):
+        """[paste #n · N lines] markers → the pasted text."""
+        ps = getattr(self, "pastes", [])
+        return re.sub(r"\[paste #(\d+) · \d+ lines\]", lambda m: ps[int(m.group(1)) - 1] if 0 < int(m.group(1)) <= len(ps) else m.group(0), text)
+
     def submit(self):
-        text = self.input.strip()
-        self.input, self.cur, self.sugg, self.hpos = "", 0, [], None
+        shown = self.input.strip()
+        text = self.expand_pastes(shown)
+        self.input, self.cur, self.sugg, self.hpos, self.pastes = "", 0, [], None, []
         if not text:
             return
         if not self.hist or self.hist[-1] != text:
             self.hist.append(text)
-            try:
-                (self.s.home / "history").write_text("\0".join(self.hist[-500:]), "utf-8")
-            except OSError:
+            try:  # a huge paste is not worth keeping whole in the recall history
+                (self.s.home / "history").write_text("\0".join(h[:20000] for h in self.hist[-500:]), "utf-8")
+            except (OSError, UnicodeError):
                 pass
         self.scroll = 0
         if text.startswith("/"):
@@ -5841,9 +5920,9 @@ class TUIInput:
             return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
-            self.info(f"◌ queued ({len(self.pending)}): {text[:100]}", "dim")
+            self.info(f"◌ queued ({len(self.pending)}): {shown[:100]}", "dim")
             return
-        self.dispatch(text)
+        self.dispatch(text, shown)
 
     # ─── clipboard, images, mouse selection ───
     def copy_text(self, text, what="selection"):
@@ -5883,7 +5962,7 @@ class TUIInput:
             self.redraw()
         threading.Thread(target=run, daemon=True).start()
 
-    def dispatch(self, text):
+    def dispatch(self, text, shown=None):
         images = []
         for ref in re.findall(r"@(\S+)", text):
             p = Path(os.path.join(self.agent.cwd, os.path.expanduser(ref)))
@@ -5893,7 +5972,7 @@ class TUIInput:
             if f"[image #{i}]" in text and os.path.isfile(path):
                 images.append(read_any(path)[1])
         self.attached = []
-        self.add("user", text=text)
+        self.add("user", text=shown or text)
         self.ensure_ws()
         if not self.s.model():
             self.info("no model yet — let's set one up", "warn")
@@ -6844,6 +6923,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.notice = ("", 0)
         self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
         self.attached = []  # image files attached to the message being typed ([image #n] in the input)
+        self.pastes = []  # big pastes, shown as [paste #n · N lines] in the input and expanded when it is sent
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -7089,6 +7169,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
         except Exception:
             pass
 
+    def safe_key(self, k):
+        """A key that trips a bug is logged and shown, never fatal: a crash here used to drop the user into the shell with the
+        rest of a big paste still queued — and cmd.exe ran every pasted line as a command."""
+        try:
+            with self.lock:
+                self.handle_key(k)
+        except Exception as e:
+            log_error("key")
+            self.toast(f"✗ {type(e).__name__}: {e} (details: {HOME / 'error.log'})", "err")
+
     def take_pending(self):
         "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
         with self.lock:
@@ -7120,15 +7210,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.sync_ws()
                 try:
                     k = self.term.q.get(timeout=0.05)
-                    with self.lock:
-                        self.handle_key(k)
+                    self.safe_key(k)
                     while not self.term.q.empty():
-                        with self.lock:
-                            self.handle_key(self.term.q.get_nowait())
+                        self.safe_key(self.term.q.get_nowait())
                     self.dirty = True
                 except queue.Empty:
                     pass
-                self.drain_pending()
+                try:
+                    self.drain_pending()
+                except Exception:
+                    log_error("queue")
                 # window size is polled: resize / minimize+restore events are not delivered reliably (SIGWINCH does not exist on
                 # Windows, and Windows Terminal does not forward buffer-size records), so a stale size leaves a box wider than the window
                 sz = self.term.size()

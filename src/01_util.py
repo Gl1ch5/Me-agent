@@ -80,3 +80,19 @@ def cached(key, sig, fn):
     val = fn()
     _CACHE[key] = (sig, val)
     return val
+
+
+_LOGGED = set()
+
+
+def log_error(where):
+    """Append the current exception's traceback to ~/.me/error.log (each distinct one once per run)."""
+    tb = traceback.format_exc()
+    if tb in _LOGGED:
+        return
+    _LOGGED.add(tb)
+    try:
+        with open(HOME / "error.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%F %T')} me {VERSION} [{where}]\n{tb}\n")
+    except OSError:
+        pass

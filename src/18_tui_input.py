@@ -1,5 +1,7 @@
 # ───── TUI: keyboard + suggestions (mixin) ─────
 
+PASTE_FOLD, PASTE_FOLD_LINES = 1500, 15  # pastes bigger than this show as one [paste #n · N lines] marker in the input
+
 
 class TUIInput:
     # ─── input handling ───
@@ -20,7 +22,15 @@ class TUIInput:
             return self.paste_clipboard()
         if k == "alt-c":
             return self.copy_text(next((b.text for b in reversed(self.blocks) if b.kind == "assistant"), ""), "last answer")
+        if isinstance(k, tuple) and k[0] in ("paste", "char"):
+            k = (k[0], clean_text(k[1]))
+            if not k[1] and k[0] == "char":
+                return
         if isinstance(k, tuple) and k[0] == "paste":
+            if len(k[1]) > PASTE_FOLD or k[1].count("\n") >= PASTE_FOLD_LINES:  # a big paste: one short marker in the input
+                self.pastes.append(k[1])
+                self.insert(f"[paste #{len(self.pastes)} · {k[1].count(chr(10)) + 1} lines]")
+                return self.update_sugg()
             imgs = image_paths(k[1])
             if imgs:  # a file dragged into the terminal: attach it instead of pasting its path
                 for p in imgs:
@@ -350,16 +360,22 @@ class TUIInput:
                 s = k[1] if m["multiline"] else k[1].replace("\n", " ")
                 m["text"], m["cur"] = t[:c] + s + t[c:], c + len(s)
 
+    def expand_pastes(self, text):
+        """[paste #n · N lines] markers → the pasted text."""
+        ps = getattr(self, "pastes", [])
+        return re.sub(r"\[paste #(\d+) · \d+ lines\]", lambda m: ps[int(m.group(1)) - 1] if 0 < int(m.group(1)) <= len(ps) else m.group(0), text)
+
     def submit(self):
-        text = self.input.strip()
-        self.input, self.cur, self.sugg, self.hpos = "", 0, [], None
+        shown = self.input.strip()
+        text = self.expand_pastes(shown)
+        self.input, self.cur, self.sugg, self.hpos, self.pastes = "", 0, [], None, []
         if not text:
             return
         if not self.hist or self.hist[-1] != text:
             self.hist.append(text)
-            try:
-                (self.s.home / "history").write_text("\0".join(self.hist[-500:]), "utf-8")
-            except OSError:
+            try:  # a huge paste is not worth keeping whole in the recall history
+                (self.s.home / "history").write_text("\0".join(h[:20000] for h in self.hist[-500:]), "utf-8")
+            except (OSError, UnicodeError):
                 pass
         self.scroll = 0
         if text.startswith("/"):
@@ -368,9 +384,9 @@ class TUIInput:
             return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
-            self.info(f"◌ queued ({len(self.pending)}): {text[:100]}", "dim")
+            self.info(f"◌ queued ({len(self.pending)}): {shown[:100]}", "dim")
             return
-        self.dispatch(text)
+        self.dispatch(text, shown)
 
     # ─── clipboard, images, mouse selection ───
     def copy_text(self, text, what="selection"):
@@ -410,7 +426,7 @@ class TUIInput:
             self.redraw()
         threading.Thread(target=run, daemon=True).start()
 
-    def dispatch(self, text):
+    def dispatch(self, text, shown=None):
         images = []
         for ref in re.findall(r"@(\S+)", text):
             p = Path(os.path.join(self.agent.cwd, os.path.expanduser(ref)))
@@ -420,7 +436,7 @@ class TUIInput:
             if f"[image #{i}]" in text and os.path.isfile(path):
                 images.append(read_any(path)[1])
         self.attached = []
-        self.add("user", text=text)
+        self.add("user", text=shown or text)
         self.ensure_ws()
         if not self.s.model():
             self.info("no model yet — let's set one up", "warn")

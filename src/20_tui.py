@@ -33,6 +33,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.notice = ("", 0)
         self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
         self.attached = []  # image files attached to the message being typed ([image #n] in the input)
+        self.pastes = []  # big pastes, shown as [paste #n · N lines] in the input and expanded when it is sent
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -278,6 +279,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
         except Exception:
             pass
 
+    def safe_key(self, k):
+        """A key that trips a bug is logged and shown, never fatal: a crash here used to drop the user into the shell with the
+        rest of a big paste still queued — and cmd.exe ran every pasted line as a command."""
+        try:
+            with self.lock:
+                self.handle_key(k)
+        except Exception as e:
+            log_error("key")
+            self.toast(f"✗ {type(e).__name__}: {e} (details: {HOME / 'error.log'})", "err")
+
     def take_pending(self):
         "Called by the agent after each tool step: queued plain messages go into the running turn (commands and @images wait)."
         with self.lock:
@@ -309,15 +320,16 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.sync_ws()
                 try:
                     k = self.term.q.get(timeout=0.05)
-                    with self.lock:
-                        self.handle_key(k)
+                    self.safe_key(k)
                     while not self.term.q.empty():
-                        with self.lock:
-                            self.handle_key(self.term.q.get_nowait())
+                        self.safe_key(self.term.q.get_nowait())
                     self.dirty = True
                 except queue.Empty:
                     pass
-                self.drain_pending()
+                try:
+                    self.drain_pending()
+                except Exception:
+                    log_error("queue")
                 # window size is polled: resize / minimize+restore events are not delivered reliably (SIGWINCH does not exist on
                 # Windows, and Windows Terminal does not forward buffer-size records), so a stale size leaves a box wider than the window
                 sz = self.term.size()

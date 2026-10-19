@@ -162,6 +162,35 @@ def test_new_session_clears_screen():
     assert not any("old" in s for s in out[-1:]), "nothing of the old chat is painted"
 
 
+def test_big_paste_folds_and_never_crashes():
+    t, out = fake_tui()
+    sent = []
+    t.dispatch = lambda text, shown=None: sent.append((text, shown))
+    big = "\n".join(f"line {i} 😀" for i in range(400))
+    t.handle_key(("paste", "before " ))
+    t.handle_key(("paste", big))
+    assert t.input == "before [paste #1 · 400 lines]", t.input
+    t.draw()
+    t.handle_key("enter")
+    assert sent == [("before " + big, "before [paste #1 · 400 lines]")], sent[0][1]
+    # lone surrogate halves (the Windows console splits emoji) and control characters never reach the screen or the history
+    t.handle_key(("char", "\ud83d"))
+    t.handle_key(("paste", "a\x1b[31mb\x00c\tz"))
+    assert t.input == "a[31mbc\tz", repr(t.input)
+    t.draw()
+    t.handle_key("enter")
+    # a bug in a key handler is logged, not fatal
+    t.handle_key = lambda k: 1 / 0
+    t.safe_key("x")
+    assert "ZeroDivisionError" in t.notice[0]
+
+
+def test_long_single_line_burst_is_a_paste():
+    keys = [("char", "x")] * 100
+    assert me.win_paste_burst(keys) == [("paste", "x" * 100)]
+    assert me.win_paste_burst([("char", "x")] * 5) == [("char", "x")] * 5
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

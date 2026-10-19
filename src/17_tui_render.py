@@ -34,9 +34,11 @@ class TUIRender:
             return out
         if b.kind == "user":
             bar = rgb(TH["user"])
-            txt = b.text
+            paras = b.text.split("\n")
+            if len(paras) > 30:  # a long message (a big paste) shows its start; the model gets all of it
+                paras = paras[:20] + [f"… +{len(paras) - 20} more lines"]
             ls = []
-            for i, para in enumerate(txt.split("\n")):
+            for i, para in enumerate(paras):
                 ls.extend(wrap_segs([(para, fg)], W - 2, first_prefix=[("› " if i == 0 else "  ", bar)], prefix=[("  ", "")]))
             bg = rgb(TH["sel"], True)
             for l in ls:

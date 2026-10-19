@@ -29,7 +29,7 @@ BAR = " ▏▎▍▌▋▊▉█"
 
 def cw(ch):
     if ch < " ":
-        return 0
+        return 1 if ch == "\t" else 0  # a tab is drawn as one space
     if unicodedata.combining(ch):
         return 0
     return 2 if unicodedata.east_asian_width(ch) in "WF" else 1
@@ -100,6 +100,10 @@ class Line:
                 break
             buf, inv = [], False
             for c in t:
+                if c < " ":  # control characters would move the real cursor: a tab is a space, the rest are dropped
+                    if c != "\t":
+                        continue
+                    c = " "
                 cwid = cw(c)
                 if w + cwid > width:
                     break
@@ -176,6 +180,19 @@ def wrap_segs(segs, width, indent=0, first_prefix=None, prefix=None, keep=0):
             cw_ += swidth(tok)
     lines.append(cur)
     return lines
+
+
+_CTRL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean_text(s):
+    """Typed or pasted text made safe to keep, save and print: surrogate halves joined (the Windows console splits emoji),
+    lone halves dropped (they made writing the screen or the history file raise), control characters removed (an ESC in a
+    paste would drive the terminal). Newlines and tabs stay."""
+    if not s:
+        return s
+    s = s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "ignore")
+    return _CTRL.sub("", s.replace("\r\n", "\n").replace("\r", "\n"))
 
 
 def selection_text(lines, a, b):
@@ -308,7 +325,8 @@ def win_paste_burst(keys):
     """Pasting into a console arrives as typed keys, one Enter per line. An Enter followed by more input in the same burst
     (no human types that fast) is a paste: fold the burst into one paste so it is not sent line by line."""
     first = next((i for i, k in enumerate(keys) if k == "enter"), -1)
-    if first < 0 or first == len(keys) - 1 or not any(isinstance(k, tuple) and k[0] == "char" for k in keys):
+    many = len(keys) > 64  # nobody types 64 characters between two reads
+    if (first < 0 or first == len(keys) - 1) and not many or not any(isinstance(k, tuple) and k[0] == "char" for k in keys):
         return keys
     simple = {"enter": "\n", "newline": "\n", "tab": "\t"}
     if not all((isinstance(k, tuple) and k[0] in ("char", "paste")) or k in simple for k in keys):
@@ -382,9 +400,12 @@ class Term:
 
     def stop(self):
         self.write(self._mouse_seq(False) + f"{CSI}?2004l{CSI}?25h{CSI}?1007h{CSI}?1049l")
+        # throw away keys still waiting (the rest of a big paste): after we exit they would be typed into the shell — cmd.exe
+        # would run every pasted line as a command
         if WIN:
             import ctypes
             k = ctypes.windll.kernel32
+            k.FlushConsoleInputBuffer(k.GetStdHandle(-10))
             if self.old is not None:
                 k.SetConsoleMode(k.GetStdHandle(-10), self.old)
             if getattr(self, "old_out", None) is not None:
@@ -392,11 +413,18 @@ class Term:
                 k.SetConsoleOutputCP(self.old_cp)
         elif self.old:
             import termios
+            termios.tcflush(self.fd, termios.TCIFLUSH)
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 
     def write(self, s):
-        sys.stdout.write(s)
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(s)
+            sys.stdout.flush()
+        except UnicodeEncodeError:  # a stray surrogate must never take the app down
+            sys.stdout.write(s.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace"))
+            sys.stdout.flush()
+        except OSError:
+            pass
 
     def _win_api(self):
         if hasattr(self, "_wapi"):
@@ -442,9 +470,9 @@ class Term:
                     e = r.u.mouse
                     out.append(["m", e.x, e.y, e.buttons, e.state, e.flags])
                     mouse = True
-            if out and out[-1][0] == "k" and out[-1][3] == 0x0D and len(out) < 20000:
+            if out and out[-1][0] == "k" and out[-1][3] == 0x0D and len(out) < 200000:
                 k.WaitForSingleObject(h, 15)  # an Enter at the end may be a pasted line break: is more coming right away?
-            if not k.GetNumberOfConsoleInputEvents(h, c.byref(pend)) or not pend.value or len(out) >= 20000:
+            if not k.GetNumberOfConsoleInputEvents(h, c.byref(pend)) or not pend.value or len(out) >= 200000:
                 break
         if mouse:
             info, left, top = CSBI(), 0, 0
@@ -467,12 +495,25 @@ class Term:
         return parse_keys(c, final=True)[0]
 
     def _reader(self):
+        """Keys → self.q. One bad read must not leave the app deaf: errors are logged and reading goes on (a dead console
+        that fails every time ends it)."""
+        fails = 0
+
+        def failed():
+            nonlocal fails
+            fails += 1
+            log_error("input")
+            time.sleep(0.05 * min(fails, 20))
+            return fails < 50
         if WIN:
             classic = os.environ.get("ME_WIN_INPUT") == "classic"
             while True:
                 try:
                     keys = self._read_win_classic() if classic else self._read_win()
+                    fails = 0
                 except Exception:
+                    if failed():
+                        continue
                     return
                 for k in keys:
                     self.q.put(k)
@@ -489,7 +530,11 @@ class Term:
                 if buf and not buf.startswith("\x1b[200~") and not select.select([self.fd], [], [], 0.05)[0]:
                     more, buf = parse_keys(buf, final=True)
                     keys += more
+                fails = 0
             except Exception:
+                buf = ""
+                if failed():
+                    continue
                 return
             for k in win_paste_burst(keys):
                 self.q.put(k)
