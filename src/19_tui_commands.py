@@ -22,7 +22,7 @@ class TUICommands:
         if UI_LANG["v"] == "ru":
             txt = "## Команды\n" + "\n".join(f"- `/{c}` {T(d)}" for c, d in COMMANDS)
             txt += ("\n\n## Клавиши\n- `enter` отправить · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter новая строка\n- `esc` прервать · `ctrl+c` очистить/выход"
-                    "\n- `↑↓` история · `pgup/pgdn` / колесо — прокрутка · `ctrl+o` раскрыть последний инструмент (или клик)\n- `@путь` прикрепить файл (картинки уходят модели)"
+                    "\n- `↑↓` история · `pgup/pgdn` / колесо — прокрутка · `ctrl+o` раскрыть последний инструмент (или клик)\n- `@путь` прикрепить файл (картинки уходят модели) · `!команда` выполнить самому — агент увидит вывод"
                     "\n- `tab` принять подсказку · `ctrl+v` / `alt+v` вставить текст или картинку · перетащите картинку, чтобы прикрепить"
                     "\n- `alt+c` скопировать последний ответ · `/copy` ответ, блок кода или весь чат"
                     "\n\n## Мышь\n- выделите текст мышью — он скопируется, как только отпустите (двойной клик — слово, тройной — строка)"
@@ -32,7 +32,7 @@ class TUICommands:
             return self.add("assistant", text=txt).__setattr__("done", True)
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
-                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model)"
+                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model) · `!cmd` run a command yourself — the agent sees the output"
                 "\n- `tab` accept suggestion · `ctrl+v` / `alt+v` paste text or an image · drag an image file in to attach it"
                 "\n- `alt+c` copy the last answer · `/copy` answer, code block or the whole chat"
                 "\n\n## Mouse\n- drag to select text: it is copied when you let go (double click = word, triple = line)"
@@ -301,6 +301,64 @@ class TUICommands:
         self.agent.session["title"] = name.strip()[:80]
         self.s.save_session(self.agent.session)
         self.toast(f"chat renamed: {name.strip()[:80]}", "ok")
+
+    def cmd_rewind(self, arg):
+        """Pick an earlier request: the chat goes back to just before it, files the later turns changed are restored."""
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        reqs = self.agent.requests()
+        if not reqs:
+            return self.toast("nothing to rewind")
+        items = [(str(i), " ".join(t.split())[:90] or "…", f"#{n + 1}") for n, (i, t) in reversed(list(enumerate(reqs)))]
+        v = self.pick("Rewind — the chat goes back to before this request", items)
+        if v is None:
+            return
+        text, files = self.agent.rewind(int(v))
+        if text is None:
+            return self.toast(files, "warn")
+        self.render_history()
+        self.info(f"↶ rewound · restored {len(files)} file(s): {', '.join(files[:6])}" if files else "↶ rewound", "warn")
+        with self.lock:
+            self.input, self.cur = text, len(text)  # the request is back in the input: edit it and press enter, or clear it
+
+    def cmd_fork(self, arg):
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        old = self.agent.session.get("title") or "chat"
+        self.agent.fork()
+        self.toast(f"forked: {old[:50]} — the original chat stays in /sessions", "ok")
+
+    def cmd_btw(self, arg):
+        q = arg.strip() or self.prompt("Side question (does not go into the chat)")
+        if not q:
+            return
+        self.info("◌ /btw " + q[:100], "dim")
+        try:
+            a = self.agent.side_question(q)
+        except (ProviderError, OSError) as e:
+            return self.info(f"✗ {e}", "err")
+        self.add("assistant", text="> /btw " + q[:300] + "\n\n" + a).done = True
+
+    def cmd_search(self, arg):
+        q = arg.strip() or self.prompt("Search all chats")
+        if not q:
+            return
+        hits = self.s.search(q)
+        if not hits:
+            return self.toast(f"nothing found: {q}")
+        sid = self.pick(f"Found in {len(hits)} chat(s)", [(s["id"], s.get("title") or "(untitled)", snip) for s, snip in hits])
+        if sid:
+            self.resume(sid)
+
+    def run_shell_escape(self, cmd):
+        """`!cmd`: run a command yourself; the agent sees it and its output in the next request."""
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        self.add("user", text="!" + cmd)
+        ok, out = self.agent.shell(cmd)
+        self.add("assistant", text="```\n" + clip(out, 6000) + "\n```").done = True
+        if not ok:
+            self.info("✗ the command failed", "err")
 
     def cmd_context(self, arg):
         self.add("assistant", text=self.agent.context_report()).done = True
@@ -717,6 +775,11 @@ class TUICommands:
                 c = m.get("content")
                 if isinstance(c, list):
                     c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+                if m.get("_shell"):
+                    cmd, _, out = (c or "").partition("\n$ ")[2].partition("\n")
+                    self.add("user", text="!" + cmd)
+                    self.add("assistant", text="```\n" + out + "\n```").done = True
+                    continue
                 if m["role"] == "user" and m.get("_aux"):  # the agent's own nudges are not something the user typed
                     if isinstance(c, str) and c.startswith("[message from the user"):
                         self.add("user", text=c.split("\n", 1)[-1])
@@ -742,8 +805,12 @@ class TUICommands:
         sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
                                             time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {s.get('n', 0)} msgs · "
                                             + s.get("cwd", "")) for s in ss])
-        if not sid or self.agent.busy:
-            return
+        if sid:
+            self.resume(sid)
+
+    def resume(self, sid):
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
         self.agent.load(sid)
         self.render_history()
         wid = self.agent.session.get("ws")

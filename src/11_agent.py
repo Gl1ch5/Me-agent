@@ -54,11 +54,13 @@ BEHAVIOR = {
 }
 
 
+NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
+             "finish the work and tell the user which commands to run to check it.")
 # what "checking your work" looks like on the command line: blocked outright when self-testing is off
 CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
                       r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
                       r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|check|typecheck)|go\s+(?:test|vet|build)|cargo\s+(?:test|build|check|clippy)|"
-                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile)\b", re.I)
+                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
 
 
 def behavior(settings):
@@ -553,9 +555,8 @@ class Agent:
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
-        if name == "bash" and not behavior(self.s.config["settings"])["tests"] and CHECK_RX.search(str(args.get("cmd", ""))):
-            return False, ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
-                           "finish the work and tell the user which commands to run to check it."), None
+        if name == "bash" and self._no_checks(args.get("cmd")):
+            return False, NO_CHECKS, None
         if name == "todo":
             return self._todo(args)
         if name == "memory":
@@ -586,11 +587,16 @@ class Agent:
         except Exception as e:
             return False, f"error: {type(e).__name__}: {e}", None
 
+    def _no_checks(self, cmd):
+        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(str(cmd or "")))
+
     def _cli(self, spec, args, temit):
         """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""
         cmd, err = render_cli(spec, args)
         if err:
             return False, err, None
+        if self._no_checks(cmd):
+            return False, NO_CHECKS, None
         need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.cwd)
         if isinstance(need, str):
             return False, need, None
@@ -766,7 +772,7 @@ class Agent:
         if self.busy:
             return None, "busy"
         msgs = self.session["messages"]
-        i = max((i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("_aux")), default=-1)
+        i = max((i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("_aux") and not m.get("_shell")), default=-1)
         if i < 0:
             return None, "nothing to retry"
         c = msgs[i]["content"]
@@ -830,6 +836,80 @@ class Agent:
                     a = parse_args(tc["function"]["arguments"]) or {}
                     out.append(f"- `{tc['function']['name']}` {self.tools.preview(tc['function']['name'], a, self.cwd)}")
         return "\n".join(out) + "\n"
+
+    def requests(self):
+        """[(index, text)] of what the user asked in this chat, oldest first: the points /rewind can go back to."""
+        out = []
+        for i, m in enumerate(self.session["messages"]):
+            c = m.get("content")
+            c = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if x.get("type") == "text")
+            if m["role"] == "user" and not m.get("_aux") and not m.get("_shell") and not c.startswith("[Summary"):
+                out.append((i, c))
+        return out
+
+    def rewind(self, i):
+        """Go back to just before request #i: it and everything after leave the history, files those turns changed are restored."""
+        if self.busy:
+            return None, "busy"
+        msgs = self.session["messages"]
+        if not (0 <= i < len(msgs)) or msgs[i]["role"] != "user":
+            return None, "no such request"
+        cps, gen, files = Checkpoints(self.s, self.session["id"]), self.session.get("compactions", 0), []
+        while True:
+            last = (cps.load() or [None])[-1]
+            if not last or last.get("gen", 0) != gen or last.get("msgs", -1) < i:
+                break
+            restore_files(cps.pop()["files"])
+            files += [relp(p, self.cwd) for p in last["files"]]
+        c = msgs[i]["content"]
+        self.session["messages"] = msgs[:i]
+        self.s.save_session(self.session)
+        return (c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")), sorted(set(files))
+
+    def fork(self):
+        """Continue in a copy of this chat; the original stays as it is (try another approach without losing this one)."""
+        old = self.session
+        new = new_session(old.get("cwd"))
+        new.update(json.loads(json.dumps({k: old[k] for k in ("messages", "model", "todo", "roots", "ws", "compactions", "ctx") if k in old})))
+        new.update(title=((old.get("title") or "chat")[:70] + " · fork"), forked_from=old["id"])
+        cps = Checkpoints(self.s, old["id"]).load()
+        if cps:  # /undo and /rewind work in the copy too
+            jsave(Checkpoints(self.s, new["id"]).p, cps)
+        self.session, self.snap = new, {}
+        self.s.save_session(new)
+        return new
+
+    BTW_PROMPT = "Answer the user's side question about this coding session briefly and directly. You cannot run tools; answer from the transcript."
+
+    def side_question(self, q):
+        """/btw: a quick answer from the chat so far, without tools; neither the question nor the answer enters the history."""
+        m = self.model()
+        if not m:
+            return "no model — add one with /models"
+        lines = []
+        for x in self.session["messages"][-60:]:
+            c = x.get("content")
+            c = c if isinstance(c, str) else " ".join(y.get("text", "") for y in c or [] if y.get("type") == "text")
+            if c:
+                lines.append(f"[{'tool result' if x['role'] == 'tool' else x['role']}] {c[:1500 if x['role'] == 'tool' else 4000]}")
+            lines += [f"[tool call] {tc['function']['name']} {tc['function']['arguments'][:200]}" for tc in x.get("tool_calls") or []]
+        body = "Transcript:\n" + "\n".join(lines)[-60000:] + "\n\nSide question: " + q
+        msg, usage = Provider(m, self.s.provider(m)).stream(self.BTW_PROMPT, [{"role": "user", "content": body}], None, lambda e: None, self.cancel)
+        c = usage_cost(m, usage)
+        u = self.session["usage"]
+        u["cost"] = round(u.get("cost", 0) + c, 6)
+        if c and self.persist:
+            add_day_cost(self.s.home, c)
+        return (msg.get("content") or "").strip() or "(no answer)"
+
+    def shell(self, cmd):
+        """`!cmd` typed by the user: run it in the chat's folder and put command + output in the history, so the agent sees it."""
+        ok, out, _ = self.tools.run("bash", {"cmd": cmd}, lambda e: None, threading.Event(), cwd=self.cwd)
+        self.session["messages"].append({"role": "user", "_shell": True,
+                                         "content": f"[I ran a command myself]\n$ {cmd}\n{clip(out, 8000)}"})
+        if self.persist:
+            self.s.save_session(self.session)
+        return ok, out
 
     def _fix_dangling(self):
         """Every tool_call must have a tool result, or APIs reject the history."""

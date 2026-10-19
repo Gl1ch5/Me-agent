@@ -6,6 +6,8 @@ COMMANDS = [
     ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
     ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("context", "what fills the context window"), ("autocompact", "auto-compact at N% of context (off)"),
     ("goal", "work autonomously until done+verified or blocked"), ("undo", "revert the files of the last turn"), ("retry", "take back the last request and run it again"),
+    ("rewind", "go back to an earlier request (history + files)"), ("fork", "continue in a copy of this chat"),
+    ("btw", "quick side question, kept out of the history"), ("search", "find text in all chats"),
     ("export", "save this chat as Markdown"), ("diff", "what changed in this chat"), ("rename", "rename this chat"),
     ("lang", "interface language: en / ru"),
     ("perm", "permissions: read-only / ask / full + allow-list"), ("cost", "spending: turn, session, today, limits"), ("mcp", "MCP servers (lazy)"),

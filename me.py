@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -231,6 +231,26 @@ class Store:
         for k in set(cache) - seen:
             cache.pop(k, None)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
+
+    def search(self, q, limit=40):
+        """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""
+        words = [w for w in q.lower().split() if w]
+        out = []
+        for s in self.sessions():
+            d = jload(self.session_path(s["id"])) or {}
+            texts = [s.get("title") or ""]
+            for m in d.get("messages") or []:
+                c = m.get("content")
+                if m.get("role") in ("user", "assistant"):
+                    texts.append(c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict)))
+            low = "\n".join(texts).lower()
+            if words and all(w in low for w in words):
+                t = next((t for t in texts if words[0] in t.lower()), "")
+                i = t.lower().find(words[0])
+                out.append((s, " ".join(t[max(0, i - 40):i + 80].split())))
+                if len(out) >= limit:
+                    break
+        return out
 
     def save_session(self, s):
         s["updated"] = time.time()
@@ -2834,11 +2854,13 @@ BEHAVIOR = {
 }
 
 
+NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
+             "finish the work and tell the user which commands to run to check it.")
 # what "checking your work" looks like on the command line: blocked outright when self-testing is off
 CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
                       r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
                       r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|check|typecheck)|go\s+(?:test|vet|build)|cargo\s+(?:test|build|check|clippy)|"
-                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile)\b", re.I)
+                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
 
 
 def behavior(settings):
@@ -3333,9 +3355,8 @@ class Agent:
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
-        if name == "bash" and not behavior(self.s.config["settings"])["tests"] and CHECK_RX.search(str(args.get("cmd", ""))):
-            return False, ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
-                           "finish the work and tell the user which commands to run to check it."), None
+        if name == "bash" and self._no_checks(args.get("cmd")):
+            return False, NO_CHECKS, None
         if name == "todo":
             return self._todo(args)
         if name == "memory":
@@ -3366,11 +3387,16 @@ class Agent:
         except Exception as e:
             return False, f"error: {type(e).__name__}: {e}", None
 
+    def _no_checks(self, cmd):
+        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(str(cmd or "")))
+
     def _cli(self, spec, args, temit):
         """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""
         cmd, err = render_cli(spec, args)
         if err:
             return False, err, None
+        if self._no_checks(cmd):
+            return False, NO_CHECKS, None
         need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.cwd)
         if isinstance(need, str):
             return False, need, None
@@ -3546,7 +3572,7 @@ class Agent:
         if self.busy:
             return None, "busy"
         msgs = self.session["messages"]
-        i = max((i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("_aux")), default=-1)
+        i = max((i for i, m in enumerate(msgs) if m["role"] == "user" and not m.get("_aux") and not m.get("_shell")), default=-1)
         if i < 0:
             return None, "nothing to retry"
         c = msgs[i]["content"]
@@ -3610,6 +3636,80 @@ class Agent:
                     a = parse_args(tc["function"]["arguments"]) or {}
                     out.append(f"- `{tc['function']['name']}` {self.tools.preview(tc['function']['name'], a, self.cwd)}")
         return "\n".join(out) + "\n"
+
+    def requests(self):
+        """[(index, text)] of what the user asked in this chat, oldest first: the points /rewind can go back to."""
+        out = []
+        for i, m in enumerate(self.session["messages"]):
+            c = m.get("content")
+            c = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if x.get("type") == "text")
+            if m["role"] == "user" and not m.get("_aux") and not m.get("_shell") and not c.startswith("[Summary"):
+                out.append((i, c))
+        return out
+
+    def rewind(self, i):
+        """Go back to just before request #i: it and everything after leave the history, files those turns changed are restored."""
+        if self.busy:
+            return None, "busy"
+        msgs = self.session["messages"]
+        if not (0 <= i < len(msgs)) or msgs[i]["role"] != "user":
+            return None, "no such request"
+        cps, gen, files = Checkpoints(self.s, self.session["id"]), self.session.get("compactions", 0), []
+        while True:
+            last = (cps.load() or [None])[-1]
+            if not last or last.get("gen", 0) != gen or last.get("msgs", -1) < i:
+                break
+            restore_files(cps.pop()["files"])
+            files += [relp(p, self.cwd) for p in last["files"]]
+        c = msgs[i]["content"]
+        self.session["messages"] = msgs[:i]
+        self.s.save_session(self.session)
+        return (c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")), sorted(set(files))
+
+    def fork(self):
+        """Continue in a copy of this chat; the original stays as it is (try another approach without losing this one)."""
+        old = self.session
+        new = new_session(old.get("cwd"))
+        new.update(json.loads(json.dumps({k: old[k] for k in ("messages", "model", "todo", "roots", "ws", "compactions", "ctx") if k in old})))
+        new.update(title=((old.get("title") or "chat")[:70] + " · fork"), forked_from=old["id"])
+        cps = Checkpoints(self.s, old["id"]).load()
+        if cps:  # /undo and /rewind work in the copy too
+            jsave(Checkpoints(self.s, new["id"]).p, cps)
+        self.session, self.snap = new, {}
+        self.s.save_session(new)
+        return new
+
+    BTW_PROMPT = "Answer the user's side question about this coding session briefly and directly. You cannot run tools; answer from the transcript."
+
+    def side_question(self, q):
+        """/btw: a quick answer from the chat so far, without tools; neither the question nor the answer enters the history."""
+        m = self.model()
+        if not m:
+            return "no model — add one with /models"
+        lines = []
+        for x in self.session["messages"][-60:]:
+            c = x.get("content")
+            c = c if isinstance(c, str) else " ".join(y.get("text", "") for y in c or [] if y.get("type") == "text")
+            if c:
+                lines.append(f"[{'tool result' if x['role'] == 'tool' else x['role']}] {c[:1500 if x['role'] == 'tool' else 4000]}")
+            lines += [f"[tool call] {tc['function']['name']} {tc['function']['arguments'][:200]}" for tc in x.get("tool_calls") or []]
+        body = "Transcript:\n" + "\n".join(lines)[-60000:] + "\n\nSide question: " + q
+        msg, usage = Provider(m, self.s.provider(m)).stream(self.BTW_PROMPT, [{"role": "user", "content": body}], None, lambda e: None, self.cancel)
+        c = usage_cost(m, usage)
+        u = self.session["usage"]
+        u["cost"] = round(u.get("cost", 0) + c, 6)
+        if c and self.persist:
+            add_day_cost(self.s.home, c)
+        return (msg.get("content") or "").strip() or "(no answer)"
+
+    def shell(self, cmd):
+        """`!cmd` typed by the user: run it in the chat's folder and put command + output in the history, so the agent sees it."""
+        ok, out, _ = self.tools.run("bash", {"cmd": cmd}, lambda e: None, threading.Event(), cwd=self.cwd)
+        self.session["messages"].append({"role": "user", "_shell": True,
+                                         "content": f"[I ran a command myself]\n$ {cmd}\n{clip(out, 8000)}"})
+        if self.persist:
+            self.s.save_session(self.session)
+        return ok, out
 
     def _fix_dangling(self):
         """Every tool_call must have a tool result, or APIs reject the history."""
@@ -5305,6 +5405,15 @@ RU = {
     "show the agent's checklist": "показать todo-список агента", "toggle full access": "полный доступ вкл/выкл", "sync with cloud now": "синхронизировать сейчас",
     "log in / register": "войти / зарегистрироваться", "authenticator (TOTP) on/off": "двухфакторная защита (TOTP) вкл/выкл", "log out of cloud": "выйти из облака",
     "settings": "настройки", "update me": "обновить me", "color theme (installable)": "цветовая тема (можно ставить новые)", "quit": "выход",
+    "go back to an earlier request (history + files)": "вернуться к одному из прошлых запросов (история + файлы)",
+    "continue in a copy of this chat": "продолжить в копии этого чата", "quick side question, kept out of the history": "быстрый вопрос в сторону, не попадает в историю",
+    "find text in all chats": "поиск по всем чатам", "nothing to rewind": "нечего откатывать",
+    "Rewind — the chat goes back to before this request": "Откат — чат вернётся к моменту перед этим запросом",
+    "↶ rewound · restored {} file(s): {}": "↶ откат · восстановлено файлов: {}: {}", "↶ rewound": "↶ откат выполнен",
+    "forked: {} — the original chat stays in /sessions": "копия чата: {} — оригинал остался в /sessions",
+    "Side question (does not go into the chat)": "Вопрос в сторону (не попадёт в чат)", "Search all chats": "Поиск по всем чатам",
+    "nothing found: {}": "ничего не найдено: {}", "Found in {} chat(s)": "Найдено в чатах: {}", "✗ the command failed": "✗ команда завершилась с ошибкой",
+    "no such request": "такого запроса нет",
     "what changed in this chat": "что изменилось в файлах за этот чат", "rename this chat": "переименовать чат", "interface language: en / ru": "язык интерфейса: en / ru",
     # welcome / status / input
     "{} loaded into this session": "{} загружен в эту сессию", "◇ no AGENTS.md — run /init so I remember this project": "◇ нет AGENTS.md — запустите /init, чтобы я запомнил проект",
@@ -5499,6 +5608,8 @@ COMMANDS = [
     ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
     ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("context", "what fills the context window"), ("autocompact", "auto-compact at N% of context (off)"),
     ("goal", "work autonomously until done+verified or blocked"), ("undo", "revert the files of the last turn"), ("retry", "take back the last request and run it again"),
+    ("rewind", "go back to an earlier request (history + files)"), ("fork", "continue in a copy of this chat"),
+    ("btw", "quick side question, kept out of the history"), ("search", "find text in all chats"),
     ("export", "save this chat as Markdown"), ("diff", "what changed in this chat"), ("rename", "rename this chat"),
     ("lang", "interface language: en / ru"),
     ("perm", "permissions: read-only / ask / full + allow-list"), ("cost", "spending: turn, session, today, limits"), ("mcp", "MCP servers (lazy)"),
@@ -6480,6 +6591,9 @@ class TUIInput:
             cmd, _, arg = text[1:].partition(" ")
             self.bg(self.command, cmd.strip().lower(), arg.strip())
             return
+        if text.startswith("!") and text[1:].strip():
+            self.bg(self.run_shell_escape, text[1:].strip())
+            return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
             self.info(f"◌ queued ({len(self.pending)}): {shown[:100]}", "dim")
@@ -6690,7 +6804,7 @@ class TUICommands:
         if UI_LANG["v"] == "ru":
             txt = "## Команды\n" + "\n".join(f"- `/{c}` {T(d)}" for c, d in COMMANDS)
             txt += ("\n\n## Клавиши\n- `enter` отправить · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter новая строка\n- `esc` прервать · `ctrl+c` очистить/выход"
-                    "\n- `↑↓` история · `pgup/pgdn` / колесо — прокрутка · `ctrl+o` раскрыть последний инструмент (или клик)\n- `@путь` прикрепить файл (картинки уходят модели)"
+                    "\n- `↑↓` история · `pgup/pgdn` / колесо — прокрутка · `ctrl+o` раскрыть последний инструмент (или клик)\n- `@путь` прикрепить файл (картинки уходят модели) · `!команда` выполнить самому — агент увидит вывод"
                     "\n- `tab` принять подсказку · `ctrl+v` / `alt+v` вставить текст или картинку · перетащите картинку, чтобы прикрепить"
                     "\n- `alt+c` скопировать последний ответ · `/copy` ответ, блок кода или весь чат"
                     "\n\n## Мышь\n- выделите текст мышью — он скопируется, как только отпустите (двойной клик — слово, тройной — строка)"
@@ -6700,7 +6814,7 @@ class TUICommands:
             return self.add("assistant", text=txt).__setattr__("done", True)
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
-                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model)"
+                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model) · `!cmd` run a command yourself — the agent sees the output"
                 "\n- `tab` accept suggestion · `ctrl+v` / `alt+v` paste text or an image · drag an image file in to attach it"
                 "\n- `alt+c` copy the last answer · `/copy` answer, code block or the whole chat"
                 "\n\n## Mouse\n- drag to select text: it is copied when you let go (double click = word, triple = line)"
@@ -6969,6 +7083,64 @@ class TUICommands:
         self.agent.session["title"] = name.strip()[:80]
         self.s.save_session(self.agent.session)
         self.toast(f"chat renamed: {name.strip()[:80]}", "ok")
+
+    def cmd_rewind(self, arg):
+        """Pick an earlier request: the chat goes back to just before it, files the later turns changed are restored."""
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        reqs = self.agent.requests()
+        if not reqs:
+            return self.toast("nothing to rewind")
+        items = [(str(i), " ".join(t.split())[:90] or "…", f"#{n + 1}") for n, (i, t) in reversed(list(enumerate(reqs)))]
+        v = self.pick("Rewind — the chat goes back to before this request", items)
+        if v is None:
+            return
+        text, files = self.agent.rewind(int(v))
+        if text is None:
+            return self.toast(files, "warn")
+        self.render_history()
+        self.info(f"↶ rewound · restored {len(files)} file(s): {', '.join(files[:6])}" if files else "↶ rewound", "warn")
+        with self.lock:
+            self.input, self.cur = text, len(text)  # the request is back in the input: edit it and press enter, or clear it
+
+    def cmd_fork(self, arg):
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        old = self.agent.session.get("title") or "chat"
+        self.agent.fork()
+        self.toast(f"forked: {old[:50]} — the original chat stays in /sessions", "ok")
+
+    def cmd_btw(self, arg):
+        q = arg.strip() or self.prompt("Side question (does not go into the chat)")
+        if not q:
+            return
+        self.info("◌ /btw " + q[:100], "dim")
+        try:
+            a = self.agent.side_question(q)
+        except (ProviderError, OSError) as e:
+            return self.info(f"✗ {e}", "err")
+        self.add("assistant", text="> /btw " + q[:300] + "\n\n" + a).done = True
+
+    def cmd_search(self, arg):
+        q = arg.strip() or self.prompt("Search all chats")
+        if not q:
+            return
+        hits = self.s.search(q)
+        if not hits:
+            return self.toast(f"nothing found: {q}")
+        sid = self.pick(f"Found in {len(hits)} chat(s)", [(s["id"], s.get("title") or "(untitled)", snip) for s, snip in hits])
+        if sid:
+            self.resume(sid)
+
+    def run_shell_escape(self, cmd):
+        """`!cmd`: run a command yourself; the agent sees it and its output in the next request."""
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
+        self.add("user", text="!" + cmd)
+        ok, out = self.agent.shell(cmd)
+        self.add("assistant", text="```\n" + clip(out, 6000) + "\n```").done = True
+        if not ok:
+            self.info("✗ the command failed", "err")
 
     def cmd_context(self, arg):
         self.add("assistant", text=self.agent.context_report()).done = True
@@ -7385,6 +7557,11 @@ class TUICommands:
                 c = m.get("content")
                 if isinstance(c, list):
                     c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+                if m.get("_shell"):
+                    cmd, _, out = (c or "").partition("\n$ ")[2].partition("\n")
+                    self.add("user", text="!" + cmd)
+                    self.add("assistant", text="```\n" + out + "\n```").done = True
+                    continue
                 if m["role"] == "user" and m.get("_aux"):  # the agent's own nudges are not something the user typed
                     if isinstance(c, str) and c.startswith("[message from the user"):
                         self.add("user", text=c.split("\n", 1)[-1])
@@ -7410,8 +7587,12 @@ class TUICommands:
         sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
                                             time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {s.get('n', 0)} msgs · "
                                             + s.get("cwd", "")) for s in ss])
-        if not sid or self.agent.busy:
-            return
+        if sid:
+            self.resume(sid)
+
+    def resume(self, sid):
+        if self.agent.busy:
+            return self.toast("busy — esc to stop the current turn first", "warn")
         self.agent.load(sid)
         self.render_history()
         wid = self.agent.session.get("ws")

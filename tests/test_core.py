@@ -807,11 +807,14 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     ag = me.Agent(s, ev.append)
     ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
     assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
-    for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png"):
+    for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png", "npx vite build",
+                "godot --headless --path . --quit-after 300"):
         ag.run("tool:bash " + json.dumps({"cmd": cmd}))
         assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
     ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
     assert "fine" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
+    ok, out, _ = ag._cli({"cmd": "npx vite build", "params": {}}, {}, lambda e: None)  # an agent's own CLI tools obey it too
+    assert not ok and "turned self-testing off" in out
     st.pop("behavior")
     st["no_verify"] = True  # the old setting still means tests off
     assert me.behavior(st)["tests"] is False
@@ -861,6 +864,29 @@ def test_chat_diff(tmp=Path(tempfile.mkdtemp())):
     ag.run("tool:write " + json.dumps({"path": str(f), "content": "three\n"}))
     (path, d), = ag.chat_diff()
     assert "-one" in d and "+three" in d and "two" not in d  # the whole chat: first snapshot against now
+
+
+def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    f = tmp / "w.txt"
+    ag, ev = run(s, "first zebra")
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "a"}))
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "b"}))
+    reqs = ag.requests()
+    assert [t for _, t in reqs][0] == "first zebra" and len(reqs) == 3
+    sid = ag.session["id"]
+    ag.fork()
+    assert ag.session["id"] != sid and len(ag.requests()) == 3 and ag.session["forked_from"] == sid
+    text, files = ag.rewind(reqs[1][0])  # back to before the first write: both writes undone
+    assert text.startswith("tool:write") and not f.exists() and files and [t for _, t in ag.requests()] == ["first zebra"]
+    assert len(json.loads(s.session_path(sid).read_text())["messages"]) > len(ag.session["messages"])  # the original is untouched
+    ok, out = ag.shell("echo hello-shell")
+    assert ok and "hello-shell" in out and ag.session["messages"][-1].get("_shell") and len(ag.requests()) == 1
+    assert ag.retry()[0] == "first zebra"  # a shell note is not a request
+    hits = s.search("ZEBRA first")
+    assert hits and "zebra" in hits[0][1] and not s.search("zebra nothing-like-this")
+    n = len(ag.session["messages"])
+    assert ag.side_question("what is this?") and len(ag.session["messages"]) == n  # /btw stays out of the history
 
 
 if __name__ == "__main__":
