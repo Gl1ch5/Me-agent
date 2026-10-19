@@ -16,7 +16,7 @@ import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threadi
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.12.0"
+VERSION = "0.12.1"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -1691,7 +1691,9 @@ def run_shell(cmd, timeout, cancel, env=None, on_line=None, cwd=None, pref=None)
             return False, _long_out(buf.text()) + f"\n[timed out after {timeout}s and was stopped; for servers or watchers use background=true]"
         time.sleep(0.05)
     eof.wait(2)
-    return proc.returncode == 0, _long_out(buf.text()) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")
+    rc = proc.returncode
+    hint = "; pkill -f also matched this command's own shell - write the pattern as '[v]ite' so it does not" if rc in (-15, -9, 143, 137) and re.search(r"\bp(kill|grep)\b[^|;&]*-f", cmd) else ""
+    return rc == 0, _long_out(buf.text()) + (f"\n[exit {rc}{hint}]" if rc else "")
 
 
 def _long_out(text, cap=30000):
@@ -3490,7 +3492,11 @@ class Agent:
         if isinstance(veto, str):
             return False, veto, None
         if name == "skill" and args.get("name") == pr["name"] and args["name"] not in self.skills.enabled():
-            return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
+            en = self.skills.enabled()  # the agent's own name: load its main guide (webgame -> threejs) instead of failing
+            guide = next((n for n in str(pr.get("skills") or "").replace(",", " ").split() if str(en.get(n, {}).get("path", "")).endswith(".md")), None)
+            if not guide or args.get("action"):
+                return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
+            args["name"] = guide
         if name == "bash" and self._no_checks(args.get("cmd")):
             return False, NO_CHECKS, None
         if name == "todo":
@@ -4010,7 +4016,8 @@ def run_headless(store, prompt, yolo, resume=None, model=None):
                 gap[0] = True
             sys.stderr.write(f"\n· {e['name']} {e['label'][:100]}\n")
         elif t == "tool_end" and not e["ok"]:
-            sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
+            o = e["output"].strip()
+            sys.stderr.write(f"  ✗ {o if len(o) <= 300 else o[:120] + ' … ' + o[-180:]}\n")  # the error and exit code sit at the end
         elif t == "verify" and buf:
             buf.append("\n\n")
         elif t in ("error", "notice"):

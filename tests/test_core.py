@@ -581,6 +581,9 @@ def test_bash_timeout_background_and_cwd(tmp=Path(tempfile.mkdtemp())):
     assert not ok and "timed out" in out, out
     ok, out, _ = tb.run("bash", {"cmd": "printf '\\033[31mred\\033[0m 10%%\\r100%%\\n'; exit 3"}, print, threading.Event(), cwd=str(tmp))
     assert not ok and "\x1b" not in out and out.startswith("100%") and "10%" not in out and "[exit 3]" in out, repr(out)
+    if not me.WIN:  # a shell killed by its own pkill -f (Linux pkill matches the shell; macOS does not, so kill it directly)
+        ok, out, _ = tb.run("bash", {"cmd": "kill -TERM $$; echo after # pkill -f vite"}, print, threading.Event(), cwd=str(tmp))
+        assert not ok and "[v]ite" in out and "after" not in out, out
     ok, out, _ = tb.run("bash", {"cmd": "echo started; sleep 30", "background": True}, print, threading.Event(), cwd=str(tmp))
     assert ok and "pid" in out and "started" in out, out
     me.stop_background()
@@ -733,6 +736,20 @@ def test_todo_marks_by_number_and_reminds():
     assert ag.tools.preview("todo", {"done": [1, 2], "doing": 3}) == "done 1, 2 · doing 3"
     ag._todo({"items": ["a", "b"], "doing": 0})  # Gemini: 0-based, first step started
     assert [i["s"] for i in ag.session["todo"]] == ["doing", "todo"] and ag.tools.preview("todo", {"items": ["a", "b"], "done": [0]}) == "1/2 done"
+
+
+def test_agent_name_as_skill_loads_its_guide():
+    s = make()
+    (s.home / "agents").mkdir(exist_ok=True)
+    (s.home / "skills").mkdir(exist_ok=True)
+    (s.home / "agents" / "gamer.md").write_text("---\nname: gamer\nkind: agent\nskills: kit, guide\n---\nMode: games.")
+    (s.home / "skills" / "guide.md").write_text("---\nname: guide\ndescription: how to\n---\nUse the game loop.")
+    s.config["agent"] = "gamer"
+    try:
+        ag, ev = run(s, "tool:skill " + json.dumps({"name": "gamer"}))
+        assert "Use the game loop." in ends(ev)[0]["output"], ends(ev)
+    finally:
+        s.config["agent"] = None
 
 
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):
