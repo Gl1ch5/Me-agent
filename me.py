@@ -2816,6 +2816,7 @@ Scope (most important):
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
 - No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
+- "Like X" / "a clone of X": keep X's genre, core mechanics and controls; don't swap in a different kind of thing.
 - If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go. Once you start a task, finish all of it.
 
 Tools:
@@ -2843,7 +2844,8 @@ BEHAVIOR = {
     "tests": (True, "verify changes itself (tests, build, run)", "",
               "Self-testing is OFF: the user tests everything. Never run tests, builds, linters, type checks, the app, servers, browsers "
               "or screenshots to check your work, never install tools for checking (puppeteer, playwright…), and put no checking step "
-              "in your plan. When done, list the exact commands or steps for the user to check."),
+              "in your plan. Since nothing gets checked, prefer setups that run as written (no build step); never serve uncompiled "
+              "TypeScript/JSX with a static server: start the project's dev server. When done, list the exact commands or steps for the user to check."),
     "todo": (True, "keep a todo checklist on multi-step tasks", "", ""),
     "web": (True, "search the web for current facts and docs", "", ""),
     "stay_in_project": (True, "stay in the project folder unless asked",
@@ -3447,7 +3449,8 @@ class Agent:
             return False, f"error: {type(e).__name__}: {e}", None
 
     def _no_checks(self, cmd):
-        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(str(cmd or "")))
+        cmd = re.sub(r"\b(?:which|command\s+-v|type|where)\s+[^;&|\n]*", "", str(cmd or ""))  # looking a tool up is not checking work
+        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(cmd))
 
     def _cli(self, spec, args, temit):
         """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""

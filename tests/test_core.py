@@ -812,6 +812,7 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
         ag.run("tool:bash " + json.dumps({"cmd": cmd}))
         assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
     assert not me.CHECK_RX.search("node server.js") and not me.CHECK_RX.search("node scripts/checkout.js")
+    assert not ag._no_checks("which python3 chromium google-chrome; command -v playwright") and ag._no_checks("which node; npx playwright test")
     ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
     assert "fine" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
     ok, out, _ = ag._cli({"cmd": "npx vite build", "params": {}}, {}, lambda e: None)  # an agent's own CLI tools obey it too
