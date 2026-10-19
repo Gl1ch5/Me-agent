@@ -1,5 +1,5 @@
 """Run: python3 tests/test_core.py   (no deps; spins up the mock LLM)"""
-import json, os, subprocess, sys, tempfile, threading, time
+import json, os, re, subprocess, sys, tempfile, threading, time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
