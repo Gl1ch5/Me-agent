@@ -382,6 +382,9 @@ class TUIInput:
             cmd, _, arg = text[1:].partition(" ")
             self.bg(self.command, cmd.strip().lower(), arg.strip())
             return
+        if text.startswith("!") and text[1:].strip():
+            self.bg(self.run_shell_escape, text[1:].strip())
+            return
         if self.agent.busy or self.launching or self.pending:
             self.pending.append(text)
             self.info(f"◌ queued ({len(self.pending)}): {shown[:100]}", "dim")

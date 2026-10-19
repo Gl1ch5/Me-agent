@@ -131,6 +131,15 @@ def main():
             t.wait("clipboard is empty")
             print("ok   ctrl+v without a clipboard image explains why")
 
+        t.send("!echo shell-escape-ok\r")
+        t.wait("shell-escape-ok")
+        t.send("/btw what was that\r")
+        t.wait("/btw what was that")
+        t.wait("Hello world")
+        t.send("/fork\r")
+        t.wait("forked:")
+        print("ok   !cmd, /btw, /fork")
+
         for _ in range(40):
             t.send("\x1b[<64;5;5M")  # wheel up
         t.send("\x1b[<65;5;5M" * 40)

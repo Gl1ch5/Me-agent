@@ -105,6 +105,26 @@ class Store:
             cache.pop(k, None)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
 
+    def search(self, q, limit=40):
+        """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""
+        words = [w for w in q.lower().split() if w]
+        out = []
+        for s in self.sessions():
+            d = jload(self.session_path(s["id"])) or {}
+            texts = [s.get("title") or ""]
+            for m in d.get("messages") or []:
+                c = m.get("content")
+                if m.get("role") in ("user", "assistant"):
+                    texts.append(c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if isinstance(x, dict)))
+            low = "\n".join(texts).lower()
+            if words and all(w in low for w in words):
+                t = next((t for t in texts if words[0] in t.lower()), "")
+                i = t.lower().find(words[0])
+                out.append((s, " ".join(t[max(0, i - 40):i + 80].split())))
+                if len(out) >= limit:
+                    break
+        return out
+
     def save_session(self, s):
         s["updated"] = time.time()
         msgs = []

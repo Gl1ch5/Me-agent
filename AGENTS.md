@@ -20,7 +20,7 @@
 | `src/06_skills.py`, `08_plugins.py`, `09_webtools.py` | skills (.md guides / .py actions in a subprocess), plugins, web_search/web_fetch |
 | `src/10a_presets.py` | agent presets (`code` built in; others are marketplace `.md` files with front matter, `cli.<tool>` lines, `skills:`) |
 | `src/10b_features.py` | checkpoints/undo, costs, memory, MCP client, permissions |
-| `src/11_agent.py` | **the agent**: `SYSTEM` prompt, `BEHAVIOR` switches, `Agent._run` loop (nudges: verify, todo reminder, loop detection, image fallback), `fix_args` (tool-arg aliases), todo, goal, subagents, compact, retry, export, chat_diff, per-chat model (`model_name`/`set_model`) |
+| `src/11_agent.py` | **the agent**: `SYSTEM` prompt, `BEHAVIOR` switches, `Agent._run` loop (nudges: verify, todo reminder, loop detection, image fallback), `fix_args` (tool-arg aliases), todo, goal, subagents, compact, retry, rewind/fork/side_question (`/btw`)/shell (`!cmd`), export, chat_diff, per-chat model (`model_name`/`set_model`) |
 | `src/12_headless.py` | `-p` mode and `--rpc` JSON-lines loop (used by cloud sandboxes, studio, IDE) |
 | `src/13_web.py` | local web server (`me web`), `WebSession.handle` endpoints, `apply_setting` |
 | `src/14_terminal.py`, `14a_themes.py`, `14b_clipboard.py` | raw terminal + Windows console input, themes, clipboard/images/desktop_notify |
@@ -31,7 +31,7 @@
 | `server/app.py` | FastAPI: auth, docs sync, marketplace (seeded from `server/market/` on start), `/me.py`, site pages |
 | `server/cloud.py`, `routes_cloud.py` | cloud sandboxes (bubblewrap, `me.py --rpc` via FIFO), `/api/cloud/*` |
 | `server/features.py`, `tgbot.py` | push, jobs/schedules, previews, notify; Telegram bot |
-| `server/market/` | marketplace items: `agent-*.md`, skills `*.md`/`*.py`, `theme-*.json`, plugins |
+| `server/market/` | marketplace items: `agent-*.md`, skills `*.md`/`*.py`, `theme-*.json`, plugins. Agents: `skills:` names skills installed with them; `cli.<tool>` commands run in the foreground and obey the self-testing switch (`CHECK_RX`) |
 | `server/site/` | landing, account (settings, models, marketplace UI), changelog |
 | `apps/studio/me_studio.py` + `studio.html` | **me studio** desktop app (pywebview, falls back to the browser): parallel tasks in git worktrees |
 | `apps/desktop`, `apps/android`, `apps/vscode` | desktop wrapper, Android WebView app, VS Code extension |
