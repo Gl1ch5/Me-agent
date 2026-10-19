@@ -3914,23 +3914,35 @@ class Agent:
 
 
 def run_headless(store, prompt, yolo, resume=None):
+    # a terminal sees the reply stream in; a pipe gets only the final answer on stdout (narration between tools goes to stderr)
+    live = sys.stdout.isatty()
     gap = [None]  # None: nothing printed yet; True: a tool ran since the last text, so start a new paragraph
+    buf = []
 
     def emit(e):
         t = e["type"]
         if t == "text":
+            if not live:
+                return buf.append(e["text"])
             sys.stdout.write(("\n\n" if gap[0] else "") + e["text"])
             sys.stdout.flush()
             gap[0] = False
         elif t == "tool_start":
+            if buf:
+                sys.stderr.write("\n" + "".join(buf).strip() + "\n")
+                buf.clear()
             if gap[0] is not None:
                 gap[0] = True
             sys.stderr.write(f"\n· {e['name']} {e['label'][:100]}\n")
         elif t == "tool_end" and not e["ok"]:
             sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
+        elif t == "verify" and buf:
+            buf.append("\n\n")
         elif t in ("error", "notice"):
             sys.stderr.write(f"\n{t}: {e['text']}\n")
         elif t == "retry":
+            if e.get("discard"):
+                buf.clear()
             sys.stderr.write(f"\n↻ {e['error'][:160]} — retrying in {e['delay']:.0f}s\n")
         elif t == "turn_end":
             sys.stderr.write(f"\n· {dur(e['time'])} · ↑{human(e['in'])} ↓{human(e['out'])}\n")
@@ -3954,10 +3966,10 @@ def run_headless(store, prompt, yolo, resume=None):
     if prompt.startswith("/goal "):
         g = ag.goal(prompt[6:].strip().strip('"'))
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
-        print()
+        print("".join(buf).strip())
         return 0 if g["status"] == "done" else 2
     ag.run(prompt)
-    print()
+    print("".join(buf).strip() if buf else "")
 
 
 def run_rpc(store):

@@ -905,6 +905,11 @@ def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             me.run_headless(s, "and now?", True, s.latest(tmp))  # me -p -c: the follow-up lands in the same chat
+        assert out.getvalue().strip() == "Hello world!\n\n```py\nprint(1)\n```" or "· " not in out.getvalue(), out.getvalue()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            me.run_headless(s, "tool:bash " + json.dumps({"cmd": "echo hi"}), True)
+        assert "· bash" in err.getvalue() and "· bash" not in out.getvalue() and out.getvalue().strip(), (out.getvalue(), err.getvalue())
         d = json.loads(s.session_path(ag.session["id"]).read_text())
         assert [m["content"] for m in d["messages"] if m["role"] == "user"][:2] == ["remember kiwi", "and now?"]
     finally:
