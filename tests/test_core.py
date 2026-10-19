@@ -576,7 +576,7 @@ def test_ls_and_grep(tmp=Path(tempfile.mkdtemp())):
 def test_bash_timeout_background_and_cwd(tmp=Path(tempfile.mkdtemp())):
     tb = me.ToolBox(make(), None)
     ok, out, _ = tb.run("bash", {"cmd": "pwd"}, print, threading.Event(), cwd=str(tmp))
-    assert ok and str(tmp) in out, out
+    assert ok and os.path.basename(str(tmp)) in out, out  # (Git Bash on Windows prints /tmp/… for the temp folder)
     ok, out, _ = tb.run("bash", {"cmd": "sleep 5", "timeout": 1}, print, threading.Event(), cwd=str(tmp))
     assert not ok and "timed out" in out, out
     ok, out, _ = tb.run("bash", {"cmd": "printf '\\033[31mred\\033[0m 10%%\\r100%%\\n'; exit 3"}, print, threading.Event(), cwd=str(tmp))
@@ -659,7 +659,7 @@ def test_paths_follow_session_cwd(tmp=Path(tempfile.mkdtemp())):
     assert "a.txt" in ag.session["messages"][-2]["content"]
     ag.run("tool:ls " + json.dumps({"pattern": "**/*.txt"}))
     out = ag.session["messages"][-2]["content"]
-    assert "a.txt" in out and os.path.join("sub", "b.txt") in out
+    assert "a.txt" in out and "sub/b.txt" in out, out  # ls answers with / on every OS
     assert me.Agent(s, print).undo()["ok"] is False  # other session: nothing to undo
     assert ag.undo()["ok"] and not (tmp / "sub" / "b.txt").exists()
 

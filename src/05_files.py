@@ -80,10 +80,19 @@ def decode_text(data):
     import locale
     for enc in dict.fromkeys([locale.getpreferredencoding(False), "cp1251"]):
         try:
-            if enc.lower().replace("-", "") not in ("utf8", "ascii"):
-                return data.decode(enc), enc, b""
+            if enc.lower().replace("-", "") in ("utf8", "ascii"):
+                continue
+            text = data.decode(enc)
         except (UnicodeDecodeError, LookupError):
             continue
+        # a Cyrillic file read on a Western Windows (cp1252) turns into words of accented letters only ("ïðèâåò"):
+        # such words do not exist in Western languages, so take the Cyrillic code page instead
+        if enc.lower() != "cp1251" and len(re.findall("[\u00c0-\u00ff]{3,}", text)) >= 2:
+            try:
+                return data.decode("cp1251"), "cp1251", b""
+            except UnicodeDecodeError:
+                pass
+        return text, enc, b""
     return data.decode("latin-1"), "latin-1", b""
 
 
