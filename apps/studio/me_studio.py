@@ -23,7 +23,7 @@ if "me" not in sys.modules:  # me.py next to this file (packaged app) or at the 
             break
 import me  # noqa: E402
 
-VERSION = "1.0"
+VERSION = "2.0"
 STATE = me.HOME / "studio.json"
 WORKTREES = me.HOME / "worktrees"
 
@@ -359,7 +359,31 @@ class Studio:
                                                                     for p in self.projects],
                 "tasks": out, "models": [{"name": x["name"], "id": x.get("id", ""), "effort": x.get("effort", "")} for x in cfg.get("models", [])],
                 "model": cfg.get("model"), "perm": me.perm_mode(cfg["settings"]), "theme": th["name"], "dark": th.get("dark", True),
-                "colors": th["colors"], "themes": list(me.themes(self.store)), "user": self.store.auth.get("user", "")}
+                "colors": th["colors"], "themes": list(me.themes(self.store)), "user": self.store.auth.get("user", ""),
+                "lang": cfg["settings"].get("lang", ""), "home": str(Path.home()), "native": bool(getattr(self, "native", False))}
+
+    def folders(self, path=""):
+        """Subfolders of `path` (default: home) for the add-project browser; git repositories are marked."""
+        p = Path(os.path.expanduser(path or "~")).resolve()
+        if not p.is_dir():
+            raise ValueError(f"no such folder: {p}")
+        dirs = []
+        try:
+            for e in sorted(os.scandir(p), key=lambda e: e.name.lower()):
+                if e.name.startswith(".") or e.name in me.SKIP_DIRS:
+                    continue
+                try:
+                    if e.is_dir():
+                        dirs.append({"name": e.name, "git": os.path.exists(os.path.join(e.path, ".git"))})
+                except OSError:
+                    continue
+        except PermissionError:
+            pass
+        roots = []
+        if me.WIN:
+            import string
+            roots = [f"{d}:\\" for d in string.ascii_uppercase if os.path.isdir(f"{d}:\\")]
+        return {"path": str(p), "parent": str(p.parent) if p.parent != p else "", "git": (p / ".git").exists(), "dirs": dirs[:500], "roots": roots}
 
 
 # ───────────────────────────── http ─────────────────────────────
@@ -392,6 +416,8 @@ def serve(studio, port=0):
 
         def do_GET(self):
             path = self.path.split("?")[0]
+            if path in ("/favicon.ico", "/favicon.svg"):
+                return self._send(200, me.ICON_SVG.encode(), "image/svg+xml")
             if path == "/":
                 if not self._ok():
                     return self._send(401, b"open the link me studio printed", "text/plain")
@@ -410,6 +436,8 @@ def serve(studio, port=0):
                     return self._send(200, {"events": t.wait_events(int(self._q("after", "0") or 0)), "busy": t.busy, "status": t.meta["status"]})
                 if path == "/api/diff":
                     return self._send(200, studio.task(self._q("id")).diff())
+                if path == "/api/fs":
+                    return self._send(200, studio.folders(self._q("path")))
                 return self._send(404, {"detail": "not found"})
             except Exception as e:
                 return self._send(400, {"detail": str(e)})
@@ -448,8 +476,12 @@ def route(studio, path, b):
             st.config["settings"]["perm"], st.config["settings"]["yolo"] = b["perm"], False
         if b.get("theme"):
             st.config["theme"] = b["theme"]
+        if "lang" in b:
+            st.config["settings"]["lang"] = b["lang"] if b["lang"] in ("en", "ru") else ""
         st.save()
         return studio.state()
+    if path == "/api/open" and b.get("path"):  # reveal a project folder
+        return open_folder(b["path"])
     tid = b.get("id")
     t = studio.task(tid)
     if path == "/api/task/send":
@@ -497,13 +529,18 @@ def route(studio, path, b):
                                cwd=t.meta["cwd"], pref=st.config["settings"].get("shell"))
         return {"ok": ok, "output": out}
     if path == "/api/open":  # reveal the task's folder in the file manager
-        p = t.meta["cwd"]
-        if me.WIN:
-            os.startfile(p)  # noqa
-        else:
-            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return {"ok": True}
+        return open_folder(t.meta["cwd"])
     raise KeyError(path)
+
+
+def open_folder(p):
+    if not os.path.isdir(p):
+        raise ValueError(f"no such folder: {p}")
+    if me.WIN:
+        os.startfile(p)  # noqa
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True}
 
 
 # ───────────────────────────── window ─────────────────────────────
@@ -535,6 +572,7 @@ def main(argv=None):
         except ImportError:
             webview = None
     if webview:
+        studio.native = True
         api = Api()
         bg = studio.state()["colors"]["bg"]
         api.window = webview.create_window("me studio", url, js_api=api, width=1380, height=880, min_size=(360, 520), background_color=bg)
@@ -561,227 +599,413 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>me studio</title>
+<link rel="icon" href="/favicon.svg">
 <style>
-:root { --bg:#0e0f13; --bg2:#111319; --bg3:#171a23; --line:#1f2230; --fg:#d8dae3; --dim:#6b6f80; --faint:#3a3d4a; --a:#8b7cff; --a2:#4fd1c5;
-  --ok:#5ad18a; --err:#ff6b7a; --warn:#ffb454; --code:#16181f; --sel:#262a38; --r:10px;
-  --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace; --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+:root { --bg:#0e0f13; --bg2:#121319; --bg3:#181a22; --line:#22252f; --fg:#e2e4ec; --dim:#8a8ea0; --faint:#4a4e5c; --a:#8b7cff; --a2:#4fd1c5;
+  --ok:#5ad18a; --err:#ff6b7a; --warn:#ffb454; --code:#15171e; --sel:#242836; --r:12px;
+  --a10:rgba(139,124,255,.1); --a14:rgba(139,124,255,.14); --a30:rgba(139,124,255,.3); --a45:rgba(139,124,255,.45); --w8:rgba(255,180,84,.08); --w25:rgba(255,180,84,.25); --w45:rgba(255,180,84,.45); --ok10:rgba(90,209,138,.1); --err10:rgba(255,107,122,.1); --ok35:rgba(90,209,138,.35); --err35:rgba(255,107,122,.35);
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--a); outline-offset: 1px; }
 svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .hidden { display: none !important; }
-#app { display: grid; grid-template-columns: 272px 1fr auto; height: 100vh; height: 100dvh; }
+::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+#app { display: grid; grid-template-columns: 272px minmax(0, 1fr) auto; height: 100vh; height: 100dvh; }
+
+/* buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 12px; border: 1px solid var(--line);
+  background: var(--bg3); border-radius: 9px; white-space: nowrap; transition: border-color .12s, background .12s; }
+.btn:hover:not(:disabled) { border-color: var(--faint); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.pri { background: var(--a); border-color: var(--a); color: #fff; font-weight: 600; }
+.btn.pri:hover:not(:disabled) { filter: brightness(1.08); }
+.btn.ghost { background: none; border-color: transparent; color: var(--dim); }
+.btn.ghost:hover:not(:disabled) { background: var(--bg3); color: var(--fg); }
+.btn.danger { color: var(--err); }
+.btn.danger.solid { background: var(--err); border-color: var(--err); color: #fff; }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 13px; border-radius: 8px; }
+.ib { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; background: none; border-radius: 8px; color: var(--dim); }
+.ib:hover { background: var(--bg3); color: var(--fg); }
+.ib.on { color: var(--a); background: var(--a14); }
+kbd { font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; }
+
 /* sidebar */
 #side { background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 14px 14px 10px; }
-.brand .logo { width: 18px; height: 18px; border-radius: 6px; background: var(--a); }
-.brand b { font-size: 15px; letter-spacing: .2px; }
-.brand .v { color: var(--dim); font: 11px var(--mono); margin-left: auto; }
-.btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--bg3); border-radius: 8px; padding: 7px 12px; }
-.btn:hover { border-color: var(--faint); }
-.btn.pri { background: var(--a); border-color: var(--a); color: var(--bg); font-weight: 600; }
-.btn.pri:disabled { opacity: .45; cursor: default; }
-.btn.danger { color: var(--err); }
-.btn.sm { padding: 4px 9px; font-size: 13px; }
-.ib { display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; background: none; border-radius: 7px; color: var(--dim); }
-.ib:hover { background: var(--bg3); color: var(--fg); }
-.newtask { margin: 4px 12px 8px; justify-content: center; }
-#projects { flex: 1; overflow: auto; padding: 4px 8px 12px; }
-.proj { margin-top: 10px; }
-.proj > .ph { display: flex; align-items: center; gap: 6px; padding: 4px 6px; color: var(--dim); font-size: 12px; text-transform: none; }
-.proj > .ph span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); opacity: .8; }
-.proj > .ph .ib { width: 24px; height: 24px; margin-left: auto; opacity: 0; }
-.proj:hover > .ph .ib { opacity: 1; }
-.titem { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none; padding: 7px 8px; border-radius: 8px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 14px 12px 10px 16px; }
+.logo { width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(135deg, var(--a), var(--a2)); flex: none; }
+.brand b { font-size: 15px; letter-spacing: .1px; }
+.brand .sp { flex: 1; }
+.newtask { margin: 2px 12px 10px; height: 36px; justify-content: flex-start; gap: 10px; padding: 0 12px; }
+.newtask kbd { margin-left: auto; }
+.search { margin: 0 12px 6px; position: relative; }
+.search input { width: 100%; height: 32px; border: 1px solid transparent; background: var(--bg3); border-radius: 8px; padding: 0 10px 0 30px; outline: 0; }
+.search input:focus { border-color: var(--faint); }
+.search svg { position: absolute; left: 9px; top: 8px; color: var(--dim); }
+#projects { flex: 1; overflow: auto; padding: 2px 8px 12px; }
+.proj { margin-top: 8px; }
+.ph { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 8px; color: var(--dim); font-size: 12.5px; border-radius: 8px; cursor: pointer; user-select: none; }
+.ph:hover { background: var(--bg3); }
+.ph .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); opacity: .85; }
+.ph .chev { transition: transform .15s; width: 12px; height: 12px; }
+.proj.closed .ph .chev { transform: rotate(-90deg); }
+.proj.closed .tl { display: none; }
+.ph .acts { margin-left: auto; display: flex; opacity: 0; }
+.ph:hover .acts, .ph:focus-within .acts { opacity: 1; }
+.ph .acts .ib { width: 24px; height: 24px; }
+.titem { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; background: none; height: 32px; padding: 0 8px 0 12px; border-radius: 8px; min-width: 0; color: var(--fg); }
 .titem:hover { background: var(--bg3); }
 .titem.on { background: var(--sel); }
-.titem .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.titem .ago { color: var(--faint); font-size: 11px; flex: none; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
-.dot.running { background: none; border: 2px solid var(--a); border-top-color: transparent; width: 10px; height: 10px; animation: spin .8s linear infinite; }
-.dot.waiting { background: var(--warn); }
-.dot.review { background: var(--a); }
-.dot.done { background: var(--ok); }
-.dot.error { background: var(--err); }
-.dot.discarded, .dot.idle { background: var(--faint); }
+.titem .tt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titem .ago { color: var(--faint); font-size: 11.5px; flex: none; }
+.titem .wt { color: var(--dim); flex: none; }
+.empty-side { color: var(--dim); font-size: 12.5px; padding: 6px 12px 4px; line-height: 1.5; }
+.sfoot { border-top: 1px solid var(--line); padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.sfoot .btn { justify-content: flex-start; width: 100%; }
+.who { display: flex; align-items: center; gap: 8px; padding: 4px 8px; color: var(--dim); font-size: 12px; }
+.who .sp { flex: 1; }
+
+/* status dots */
+.st { width: 14px; height: 14px; display: inline-grid; place-items: center; flex: none; }
+.st i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.st.done i { background: var(--ok); }
+.st.review i { background: var(--a); }
+.st.error i { background: var(--err); }
+.st.waiting i { background: var(--warn); box-shadow: 0 0 0 3px var(--w25); }
+.st.discarded i { background: transparent; border: 1.5px solid var(--faint); }
+.st.running i { width: 11px; height: 11px; background: none; border: 2px solid var(--a30); border-top-color: var(--a); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.empty-side { color: var(--dim); padding: 16px 10px; font-size: 13px; }
-.sidefoot { border-top: 1px solid var(--line); padding: 10px 12px; display: grid; gap: 8px; }
-.sidefoot .row { display: flex; gap: 8px; align-items: center; }
-select { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-width: 0; }
-.sidefoot select { flex: 1; }
+
 /* main */
-#main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); min-height: 52px; }
-#title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; overflow: hidden; }
-#title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; flex: 0 1 auto; min-width: 60px; }
-.badge { font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; max-width: 280px; }
-.badge.a { color: var(--a); border-color: color-mix(in srgb, var(--a) 40%, transparent); }
-#actions { display: flex; gap: 6px; flex: none; }
-#view { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
-/* new task */
-.start { flex: 1; overflow: auto; padding: 8vh 24px 24px; }
-.start .card { max-width: 760px; margin: 0 auto; }
-.start h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.3px; }
-.start h1 span { color: var(--a); }
-.start p.sub { color: var(--dim); margin: 0 0 18px; }
-.composer { background: var(--bg2); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
-.composer:focus-within { border-color: color-mix(in srgb, var(--a) 60%, var(--line)); }
-.composer textarea { width: 100%; border: 0; outline: 0; background: none; resize: none; min-height: 72px; max-height: 40vh; }
-.opts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.seg button { border: 0; background: none; padding: 5px 10px; color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+#main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.top { height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 14px 0 18px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
+.top .ttl { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex: 1; }
+.top .ttl b { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; border-radius: 6px; padding: 2px 4px; margin-left: -4px; }
+.top .ttl b:hover { background: var(--bg3); }
+.top .ttl input { font-weight: 600; font-size: 14.5px; background: var(--bg3); border: 1px solid var(--faint); border-radius: 6px; padding: 2px 6px; outline: 0; min-width: 240px; }
+.meta { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12.5px; white-space: nowrap; overflow: hidden; }
+.meta .sep { color: var(--faint); }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 99px; font-size: 12px; background: var(--bg3); color: var(--dim); border: 1px solid var(--line); white-space: nowrap; }
+.pill.running { color: var(--a); border-color: var(--a45); }
+.pill.waiting { color: var(--warn); border-color: var(--w45); }
+.pill.review { color: var(--a); }
+.pill.done { color: var(--ok); }
+.pill.error { color: var(--err); }
+.acts { display: flex; align-items: center; gap: 4px; flex: none; }
+.chg { font-variant-numeric: tabular-nums; }
+.add { color: var(--ok); } .del { color: var(--err); }
+
+/* home */
+#home { flex: 1; overflow: auto; }
+.hero { max-width: 760px; margin: 0 auto; padding: 12vh 24px 40px; }
+.hero h1 { font-size: 28px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.3px; font-weight: 650; }
+.hero p.sub { color: var(--dim); margin: 0 0 22px; }
+.composer { border: 1px solid var(--line); background: var(--bg2); border-radius: 16px; padding: 12px 12px 10px; transition: border-color .15s, box-shadow .15s; }
+.composer:focus-within { border-color: var(--a45); box-shadow: 0 0 0 4px var(--a10); }
+.composer textarea { width: 100%; resize: none; border: 0; background: none; outline: 0; min-height: 52px; max-height: 40vh; padding: 2px 4px; line-height: 1.55; display: block; }
+.crow { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.crow .sp { flex: 1; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg3);
+  color: var(--fg); font-size: 13px; max-width: 260px; }
+.chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip:hover { border-color: var(--faint); }
+.chip .cv { width: 12px; height: 12px; color: var(--dim); }
+.chip.warn { border-style: dashed; color: var(--warn); }
+.seg { display: inline-flex; border: 1px solid var(--line); background: var(--bg3); border-radius: 8px; padding: 2px; height: 30px; }
+.seg button { border: 0; background: none; border-radius: 6px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 13px; }
 .seg button.on { background: var(--sel); color: var(--fg); }
 .seg button:disabled { opacity: .4; cursor: default; }
-.opts .push { margin-left: auto; }
-.hint { color: var(--dim); font-size: 12px; margin-top: 8px; }
-.recent { margin-top: 28px; }
-.recent h3 { font-size: 12px; color: var(--dim); font-weight: 600; margin: 0 0 8px; text-transform: uppercase; letter-spacing: .6px; }
-.rc { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; background: var(--bg2); width: 100%; text-align: left; }
-.rc:hover { border-color: var(--faint); }
-.rc .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc .meta { color: var(--dim); font-size: 12px; }
-/* task */
-#log { flex: 1; overflow: auto; padding: 18px 20px 12px; }
-.lw { max-width: 860px; margin: 0 auto; }
-.msg.user { display: flex; justify-content: flex-end; margin: 14px 0; }
-.msg.user .bub { background: var(--sel); border-radius: 14px 14px 4px 14px; padding: 9px 13px; max-width: 85%; white-space: pre-wrap; word-break: break-word; }
-.msg.user .tag { color: var(--warn); font-size: 11px; margin-right: 8px; align-self: center; }
-.md { line-height: 1.6; word-break: break-word; margin: 8px 0; }
-.md p { margin: 6px 0; }
-.md h1, .md h2, .md h3 { margin: 14px 0 6px; line-height: 1.3; } .md h1 { font-size: 19px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15px; }
-.md code { font: 12.5px var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; }
-.md pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 10px 0; }
-.md pre .bar { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; color: var(--dim); font: 11px var(--mono); border-bottom: 1px solid var(--line); }
-.md pre .bar button { border: 0; background: none; color: var(--dim); font-size: 11px; }
-.md pre code { display: block; border: 0; padding: 10px 12px; overflow: auto; white-space: pre; font-size: 12.5px; }
-.md ul, .md ol { padding-left: 22px; margin: 6px 0; }
-.md blockquote { border-left: 3px solid var(--faint); margin: 8px 0; padding: 0 12px; color: var(--dim); }
+.send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--a); color: #fff; display: grid; place-items: center; }
+.send:disabled { opacity: .4; cursor: default; }
+.send.stop { background: var(--fg); color: var(--bg); }
+.hint { color: var(--faint); font-size: 12px; margin: 8px 4px 0; display: flex; gap: 12px; flex-wrap: wrap; }
+.recent { margin-top: 34px; }
+.recent h3 { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; margin: 0 0 8px 4px; font-weight: 600; }
+.rc { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: none; text-align: left; padding: 9px 10px; border-radius: 10px; }
+.rc:hover { background: var(--bg2); }
+.rc .tt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc .m { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.starters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.starters button { border: 1px solid var(--line); background: none; border-radius: 99px; padding: 5px 12px; color: var(--dim); font-size: 12.5px; }
+.starters button:hover { color: var(--fg); border-color: var(--faint); }
+.onboard { border: 1px dashed var(--line); border-radius: 14px; padding: 18px; display: flex; gap: 14px; align-items: center; margin-bottom: 16px; }
+.onboard .tx { flex: 1; color: var(--dim); }
+.onboard .tx b { color: var(--fg); display: block; margin-bottom: 2px; }
+
+/* task view */
+#task { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#log { flex: 1; overflow: auto; scroll-behavior: auto; }
+.lw { max-width: 820px; margin: 0 auto; padding: 22px 24px 30px; display: flex; flex-direction: column; gap: 12px; }
+.msg.user { align-self: flex-end; max-width: 85%; }
+.msg.user .bub { background: var(--bg3); border: 1px solid var(--line); border-radius: 14px 14px 4px 14px; padding: 9px 13px; white-space: pre-wrap; word-break: break-word; }
+.msg.user .tag { display: block; text-align: right; color: var(--warn); font-size: 11.5px; margin-bottom: 3px; }
+.md { word-break: break-word; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 10px; } .md h1, .md h2, .md h3 { margin: 16px 0 8px; line-height: 1.3; } .md h1 { font-size: 19px; } .md h2 { font-size: 17px; } .md h3 { font-size: 15px; }
+.md ul, .md ol { margin: 0 0 10px; padding-left: 22px; } .md li { margin: 2px 0; }
+.md code { font: 12.5px var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.md pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; margin: 0 0 10px; overflow: hidden; }
+.md pre .bar { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px 4px 12px; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); }
+.md pre .bar button { border: 0; background: none; color: var(--dim); font-size: 12px; border-radius: 6px; padding: 2px 8px; }
+.md pre .bar button:hover { background: var(--bg3); color: var(--fg); }
+.md pre code { display: block; border: 0; background: none; padding: 10px 12px; overflow-x: auto; white-space: pre; }
+.md blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--line); color: var(--dim); }
 .md a { color: var(--a); }
-details.think { color: var(--dim); margin: 6px 0; font-size: 13px; }
-details.think summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; }
-details.think pre { white-space: pre-wrap; font: 12px var(--mono); max-height: 260px; overflow: auto; margin: 6px 0 0; padding-left: 12px; border-left: 2px solid var(--line); }
-.shimmer { background: linear-gradient(90deg, var(--dim) 30%, var(--fg) 50%, var(--dim) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: sh 1.6s linear infinite; }
-@keyframes sh { from { background-position: 150% 0; } to { background-position: -50% 0; } }
-.tool { border: 1px solid var(--line); border-radius: 10px; margin: 6px 0; background: var(--bg2); overflow: hidden; }
-.tool .h { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; min-width: 0; font-size: 13px; }
-.tool .h b { font-weight: 600; flex: none; }
-.tool .h .lab { color: var(--dim); font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-.tool .h .t { color: var(--faint); font-size: 11px; flex: none; }
-.tool .ic { width: 16px; display: grid; place-items: center; flex: none; }
-.tool .st { padding: 0 10px 6px 34px; color: var(--dim); font-size: 12px; }
-.tool .body { border-top: 1px solid var(--line); padding: 8px 10px; font: 12px/1.45 var(--mono); white-space: pre-wrap; max-height: 340px; overflow: auto; word-break: break-word; }
+.md table { border-collapse: collapse; margin: 0 0 10px; font-size: 13px; } .md td, .md th { border: 1px solid var(--line); padding: 4px 8px; }
+.think { color: var(--dim); font-size: 13px; }
+.think summary { cursor: pointer; list-style: none; display: inline-flex; gap: 6px; align-items: center; user-select: none; }
+.think summary::-webkit-details-marker { display: none; }
+.think pre { white-space: pre-wrap; font: 12.5px/1.5 var(--sans); margin: 6px 0 0 4px; padding-left: 12px; border-left: 2px solid var(--line); max-height: 260px; overflow: auto; }
+.shimmer { background: linear-gradient(90deg, var(--dim) 0%, var(--fg) 50%, var(--dim) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: sh 1.6s linear infinite; }
+@keyframes sh { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.tool { border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); overflow: hidden; }
+.tool .h { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; user-select: none; font-size: 13px; min-height: 34px; }
+.tool .h:hover { background: var(--bg3); }
+.tool .h .nm { font-weight: 600; flex: none; }
+.tool .h .lab { color: var(--dim); font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.tool .h .t { color: var(--faint); font-size: 12px; flex: none; }
+.tool .h .ch { width: 12px; height: 12px; color: var(--faint); transition: transform .15s; }
+.tool:not(.closed) .h .ch { transform: rotate(90deg); }
+.tool .stl { padding: 0 10px 6px 34px; color: var(--dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool .body { border-top: 1px solid var(--line); margin: 0; padding: 8px 12px; max-height: 360px; overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--dim); background: var(--code); }
 .tool.closed .body { display: none; }
-.spin { width: 12px; height: 12px; border: 2px solid var(--a); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
-.add { color: var(--ok); } .del { color: var(--err); } .hunk { color: var(--a2); }
-.info { color: var(--dim); font-size: 13px; margin: 6px 0; }
-.info.warn { color: var(--warn); } .info.err { color: var(--err); } .info.ok { color: var(--ok); }
-.stats { color: var(--faint); font-size: 12px; margin: 8px 0 18px; display: flex; gap: 6px; align-items: center; }
-.ask { border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line)); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: var(--bg2); }
-.ask pre { font: 12px var(--mono); white-space: pre-wrap; max-height: 200px; overflow: auto; color: var(--dim); margin: 6px 0; }
-.ask .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.ask input { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; flex: 1; min-width: 160px; }
-.todo { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 0 auto 8px; max-width: 860px; background: var(--bg2); font-size: 13px; }
-.todo div { display: flex; gap: 8px; } .todo .d { color: var(--dim); text-decoration: line-through; }
-.foot { padding: 8px 20px 14px; }
-.foot .composer { max-width: 860px; margin: 0 auto; }
-.foot textarea { min-height: 24px; }
-/* panel */
-@media (max-width: 1600px) { body.panel-open #title .badge.wide { display: none; } }
-#panel { width: min(520px, 42vw); border-left: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; min-width: 0; }
-.ptabs { display: flex; gap: 4px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-.ptabs button.tab { border: 0; background: none; padding: 6px 10px; border-radius: 7px; color: var(--dim); }
-.ptabs button.tab.on { background: var(--sel); color: var(--fg); }
-.ptabs .x { margin-left: auto; }
-#pbody { flex: 1; overflow: auto; padding: 10px 12px; }
-.pact { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.fl details { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; background: var(--bg); overflow: hidden; }
-.fl summary { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; font: 12.5px var(--mono); }
-.fl summary .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fl pre { margin: 0; padding: 6px 10px; font: 12px/1.45 var(--mono); overflow: auto; max-height: 420px; border-top: 1px solid var(--line); }
-.fl .tag { font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--dim); }
-.note { color: var(--dim); font-size: 12px; margin: 6px 0 10px; }
-.term { display: flex; gap: 6px; }
-.term input { flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font: 13px var(--mono); min-width: 0; }
-.tout { font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; margin-top: 10px; }
-.tout .cmd { color: var(--a); margin-top: 10px; } .tout .bad { color: var(--err); }
-#toast { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 50; max-width: min(420px, calc(100vw - 32px)); }
-#toast div { background: var(--bg3); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; font-size: 13px; white-space: pre-wrap; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
-#toast .err { border-color: var(--err); } #toast .ok { border-color: var(--ok); }
-.mobile { display: none; }
+.tool.err { border-color: var(--err35); }
+.ic { width: 16px; height: 16px; display: grid; place-items: center; flex: none; }
+.spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--a30); border-top-color: var(--a); animation: spin .8s linear infinite; }
+.dl { display: block; } .dl.a { color: var(--ok); background: var(--ok10); } .dl.d { color: var(--err); background: var(--err10); } .dl.h { color: var(--a2); }
+.card { border: 1px solid var(--w45); background: var(--w8); border-radius: 12px; padding: 12px 14px; }
+.card .q { font-weight: 600; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+.card pre { margin: 0 0 10px; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 12px/1.5 var(--mono); white-space: pre-wrap; max-height: 220px; overflow: auto; }
+.card .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.card input { flex: 1; min-width: 160px; height: 28px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 0 9px; outline: 0; }
+.card.done { border-color: var(--line); background: none; color: var(--dim); padding: 6px 12px; font-size: 13px; }
+.note { color: var(--dim); font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+.note.err { color: var(--err); } .note.warn { color: var(--warn); }
+.note a { color: var(--a); cursor: pointer; }
+.turnend { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
+.turnend::before, .turnend::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.plan { position: sticky; top: 0; z-index: 2; margin: 0 auto; max-width: 820px; width: 100%; padding: 10px 24px 0; }
+.plan .in { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.plan .ph2 { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); cursor: pointer; user-select: none; }
+.plan .ph2 b { color: var(--fg); }
+.plan .bar2 { flex: 1; height: 4px; border-radius: 4px; background: var(--line); overflow: hidden; } .plan .bar2 i { display: block; height: 100%; background: var(--a); }
+.plan .items { margin-top: 6px; display: grid; gap: 2px; font-size: 13px; }
+.plan.closed .items { display: none; }
+.plan .it { display: flex; gap: 8px; align-items: baseline; } .plan .it.d { color: var(--dim); text-decoration: line-through; text-decoration-color: var(--faint); } .plan .it.g { color: var(--a); }
+.foot { padding: 8px 24px 16px; flex: none; }
+.foot .composer { max-width: 820px; margin: 0 auto; padding: 10px 10px 8px 12px; }
+.foot .composer textarea { min-height: 24px; }
+.foot .crow { margin-top: 4px; }
+.mini { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
+.mini select { height: 26px; border: 1px solid transparent; background: none; border-radius: 6px; color: var(--dim); font-size: 12.5px; padding: 0 4px; max-width: 170px; }
+.mini select:hover { border-color: var(--line); color: var(--fg); }
+
+/* side panel */
+#panel { width: min(560px, 46vw); border-left: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; min-height: 0; }
+.ptop { height: 52px; display: flex; align-items: center; gap: 4px; padding: 0 8px 0 10px; border-bottom: 1px solid var(--line); flex: none; }
+.ptabs { display: flex; gap: 2px; flex: 1; }
+.ptab { border: 0; background: none; height: 30px; padding: 0 12px; border-radius: 8px; color: var(--dim); display: inline-flex; gap: 6px; align-items: center; }
+.ptab.on { background: var(--bg3); color: var(--fg); }
+#pbody { flex: 1; overflow: auto; min-height: 0; }
+.rv-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.rv-sum { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim); flex-wrap: wrap; }
+.rv-sum b { color: var(--fg); }
+.rv-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.commit { display: flex; gap: 6px; }
+.commit input { flex: 1; height: 30px; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 0 10px; outline: 0; min-width: 0; }
+.commit input:focus { border-color: var(--faint); }
+.fitem { border-bottom: 1px solid var(--line); }
+.fitem .fh { display: flex; align-items: center; gap: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; position: sticky; top: 0; background: var(--bg2); z-index: 1; }
+.fitem .fh:hover { background: var(--bg3); }
+.fitem .fh .p { flex: 1; font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.fitem .fh .ch { width: 12px; height: 12px; color: var(--faint); transition: transform .15s; }
+.fitem.open .fh .ch { transform: rotate(90deg); }
+.fitem pre { margin: 0; padding: 6px 0; font: 12px/1.55 var(--mono); background: var(--code); overflow-x: auto; display: none; }
+.fitem.open pre { display: block; }
+.fitem pre .dl { padding: 0 14px; white-space: pre; }
+.tag { font-size: 11px; border-radius: 5px; padding: 0 5px; border: 1px solid var(--line); color: var(--dim); }
+.tag.new { color: var(--ok); border-color: var(--ok35); } .tag.gone { color: var(--err); }
+.empty { color: var(--dim); text-align: center; padding: 48px 20px; font-size: 13px; display: grid; gap: 8px; place-items: center; }
+.empty svg { width: 28px; height: 28px; color: var(--faint); }
+.term { display: flex; flex-direction: column; height: 100%; }
+#termOut { flex: 1; overflow: auto; margin: 0; padding: 10px 14px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; background: var(--code); }
+#termOut .cmd { color: var(--a2); } #termOut .bad { color: var(--err); }
+.termin { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); align-items: center; }
+.termin span { color: var(--a2); font-family: var(--mono); }
+.termin input { flex: 1; height: 32px; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 0 10px; font-family: var(--mono); outline: 0; }
+
+/* popover menu, modal, toast */
+.menu { position: fixed; z-index: 50; min-width: 220px; max-width: 360px; max-height: 60vh; overflow: auto; background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 5px; box-shadow: 0 14px 40px rgba(0,0,0,.35); }
+.menu .mi { display: flex; align-items: center; gap: 9px; width: 100%; border: 0; background: none; text-align: left; padding: 7px 9px; border-radius: 8px; font-size: 13px; }
+.menu .mi:hover, .menu .mi.kb { background: var(--bg3); }
+.menu .mi .d { color: var(--dim); font-size: 12px; margin-left: auto; padding-left: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.menu .mi .ck { width: 14px; color: var(--a); }
+.menu .mi.danger { color: var(--err); }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
+.menu .lbl { color: var(--faint); font-size: 11.5px; padding: 6px 9px 3px; text-transform: uppercase; letter-spacing: .5px; }
+#modal { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45); display: grid; place-items: center; padding: 16px; }
+.dlg { width: min(560px, 100%); max-height: 86vh; display: flex; flex-direction: column; background: var(--bg2); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+.dlg .dh { display: flex; align-items: center; padding: 14px 16px 10px; gap: 10px; } .dlg .dh b { font-size: 15px; flex: 1; }
+.dlg .db { padding: 0 16px 14px; overflow: auto; display: grid; gap: 12px; }
+.dlg .df { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.dlg label.f { display: grid; gap: 5px; font-size: 12.5px; color: var(--dim); }
+.dlg input[type=text], .dlg select { height: 34px; border: 1px solid var(--line); background: var(--bg); border-radius: 9px; padding: 0 10px; outline: 0; color: var(--fg); }
+.dlg input[type=text]:focus, .dlg select:focus { border-color: var(--faint); }
+.fs { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.fs .fsh { display: flex; align-items: center; gap: 6px; padding: 6px; border-bottom: 1px solid var(--line); background: var(--bg3); }
+.fs .fsh input { flex: 1; height: 28px; border: 1px solid var(--line); background: var(--bg); border-radius: 7px; padding: 0 8px; font-family: var(--mono); font-size: 12.5px; outline: 0; min-width: 0; }
+.fs .list { max-height: 300px; overflow: auto; padding: 4px; }
+.fs .row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; text-align: left; padding: 6px 8px; border-radius: 7px; font-size: 13px; }
+.fs .row:hover { background: var(--bg3); }
+.fs .row .g { margin-left: auto; color: var(--a); font-size: 11.5px; }
+.fs .row.sel { background: var(--a14); }
+.chips2 { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips2 button { border: 1px solid var(--line); background: none; border-radius: 99px; padding: 3px 10px; font-size: 12px; color: var(--dim); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips2 button:hover { color: var(--fg); border-color: var(--faint); }
+.opt { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt button { border: 1px solid var(--line); background: var(--bg); border-radius: 9px; padding: 7px 12px; font-size: 13px; text-align: left; display: grid; gap: 1px; min-width: 140px; flex: 1; }
+.opt button small { color: var(--dim); font-size: 11.5px; }
+.opt button.on { border-color: var(--a); background: var(--a10); }
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 70; display: grid; gap: 8px; justify-items: center; pointer-events: none; }
+#toast div { background: var(--fg); color: var(--bg); padding: 9px 14px; border-radius: 10px; font-size: 13px; max-width: min(640px, 90vw); box-shadow: 0 8px 24px rgba(0,0,0,.3); white-space: pre-wrap; pointer-events: auto; }
+#toast div.err { background: var(--err); color: #fff; }
+#toast div.ok { background: var(--ok); color: #06210f; }
 #scrim { display: none; }
-@media (max-width: 860px) {
+.mob { display: none !important; }
+
+@media (max-width: 1100px) { #panel { position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 92vw); z-index: 40; box-shadow: -20px 0 50px rgba(0,0,0,.35); } }
+@media (max-width: 760px) {
   #app { grid-template-columns: 1fr; }
-  #side { position: fixed; inset: 0 auto 0 0; width: 84vw; max-width: 320px; z-index: 30; transform: translateX(-100%); transition: transform .2s; }
+  #side { position: fixed; inset: 0 auto 0 0; width: 84vw; max-width: 320px; z-index: 45; transform: translateX(-105%); transition: transform .2s; }
   #side.open { transform: none; }
-  #scrim.on { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 20; }
-  #panel { position: fixed; inset: 0; width: 100%; z-index: 40; }
-  .mobile { display: inline-grid; }
-  #log { padding: 14px 12px; }
-  .foot { padding: 8px 10px 12px; }
-  .start { padding: 24px 16px; }
-  #top { padding: 8px 10px; }
-  #actions .wide { display: none; }
+  #scrim.on { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 44; }
+  .mob { display: inline-grid !important; }
+  .wide { display: none !important; }
+  .hero { padding-top: 6vh; }
+  .lw, .foot { padding-left: 12px; padding-right: 12px; }
+  .plan { padding: 8px 12px 0; }
+  .top { padding: 0 8px; }
+  #panel { width: 100vw; }
 }
 </style>
 </head>
 <body>
 <div id="app">
   <aside id="side">
-    <div class="brand"><span class="logo"></span><b>me studio</b><span class="v" id="ver"></span>
-      <button class="ib mobile" onclick="closeSide()" title="close" aria-label="close menu"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <button class="btn newtask" onclick="go('')"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New task</button>
+    <div class="brand"><span class="logo"></span><b>me studio</b><span class="sp"></span>
+      <button class="ib" onclick="openSettings()" data-i="title:Settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      <button class="ib mob" onclick="closeSide()" aria-label="close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <button class="btn newtask" onclick="go('')"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg><span data-i>New task</span><kbd>Ctrl N</kbd></button>
+    <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="q" placeholder="Search tasks" data-i="ph:Search tasks" oninput="renderSide()"></div>
     <div id="projects"></div>
-    <div class="sidefoot">
-      <button class="btn" onclick="addProject()"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 11v5M9.5 13.5h5"/></svg>Add project</button>
-      <div class="row">
-        <select id="perm" title="permissions" onchange="settings({perm: this.value})">
-          <option value="ask">ask for commands</option><option value="full">full access</option><option value="read">read-only</option></select>
-        <button class="ib" id="themeBtn" title="theme" onclick="nextTheme()"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v16a8 8 0 0 0 0-16z" fill="currentColor"/></svg></button>
-        <label class="ib" title="show archived"><input type="checkbox" id="showArch" onchange="renderSide()" style="margin:0"></label>
-      </div>
+    <div class="sfoot">
+      <button class="btn ghost" onclick="addProject()"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 11v5M9.5 13.5h5"/></svg><span data-i>Add project</span></button>
+      <div class="who"><span id="who"></span><span class="sp"></span><span id="ver"></span></div>
     </div>
   </aside>
   <div id="scrim" onclick="closeSide()"></div>
   <main id="main">
-    <header id="top">
-      <button class="ib mobile" onclick="openSide()" aria-label="menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-      <div id="title"><b>New task</b></div>
-      <div id="actions"></div>
-    </header>
-    <section id="view"></section>
+    <div class="top">
+      <button class="ib mob" onclick="openSide()" aria-label="menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+      <div class="ttl" id="ttl"></div>
+      <div class="acts" id="acts"></div>
+    </div>
+    <div id="home"></div>
+    <div id="task" class="hidden"></div>
   </main>
   <aside id="panel" class="hidden">
-    <div class="ptabs">
-      <button class="tab on" data-tab="changes" onclick="panelTab('changes')">Changes</button>
-      <button class="tab" data-tab="term" onclick="panelTab('term')">Terminal</button>
-      <button class="ib x" onclick="closePanel()" aria-label="close panel"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-    </div>
+    <div class="ptop"><div class="ptabs">
+      <button class="ptab" data-tab="changes" onclick="panelTab('changes')"><svg viewBox="0 0 24 24"><path d="M12 3v12M6 9h12M6 21h12"/></svg><span data-i>Changes</span></button>
+      <button class="ptab" data-tab="term" onclick="panelTab('term')"><svg viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8"/></svg><span data-i>Terminal</span></button></div>
+      <button class="ib" onclick="closePanel()" aria-label="close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div id="pbody"></div>
   </aside>
 </div>
+<div id="modal" class="hidden" onclick="if (event.target === this) closeModal()"></div>
 <div id="toast"></div>
 <script>
+// me studio — UI. Talks to me_studio.py over /api/* with the per-run key; tasks stream events by long-poll.
 const KEY = "__KEY__";
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
 const human = n => !n ? "0" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
-const dur = s => s < 60 ? s.toFixed(1) + "s" : Math.floor(s / 60) + "m" + String(Math.floor(s % 60)).padStart(2, "0") + "s";
-const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d"; };
+const dur = s => s < 60 ? s.toFixed(1) + (L() ? " с" : "s") : Math.floor(s / 60) + (L() ? " мин " : "m ") + String(Math.floor(s % 60)).padStart(2, "0") + (L() ? " с" : "s");
+const base = p => String(p || "").split(/[\\/]/).filter(Boolean).pop() || p;
+
+// ─── i18n: English source, Russian table ───
+let LANG = "en";
+const L = () => LANG === "ru";
+const RU = {
+  "New task": "Новая задача", "Search tasks": "Поиск задач", "Add project": "Добавить проект", "Settings": "Настройки", "Changes": "Изменения", "Terminal": "Терминал",
+  "What should we work on?": "Над чем работаем?", "Describe a task — fix a bug, add a feature, explain the code…": "Опишите задачу — исправить баг, добавить функцию, объяснить код…",
+  "Each task is its own agent. Start several — they run side by side.": "Каждая задача — отдельный агент. Запускайте несколько — они работают параллельно.",
+  "Local": "Локально", "Worktree": "Worktree", "Start": "Начать", "Recent": "Недавние", "Choose a project": "Выберите проект", "no project": "нет проекта",
+  "Works in the project folder itself": "Работает прямо в папке проекта", "Its own git worktree and branch: your checkout stays untouched until you apply": "Свой git worktree и ветка: ваша папка не меняется, пока вы не примените результат",
+  "needs a git repository with a commit": "нужен git-репозиторий с коммитом", "default model": "модель по умолчанию", "effort": "effort",
+  "Start by adding a project": "Начните с добавления проекта", "Pick a folder with your code. Git repositories can run tasks in isolated worktrees.": "Выберите папку с кодом. В git-репозиториях задачи могут работать в отдельных worktree.",
+  "enter to start": "enter — начать", "shift+enter new line": "shift+enter — новая строка", "Ask for follow-up changes": "Попросите доработать или задайте вопрос",
+  "Steer the running task — it reads this after the current step": "Подскажите задаче — она прочтёт это после текущего шага",
+  "working": "работает", "waiting for you": "ждёт вас", "ready to review": "можно смотреть", "done": "готово", "error": "ошибка", "idle": "ожидание", "discarded": "отброшена",
+  "Stop": "Стоп", "Review": "Ревью", "Open folder": "Открыть папку", "Archive": "В архив", "Unarchive": "Из архива", "Rename": "Переименовать", "Discard…": "Отбросить…",
+  "thinking…": "думаю…", "thought for {}": "думал {}", "Allow": "Разрешить", "Always allow this command": "Всегда разрешать эту команду", "Allow everything (full access)": "Разрешать всё (полный доступ)",
+  "Deny": "Запретить", "allowed": "разрешено", "always allowed": "разрешено всегда", "denied": "запрещено", "Send": "Отправить", "answer…": "ответ…",
+  "needs your approval": "нужно ваше разрешение", "queued": "в очереди", "while working": "во время работы", "retrying": "повторяю", "compacting history…": "сжимаю историю…",
+  "history compacted · ~{} tokens": "история сжата · ~{} токенов", "self-check: running checks before finishing": "самопроверка: запускаю проверки перед завершением",
+  "{} files changed": "изменено файлов: {}", "1 file changed": "изменён 1 файл", "review": "смотреть", "Worked {}": "Работал {}", "{} steps": "шагов: {}", "1 step": "1 шаг",
+  "Plan": "План", "1 file": "1 файл", "{} files": "файлов: {}", "Apply to project": "Применить к проекту", "Commit": "Коммит", "Push branch": "Запушить ветку", "Undo last turn": "Откатить последний ход",
+  "Commit message": "Сообщение коммита", "No changes yet": "Пока без изменений", "The agent's edits show up here as it works.": "Правки агента появятся здесь по ходу работы.",
+  "branch": "ветка", "commits": "коммитов", "new": "новый", "deleted": "удалён", "binary file": "бинарный файл", "Run a command in the task folder": "Команда в папке задачи",
+  "Cancel": "Отмена", "Add": "Добавить", "Save": "Сохранить", "Close": "Закрыть", "Project folder": "Папка проекта", "Recent folders": "Недавние папки", "Browse…": "Обзор…",
+  "git repository": "git-репозиторий", "Up": "Вверх", "Use this folder": "Выбрать эту папку", "Theme": "Тема", "Language": "Язык", "Permissions": "Разрешения", "Default model": "Модель по умолчанию",
+  "Show archived tasks": "Показывать архивные задачи", "ask": "спрашивать", "full access": "полный доступ", "read-only": "только чтение",
+  "edits in the project are free; commands ask": "правки в проекте без вопросов; команды спрашивают", "everything runs without asking": "всё без вопросов", "no file changes": "без изменения файлов",
+  "Discard this task?": "Отбросить задачу?", "Its worktree and branch {} are deleted. This cannot be undone.": "Её worktree и ветка {} будут удалены. Это нельзя отменить.",
+  "The task is removed from the list; files it changed stay as they are.": "Задача уйдёт из списка; изменённые файлы останутся как есть.", "Discard": "Отбросить",
+  "Remove project": "Убрать проект", "New task here": "Новая задача здесь", "no tasks yet": "задач пока нет", "Task name": "Название задачи", "copy": "копировать", "copied": "скопировано",
+  "now": "сейчас", "{}m": "{} мин", "{}h": "{} ч", "{}d": "{} дн", "no models — add one with `me` → /models": "нет моделей — добавьте в `me` → /models", "offline": "офлайн",
+  "Fix the failing tests": "Почини падающие тесты", "Explain how this project is structured": "Объясни, как устроен проект", "Review my uncommitted changes": "Сделай ревью моих незакоммиченных изменений",
+  "Add a README with setup steps": "Добавь README с инструкцией по запуску", "Shortcuts": "Горячие клавиши", "search": "поиск", "stop the task": "остановить задачу",
+  "Pick a project folder": "Выберите папку проекта", "loading…": "загрузка…", "Native folder picker": "Системный выбор папки", "Model": "Модель", "default": "по умолчанию",
+  "no such folder": "нет такой папки", "Nothing to show yet": "Пока пусто", "Ask in Russian or English — the agent answers in your language.": "Пишите на любом языке — агент ответит на нём же.",
+};
+const t = (s, ...v) => { let r = L() && RU[s] !== undefined ? RU[s] : s; for (const x of v) r = r.replace("{}", x); return r; };
+function i18nApply(root = document) {
+  root.querySelectorAll("[data-i]").forEach(n => {
+    const spec = n.dataset.i;
+    if (!n.dataset.src) n.dataset.src = spec ? "" : n.textContent;
+    if (spec.startsWith("ph:")) n.placeholder = t(spec.slice(3)); else if (spec.startsWith("title:")) n.title = t(spec.slice(6)); else n.textContent = t(n.dataset.src);
+  });
+}
+const ago = ts => { const s = Date.now() / 1000 - ts; return s < 60 ? t("now") : s < 3600 ? t("{}m", Math.floor(s / 60)) : s < 86400 ? t("{}h", Math.floor(s / 3600)) : t("{}d", Math.floor(s / 86400)); };
+
 const I = {
   check: '<svg viewBox="0 0 24 24" style="color:var(--ok)"><path d="M5 12l5 5 9-11"/></svg>',
   x: '<svg viewBox="0 0 24 24" style="color:var(--err)"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-  stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></svg>',
+  stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   diff: '<svg viewBox="0 0 24 24"><path d="M12 3v12M6 9h12M6 21h12"/></svg>',
   term: '<svg viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 18h8"/></svg>',
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
-  box: '<svg viewBox="0 0 24 24"><path d="M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8"/></svg>',
-  send: '<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
   branch: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 8v8M18 10c0 4-6 3-12 6"/></svg>',
+  chev: '<svg viewBox="0 0 24 24" class="cv"><path d="M6 9l6 6 6-6"/></svg>',
+  right: '<svg viewBox="0 0 24 24" class="ch"><path d="M9 6l6 6-6 6"/></svg>',
+  dots: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  cpu: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" style="color:var(--warn)"><path d="M12 3l9 16H3zM12 10v4M12 17v.5"/></svg>',
+  q: '<svg viewBox="0 0 24 24" style="color:var(--warn)"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6M12 17v.5"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg>',
 };
+const TOOL_VERB = {read: "Read", write: "Write", edit: "Edit", bash: "Run", ls: "List", grep: "Search", web_search: "Web search", web_fetch: "Fetch", skill: "Skill",
+  todo: "Plan", task: "Subagent", memory: "Memory", mcp: "MCP", notify: "Notify"};
+const TOOL_RU = {Read: "Чтение", Write: "Запись", Edit: "Правка", Run: "Команда", List: "Файлы", Search: "Поиск", "Web search": "Веб-поиск", Fetch: "Загрузка", Skill: "Навык",
+  Plan: "План", Subagent: "Субагент", Memory: "Память", MCP: "MCP", Notify: "Уведомление"};
+const verb = n => { const v = TOOL_VERB[n] || n; return L() ? (TOOL_RU[v] || v) : v; };
 
+// ─── api ───
 async function api(path, body) {
   const r = await fetch(path, {method: body === undefined ? "GET" : "POST", headers: {"Content-Type": "application/json", "X-Key": KEY},
                                body: body === undefined ? undefined : JSON.stringify(body)});
@@ -791,198 +1015,325 @@ async function api(path, body) {
 }
 function toast(text, cls = "") {
   const d = document.createElement("div"); d.className = cls; d.textContent = text; $("toast").appendChild(d);
-  setTimeout(() => d.remove(), cls === "err" ? 9000 : 4000);
+  setTimeout(() => d.remove(), cls === "err" ? 8000 : 3500);
 }
+// messages from me_studio.py (English) → the UI language
+const SRV_RU = [[/^applied (\d+) file\(s\) to (.+) \(staged\)$/, "применено файлов: $1 → $2 (в индексе git)"], [/^committed to (.+)$/, "закоммичено в $1"],
+  [/^pushed (.+)$/, "ветка $1 запушена"], [/^discarded \(worktree and branch (.+) removed\)$/, "отброшено (worktree и ветка $1 удалены)"], [/^discarded$/, "отброшено"],
+  [/^nothing to commit$/, "нечего коммитить"], [/^nothing to apply$/, "нечего применять"], [/^restored (\d+) files?: (.*)$/, "восстановлено файлов: $1: $2"],
+  [/^stop the task first$/, "сначала остановите задачу"], [/^no such folder: (.+)$/, "нет такой папки: $1"], [/^describe the task first$/, "сначала опишите задачу"],
+  [/^nothing to undo$/, "нечего откатывать"], [/^busy$/, "задача ещё работает"]];
+const srv = m => { m = String(m || ""); if (!L()) return m; for (const [rx, r] of SRV_RU) if (rx.test(m)) return m.replace(rx, r); return m; };
+const fail = e => toast(srv(e.message || String(e)), "err");
 async function copyText(s) {
   try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(s); return true; } } catch (e) {}
   const ta = document.createElement("textarea"); ta.value = s; ta.style.cssText = "position:fixed;top:-1000px;opacity:0"; document.body.appendChild(ta);
   ta.select(); let ok = false; try { ok = document.execCommand("copy"); } catch (e) {} ta.remove(); return ok;
 }
-function copyCode(b) { copyText(b.closest("pre").querySelector("code").innerText).then(ok => { b.textContent = ok ? "copied" : "✗"; setTimeout(() => b.textContent = "copy", 1200); }); }
+function copyCode(b) { copyText(b.closest("pre").querySelector("code").innerText).then(ok => { b.textContent = ok ? t("copied") : "✗"; setTimeout(() => b.textContent = t("copy"), 1200); }); }
+
+// ─── markdown (small, safe: everything is escaped first) ───
 function md(src) {
   const blocks = [];
-  src = src.replace(/```(\w*)\n?([\s\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code]); return `\u0000${blocks.length - 1}\u0000`; });
+  src = String(src || "").replace(/```(\w*)[^\n]*\n?([\s\S]*?)(```|$)/g, (_, lang, code) => { blocks.push([lang, code.replace(/\n$/, "")]); return `\u0000${blocks.length - 1}\u0000`; });
   let h = esc(src)
     .replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>")
     .replace(/^&gt; (.*)$/gm, "<blockquote>$1</blockquote>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|\W)\*([^*\n]+)\*/g, "$1<i>$2</i>")
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  h = h.replace(/(?:^|\n)((?:[-*] .*(?:\n|$))+)/g, (_, l) => "\n<ul>" + l.trim().split("\n").map(x => "<li>" + x.slice(2) + "</li>").join("") + "</ul>\n");
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  h = h.replace(/(?:^|\n)((?:\|.*\|[ \t]*(?:\n|$))+)/g, (_, tb) => {
+    const rows = tb.trim().split("\n").filter(r => !/^\|[\s:|-]+\|$/.test(r.trim()));
+    return "\n<table>" + rows.map((r, i) => "<tr>" + r.trim().replace(/^\||\|$/g, "").split("|").map(c => `<${i ? "td" : "th"}>${c.trim()}</${i ? "td" : "th"}>`).join("") + "</tr>").join("") + "</table>\n";
+  });
+  h = h.replace(/(?:^|\n)((?:[ \t]*[-*] .*(?:\n|$))+)/g, (_, l) => "\n<ul>" + l.trim().split("\n").map(x => "<li>" + x.trim().slice(2) + "</li>").join("") + "</ul>\n");
   h = h.replace(/(?:^|\n)((?:\d+[.)] .*(?:\n|$))+)/g, (_, l) => "\n<ol>" + l.trim().split("\n").map(x => "<li>" + x.replace(/^\d+[.)] /, "") + "</li>").join("") + "</ol>\n");
-  h = h.split(/\n{2,}/).map(p => /^\s*<(h\d|ul|ol|blockquote)/.test(p) || p.startsWith("\u0000") ? p : "<p>" + p.replace(/\n/g, "<br>") + "</p>").join("");
-  return h.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre><div class="bar"><span>${esc(blocks[i][0] || "code")}</span><button onclick="copyCode(this)">copy</button></div><code>${esc(blocks[i][1])}</code></pre>`);
+  h = h.split(/\n{2,}/).map(p => /^\s*<(h\d|ul|ol|blockquote|table)/.test(p) || /^\u0000\d+\u0000$/.test(p.trim()) ? p : "<p>" + p.trim().replace(/\n/g, "<br>") + "</p>").join("");
+  return h.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre><div class="bar"><span>${esc(blocks[i][0] || "code")}</span><button onclick="copyCode(this)">${t("copy")}</button></div><code>${esc(blocks[i][1])}</code></pre>`);
 }
-function diffHtml(t) {
-  return String(t).split("\n").map(l => `<span class="${l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : l.startsWith("@@") ? "hunk" : ""}">${esc(l)}</span>`).join("\n");
+const diffHtml = s => String(s).split("\n").map(l => `<span class="dl ${l.startsWith("+") && !l.startsWith("+++") ? "a" : l.startsWith("-") && !l.startsWith("---") ? "d" : l.startsWith("@@") ? "h" : ""}">${esc(l) || " "}</span>`).join("");
+
+// ─── theme: me's own theme colors; soft variants computed here (no color-mix: older WebKitGTK lacks it) ───
+const COLOR_VARS = {bg: "--bg", bg2: "--bg2", bg3: "--bg3", line: "--line", fg: "--fg", dim: "--dim", faint: "--faint", accent: "--a", accent2: "--a2",
+  ok: "--ok", err: "--err", warn: "--warn", code_bg: "--code", sel: "--sel"};
+const rgba = (hex, a) => { const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})/i.exec(hex || ""); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : hex; };
+function applyTheme() {
+  const r = document.documentElement.style, c = S.colors || {};
+  for (const [k, v] of Object.entries(c)) if (COLOR_VARS[k]) r.setProperty(COLOR_VARS[k], v);
+  const a = c.accent || "#8b7cff", w = c.warn || "#ffb454", ok = c.ok || "#5ad18a", er = c.err || "#ff6b7a";
+  for (const [n, v] of Object.entries({"--a10": rgba(a, .1), "--a14": rgba(a, .14), "--a30": rgba(a, .3), "--a45": rgba(a, .45), "--w8": rgba(w, .08), "--w45": rgba(w, .45),
+    "--w25": rgba(w, .25), "--ok10": rgba(ok, .1), "--err10": rgba(er, .1), "--ok35": rgba(ok, .35), "--err35": rgba(er, .35)})) r.setProperty(n, v);
+  document.documentElement.style.colorScheme = S.dark ? "dark" : "light";
 }
 
 // ─── state ───
-let S = {tasks: [], projects: [], models: []}, cur = null, after = 0, poll = 0, live = {}, view = {}, panel = null;
-const COLOR_VARS = {bg: "--bg", bg2: "--bg2", bg3: "--bg3", line: "--line", fg: "--fg", dim: "--dim", faint: "--faint", accent: "--a", accent2: "--a2",
-  ok: "--ok", err: "--err", warn: "--warn", code_bg: "--code", sel: "--sel"};
-function applyTheme() {
-  for (const [k, v] of Object.entries(S.colors || {})) if (COLOR_VARS[k]) document.documentElement.style.setProperty(COLOR_VARS[k], v);
-  document.documentElement.style.colorScheme = S.dark ? "dark" : "light";
-}
+let S = {tasks: [], projects: [], models: []}, cur = null, after = 0, poll = 0, live = {}, view = {}, panel = null, draft = {};
+const PREF = (() => { try { return JSON.parse(localStorage.getItem("studio") || "{}"); } catch (e) { return {}; } })();
+const savePref = () => { try { localStorage.setItem("studio", JSON.stringify(PREF)); } catch (e) {} };
+const task = id => S.tasks.find(x => x.id === id);
+const proj = p => S.projects.find(x => x.path === p) || {path: p, name: base(p), git: false};
+const statusOf = x => x.busy ? (x.status === "waiting" ? "waiting" : "running") : (x.status || "idle");
+const STATUS = {running: "working", waiting: "waiting for you", review: "ready to review", done: "done", error: "error", idle: "idle", discarded: "discarded"};
+
 async function refresh() {
-  try { S = await api("/api/state"); } catch (e) { return; }
+  let s; try { s = await api("/api/state"); } catch (e) { return; }
+  const langChanged = (s.lang || autoLang()) !== LANG;
+  const before = Object.fromEntries((S.tasks || []).map(x => [x.id, statusOf(x)]));
+  S = s; LANG = S.lang || autoLang(); document.documentElement.lang = LANG;
+  for (const x of S.tasks) {  // other tasks finishing or asking for approval while you look at something else
+    const was = before[x.id], now = statusOf(x);
+    if (!was || was === now || x.id === cur) continue;
+    if (now === "waiting") toast(`${x.title.slice(0, 60)} — ${t("needs your approval")}`);
+    else if (was === "running" && now !== "running") toast(`${x.title.slice(0, 60)} — ${t(STATUS[now] || now)}`, now === "error" ? "err" : "ok");
+  }
   applyTheme();
-  $("ver").textContent = "v" + S.version;
-  $("perm").value = S.perm;
+  if (langChanged) i18nApply();
+  $("ver").textContent = "v" + S.version + " · me " + S.me;
+  $("who").textContent = S.user ? "☁ " + S.user : t("offline");
   renderSide();
-  const sig = JSON.stringify([S.projects, S.tasks.filter(t => !t.archived).slice(0, 6).map(t => [t.id, t.status, t.busy, t.title])]);
-  if (!cur && !view.dirtyStart && sig !== view.sig) { view.sig = sig; renderStart(false); }
-  if (cur) renderHeader();
+  if (!cur) { const sig = JSON.stringify([S.projects, S.models, LANG, S.tasks.filter(x => !x.archived).slice(0, 6).map(x => [x.id, statusOf(x), x.title])]); if (sig !== view.homeSig) { view.homeSig = sig; renderHome(); } }
+  else renderTop();
 }
-const task = id => S.tasks.find(t => t.id === id);
+const autoLang = () => (navigator.languages || [navigator.language || "en"]).some(l => /^(ru|be|uk|kk)\b/i.test(l)) ? "ru" : "en";
+
+// ─── sidebar ───
 function renderSide() {
-  const arch = $("showArch").checked;
-  const byP = {};
-  for (const p of S.projects) byP[p.path] = [];
-  for (const t of S.tasks) if (arch || !t.archived) (byP[t.project] = byP[t.project] || []).push(t);
-  const proj = p => S.projects.find(x => x.path === p) || {path: p, name: p.split(/[\\/]/).pop() || p};
-  $("projects").innerHTML = Object.keys(byP).length ? Object.entries(byP).map(([p, ts]) => `<div class="proj">
-      <div class="ph" title="${esc(p)}">${I.folder}<span>${esc(proj(p).name)}</span>
-        <button class="ib" title="new task here" onclick="go('', '${esc(p.replace(/\\/g, "\\\\"))}')"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
-      ${ts.map(t => `<button class="titem ${t.id === cur ? "on" : ""}" onclick="go('${t.id}')" title="${esc(t.title)}">
-          <span class="dot ${t.busy ? (t.status === "waiting" ? "waiting" : "running") : t.status}"></span><span class="tt">${esc(t.title)}</span>
-          ${t.mode === "worktree" ? `<span class="ago" title="${esc(t.branch || "")}">⑂</span>` : ""}<span class="ago">${ago(t.updated)}</span></button>`).join("")
-        || `<div class="empty-side">no tasks yet</div>`}</div>`).join("")
-    : `<div class="empty-side">Add a project folder, then describe a task. Each task is an agent of its own; run several at once.</div>`;
+  const q = ($("q").value || "").toLowerCase(), arch = !!PREF.archived, closed = PREF.closed || {};
+  const by = {};
+  for (const p of S.projects) by[p.path] = [];
+  for (const x of S.tasks) {
+    if ((!arch && x.archived) || (q && !x.title.toLowerCase().includes(q))) continue;
+    (by[x.project] = by[x.project] || []).push(x);
+  }
+  const keys = Object.keys(by);
+  $("projects").innerHTML = keys.length ? keys.map(p => { const ts = by[p], pj = proj(p), pe = esc(JSON.stringify(p));
+    return `<div class="proj ${closed[p] && !q ? "closed" : ""}">
+      <div class="ph" title="${esc(p)}" onclick='toggleProj(${pe})'><svg viewBox="0 0 24 24" class="chev"><path d="M6 9l6 6 6-6"/></svg><span class="nm">${esc(pj.name)}</span>
+        <span class="acts"><button class="ib" title="${esc(t("New task here"))}" onclick='event.stopPropagation();go("", ${pe})'>${I.plus}</button>
+        <button class="ib" title="${esc(t("Remove project"))}" onclick='event.stopPropagation();projMenu(this, ${pe})'>${I.dots}</button></span></div>
+      <div class="tl">${ts.map(x => `<button class="titem ${x.id === cur ? "on" : ""}" onclick="go('${x.id}')" title="${esc(x.title)}">
+          <span class="st ${statusOf(x)}"><i></i></span><span class="tt">${esc(x.title)}</span>${x.mode === "worktree" ? `<span class="wt" title="${esc(x.branch || "")}">${I.branch}</span>` : ""}<span class="ago">${ago(x.updated)}</span></button>`).join("")
+        || `<div class="empty-side">${esc(t("no tasks yet"))}</div>`}</div></div>`; }).join("")
+    : `<div class="empty-side">${esc(t("Pick a folder with your code. Git repositories can run tasks in isolated worktrees."))}</div>`;
+}
+function toggleProj(p) { PREF.closed = PREF.closed || {}; PREF.closed[p] = !PREF.closed[p]; savePref(); renderSide(); }
+function projMenu(el, p) {
+  menu(el, [[t("New task here"), () => go("", p)], [t("Open folder"), () => api("/api/open", {path: p}).catch(fail)], "-",
+            [t("Remove project"), async () => { await api("/api/project/remove", {path: p}).catch(fail); refresh(); }, "danger"]]);
 }
 function openSide() { $("side").classList.add("open"); $("scrim").classList.add("on"); }
 function closeSide() { $("side").classList.remove("open"); $("scrim").classList.remove("on"); }
-async function pickFolder(start) {
-  const native = window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder;
-  return native ? await window.pywebview.api.pick_folder(start || "") : prompt("Project folder (full path)", start || "");
-}
-async function addProject() {
-  const p = await pickFolder(""); if (!p) return;
-  try { await api("/api/project/add", {path: p}); await refresh(); toast("project added", "ok"); } catch (e) { toast(e.message, "err"); }
-}
-async function settings(b) { try { S = await api("/api/settings", b); applyTheme(); renderSide(); } catch (e) { toast(e.message, "err"); } }
-function nextTheme() { const ts = S.themes || []; settings({theme: ts[(ts.indexOf(S.theme) + 1) % ts.length]}); }
 
-// ─── routing ───
-function go(id, project) {
-  closeSide();
-  cur = id || null; poll++; after = 0; live = {}; view = {project};
-  history.replaceState(null, "", id ? "#" + id : "#");
-  if (cur) openTask(cur); else renderStart(true);
-  renderSide();
-  if (panel && cur) panelTab(panel); else closePanel();
+// ─── menus & modals ───
+function menu(anchor, items, opts = {}) {
+  closeMenu();
+  const m = document.createElement("div"); m.className = "menu"; m.id = "menu";
+  m.innerHTML = items.map((it, i) => it === "-" ? "<hr>" : typeof it === "string" ? `<div class="lbl">${esc(it)}</div>` :
+    `<button class="mi ${it[2] === "danger" ? "danger" : ""}" data-i="${i}"><span class="ck">${it[3] ? "✓" : ""}</span><span>${esc(it[0])}</span>${it[4] ? `<span class="d">${esc(it[4])}</span>` : ""}</button>`).join("");
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  let x = opts.right ? r.right - mw : r.left, y = r.bottom + 6;
+  if (y + mh > innerHeight - 8) y = Math.max(8, r.top - mh - 6);
+  m.style.left = Math.max(8, Math.min(x, innerWidth - mw - 8)) + "px"; m.style.top = y + "px";
+  m.querySelectorAll(".mi").forEach(b => b.onclick = () => { closeMenu(); items[+b.dataset.i][1](); });
+  setTimeout(() => document.addEventListener("mousedown", outside), 0);
+}
+function outside(e) { const m = $("menu"); if (m && !m.contains(e.target)) closeMenu(); }
+function closeMenu() { const m = $("menu"); if (m) m.remove(); document.removeEventListener("mousedown", outside); }
+function modal(title, body, foot) {
+  $("modal").innerHTML = `<div class="dlg" role="dialog" aria-label="${esc(title)}"><div class="dh"><b>${esc(title)}</b><button class="ib" onclick="closeModal()" aria-label="close">${I.x.replace('style="color:var(--err)"', "")}</button></div>
+    <div class="db">${body}</div>${foot ? `<div class="df">${foot}</div>` : ""}</div>`;
+  $("modal").classList.remove("hidden");
+  const f = $("modal").querySelector("input[type=text], textarea"); if (f) setTimeout(() => f.focus(), 30);
+}
+function closeModal() { $("modal").classList.add("hidden"); $("modal").innerHTML = ""; }
+function confirmBox(title, text, okLabel, danger) {
+  return new Promise(res => {
+    modal(title, `<div style="color:var(--dim)">${esc(text)}</div>`, `<button class="btn" id="cbNo">${esc(t("Cancel"))}</button><button class="btn ${danger ? "danger solid" : "pri"}" id="cbOk">${esc(okLabel)}</button>`);
+    $("cbNo").onclick = () => { closeModal(); res(false); }; $("cbOk").onclick = () => { closeModal(); res(true); };
+  });
 }
 
-// ─── new task ───
-function modelOptions(sel) {
-  return `<option value="">${esc(S.model ? "model: " + S.model : "default model")}</option>` + S.models.map(m => `<option value="${esc(m.name)}" ${m.name === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+// ─── add project: native picker in the app window, a folder browser everywhere ───
+async function addProject(then) {
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
+    const p = await window.pywebview.api.pick_folder("").catch(() => "");
+    if (p) return addPath(p, then);
+    return;
+  }
+  const recent = S.projects.map(p => p.path);
+  modal(t("Pick a project folder"), `
+    <label class="f">${esc(t("Project folder"))}<input type="text" id="fsPath" placeholder="${esc(S.home || "")}" spellcheck="false"></label>
+    ${recent.length ? `<div class="chips2">${recent.slice(0, 8).map(p => `<button onclick='fsGo(${esc(JSON.stringify(p))})' title="${esc(p)}">${esc(base(p))}</button>`).join("")}</div>` : ""}
+    <div class="fs"><div class="fsh"><button class="ib" title="${esc(t("Up"))}" onclick="fsUp()"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+      <input id="fsCur" spellcheck="false" onkeydown="if(event.key==='Enter')fsGo(this.value)"><span id="fsRoots"></span></div><div class="list" id="fsList"></div></div>`,
+    `<button class="btn" onclick="closeModal()">${esc(t("Cancel"))}</button><button class="btn pri" id="fsOk">${esc(t("Add"))}</button>`);
+  view.fsThen = then;
+  $("fsOk").onclick = () => addPath($("fsPath").value.trim() || view.fs?.path, view.fsThen);
+  $("fsPath").onkeydown = e => { if (e.key === "Enter") $("fsOk").click(); };
+  fsGo(recent[0] ? recent[0].replace(/[\\/][^\\/]+[\\/]?$/, "") || S.home : S.home);
 }
-const EFFORTS = ["", "none", "minimal", "low", "medium", "high", "xhigh"];
-const effortOptions = sel => EFFORTS.map(e => `<option value="${e}" ${e === (sel || "") ? "selected" : ""}>${e ? "effort: " + e : "effort: default"}</option>`).join("");
-function renderStart(force) {
-  if (!force && document.activeElement && document.activeElement.id === "prompt") return;
-  $("title").innerHTML = "<b>New task</b>"; $("actions").innerHTML = "";
-  const projects = S.projects;
-  const p = view.project || (projects[0] && projects[0].path) || "";
-  const isGit = (projects.find(x => x.path === p) || {}).git;
-  const mode = view.mode || (isGit ? "worktree" : "local");
-  const draft = $("prompt") ? $("prompt").value : (view.draft || "");
-  const recent = S.tasks.filter(t => !t.archived).slice(0, 6);
-  $("view").innerHTML = `<div class="start"><div class="card">
-    <h1>What should we <span>build</span>?</h1>
-    <p class="sub">Each task runs as its own agent. With <b>worktree</b> it works on a separate branch, so tasks run side by side and your checkout stays untouched until you apply the result.</p>
-    <div class="composer"><textarea id="prompt" placeholder="Describe a task — fix a bug, add a feature, review the code…" rows="3">${esc(draft)}</textarea>
-      <div class="opts">
-        <select id="sproj">${projects.map(x => `<option value="${esc(x.path)}" ${x.path === p ? "selected" : ""}>${esc(x.name)}</option>`).join("")}<option value="+">+ add project…</option></select>
-        <span class="seg"><button class="${mode === "local" ? "on" : ""}" onclick="view.mode='local';renderStart(true)" title="work in the project folder itself">${I.folder}local</button><button class="${mode === "worktree" ? "on" : ""}" ${isGit ? "" : "disabled"} onclick="view.mode='worktree';renderStart(true)" title="${isGit ? "a git worktree on its own branch" : "needs a git repository"}">${I.branch}worktree</button></span>
-        <select id="smodel">${modelOptions(view.model)}</select><select id="seffort">${effortOptions(view.effort)}</select>
-        <button class="btn pri push" id="startBtn" onclick="startTask()" ${p ? "" : "disabled"}>${I.send}Start</button>
-      </div></div>
-    <div class="hint">${p ? `in <b>${esc(p)}</b> · ` : "add a project first · "}${mode === "worktree" ? "starts from the last commit (uncommitted changes are not included) · " : ""}ctrl+enter to start</div>
-    ${recent.length ? `<div class="recent"><h3>Recent</h3>${recent.map(t => `<button class="rc" onclick="go('${t.id}')"><span class="dot ${t.busy ? "running" : t.status}"></span><span class="tt">${esc(t.title)}</span><span class="meta">${esc((t.project || "").split(/[\\/]/).pop())} · ${ago(t.updated)}</span></button>`).join("")}</div>` : ""}
-  </div></div>`;
-  const ta = $("prompt");
-  ta.oninput = () => { view.draft = ta.value; view.dirtyStart = !!ta.value; grow(ta); };
-  ta.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); startTask(); } };
-  $("sproj").onchange = async e => {
-    if (e.target.value === "+") { await addProject(); view.project = S.projects[0] && S.projects[0].path; } else view.project = e.target.value;
-    view.mode = null; renderStart(true);
-  };
-  $("smodel").onchange = e => view.model = e.target.value;
-  $("seffort").onchange = e => view.effort = e.target.value;
-  grow(ta); if (force) ta.focus();
+async function fsGo(p) {
+  $("fsList").innerHTML = `<div class="empty-side">${esc(t("loading…"))}</div>`;
+  let d; try { d = await api("/api/fs?path=" + encodeURIComponent(p || "")); } catch (e) { $("fsList").innerHTML = `<div class="empty-side" style="color:var(--err)">${esc(e.message)}</div>`; return; }
+  view.fs = d; $("fsCur").value = d.path; $("fsPath").value = d.path;
+  $("fsRoots").innerHTML = (d.roots || []).map(r => `<button class="btn sm ghost" onclick='fsGo(${esc(JSON.stringify(r))})'>${esc(r)}</button>`).join("");
+  const sep = d.path.includes("\\") ? "\\" : "/";
+  $("fsList").innerHTML = (d.dirs.length ? d.dirs.map(x => { const full = d.path.replace(/[\\/]$/, "") + sep + x.name;
+    return `<button class="row" ondblclick='fsGo(${esc(JSON.stringify(full))})' onclick='fsPick(this, ${esc(JSON.stringify(full))})'>${I.folder}<span>${esc(x.name)}</span>${x.git ? `<span class="g">git</span>` : ""}</button>`; }).join("")
+    : `<div class="empty-side">—</div>`);
 }
-function grow(ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, innerHeight * 0.4) + "px"; }
+function fsPick(el, p) { document.querySelectorAll("#fsList .row").forEach(r => r.classList.remove("sel")); el.classList.add("sel"); $("fsPath").value = p; }
+function fsUp() { if (view.fs && view.fs.parent) fsGo(view.fs.parent); }
+async function addPath(p, then) {
+  if (!p) return;
+  try { const r = await api("/api/project/add", {path: p}); closeModal(); await refresh(); view.project = r.path; if (then) then(r.path); else go("", r.path); }
+  catch (e) { fail(e); }
+}
+
+// ─── home: start a task ───
+function renderHome() {
+  const has = S.projects.length;
+  if (!view.project || !S.projects.some(p => p.path === view.project)) view.project = PREF.project && S.projects.some(p => p.path === PREF.project) ? PREF.project : (S.projects[0] || {}).path;
+  const p = view.project ? proj(view.project) : null;
+  const mode = p && p.git ? (view.mode || PREF.mode || "local") : "local";
+  const recent = S.tasks.filter(x => !x.archived).slice(0, 6);
+  const m = S.models.find(x => x.name === (view.model || S.model));
+  $("home").innerHTML = `<div class="hero">
+    <h1>${esc(t("What should we work on?"))}</h1><p class="sub">${esc(t("Each task is its own agent. Start several — they run side by side."))}</p>
+    ${has ? "" : `<div class="onboard">${I.folder}<div class="tx"><b>${esc(t("Start by adding a project"))}</b>${esc(t("Pick a folder with your code. Git repositories can run tasks in isolated worktrees."))}</div><button class="btn pri" onclick="addProject()">${esc(t("Add project"))}</button></div>`}
+    <div class="composer"><textarea id="prompt" rows="3" placeholder="${esc(t("Describe a task — fix a bug, add a feature, explain the code…"))}">${esc(draft.home || "")}</textarea>
+      <div class="crow">
+        <button class="chip ${p ? "" : "warn"}" id="pChip" onclick="pickProject(this)" title="${esc(p ? p.path : "")}">${I.folder}<span>${esc(p ? p.name : t("Choose a project"))}</span>${I.chev}</button>
+        <span class="seg"><button class="${mode === "local" ? "on" : ""}" onclick="setMode('local')" title="${esc(t("Works in the project folder itself"))}">${esc(t("Local"))}</button><button class="${mode === "worktree" ? "on" : ""}" ${p && p.git ? "" : "disabled"} onclick="setMode('worktree')" title="${esc(p && p.git ? t("Its own git worktree and branch: your checkout stays untouched until you apply") : t("needs a git repository with a commit"))}">${I.branch}${esc(t("Worktree"))}</button></span>
+        <button class="chip" onclick="pickModel(this)" title="${esc(t("Model"))}">${I.cpu}<span>${esc(m ? m.name : t("no models — add one with `me` → /models"))}${view.effort ? " · " + esc(view.effort) : ""}</span>${I.chev}</button>
+        <span class="sp"></span><button class="send" id="startBtn" onclick="startTask()" title="${esc(t("Start"))}" ${p ? "" : "disabled"}>${I.up}</button></div></div>
+    <div class="hint"><span><kbd>Enter</kbd> ${esc(t("enter to start").replace(/^enter — |^enter to /, ""))}</span><span><kbd>Shift Enter</kbd> ${esc(t("shift+enter new line").replace(/^shift\+enter — |^shift\+enter /, ""))}</span><span>${esc(t("Ask in Russian or English — the agent answers in your language."))}</span></div>
+    ${p ? `<div class="starters">${["Fix the failing tests", "Explain how this project is structured", "Review my uncommitted changes", "Add a README with setup steps"].map(s => `<button onclick='useStarter(${esc(JSON.stringify(t(s)))})'>${esc(t(s))}</button>`).join("")}</div>` : ""}
+    ${recent.length ? `<div class="recent"><h3>${esc(t("Recent"))}</h3>${recent.map(x => `<button class="rc" onclick="go('${x.id}')"><span class="st ${statusOf(x)}"><i></i></span><span class="tt">${esc(x.title)}</span><span class="m">${esc(base(x.project))} · ${ago(x.updated)}</span></button>`).join("")}</div>` : ""}
+  </div>`;
+  const ta = $("prompt"); ta.oninput = () => { draft.home = ta.value; grow(ta, 320); };
+  ta.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startTask(); } };
+  grow(ta, 320); if (has) setTimeout(() => ta.focus(), 0);
+}
+function useStarter(s) { draft.home = s; renderHome(); }
+function setMode(m) { view.mode = m; PREF.mode = m; savePref(); renderHome(); }
+function pickProject(el) {
+  menu(el, [t("Project folder"), ...S.projects.map(p => [p.name, () => { view.project = p.path; PREF.project = p.path; savePref(); renderHome(); }, "", p.path === view.project, p.git ? "git" : ""]),
+            "-", ["+ " + t("Add project"), () => addProject(path => { view.project = path; PREF.project = path; savePref(); go("", path); })]]);
+}
+const EFFORTS = ["", "low", "medium", "high", "xhigh"];
+function pickModel(el, onPick) {
+  const curM = onPick ? (task(cur) || {}).model || S.model : view.model || S.model, curE = onPick ? (task(cur) || {}).effort || "" : view.effort || "";
+  const set = onPick || ((k, v) => { view[k] = v; renderHome(); });
+  menu(el, [t("Model"), ...S.models.map(x => [x.name, () => set("model", x.name), "", x.name === curM, x.id]),
+            "-", t("effort"), ...EFFORTS.map(e => [e || t("default"), () => set("effort", e), "", e === curE])]);
+}
 async function startTask() {
-  const prompt = $("prompt").value.trim(), project = $("sproj") && $("sproj").value;
-  if (!prompt || !project || project === "+") return toast(prompt ? "pick a project" : "describe the task first", "err");
-  const isGit = (S.projects.find(x => x.path === project) || {}).git;
-  const mode = view.mode || (isGit ? "worktree" : "local");
+  const ta = $("prompt"), prompt = ta.value.trim(), p = view.project;
+  if (!p) return addProject();
+  if (!prompt) return ta.focus();
+  const pj = proj(p), mode = pj.git ? (view.mode || PREF.mode || "local") : "local";
   $("startBtn").disabled = true;
   try {
-    const r = await api("/api/task/new", {project, prompt, mode, model: $("smodel").value, effort: $("seffort").value});
-    view.draft = ""; view.dirtyStart = false;
+    const r = await api("/api/task/new", {project: p, prompt, mode, model: view.model || "", effort: view.effort || ""});
+    draft.home = ""; PREF.project = p; savePref();
     await refresh(); go(r.id);
-  } catch (e) { toast(e.message, "err"); $("startBtn").disabled = false; }
+  } catch (e) { fail(e); $("startBtn").disabled = false; }
+}
+function grow(ta, max = 240) { ta.style.height = "auto"; ta.style.height = Math.min(max, ta.scrollHeight) + "px"; }
+
+// ─── navigation ───
+function go(id, project) {
+  closeSide(); closeMenu();
+  if (cur && $("msg")) draft[cur] = $("msg").value;
+  cur = id || null; poll++; live = {}; view.files = null;
+  if (project) view.project = project;
+  $("home").classList.toggle("hidden", !!cur); $("task").classList.toggle("hidden", !cur);
+  if (!cur) { closePanel(); $("ttl").innerHTML = `<b>${esc(t("New task"))}</b>`; $("acts").innerHTML = ""; view.homeSig = ""; renderHome(); }
+  else openTask(cur);
+  renderSide();
+  try { history.replaceState(null, "", location.pathname + location.search.replace(/[&?]t=[^&]*/, "") + (cur ? (location.search ? "&" : "?") + "t=" + cur : "")); } catch (e) {}
 }
 
 // ─── task view ───
-function renderHeader() {
-  const t = task(cur); if (!t) return;
-  const st = t.busy ? (t.status === "waiting" ? "waiting for you" : "working") : ({review: "ready to review", done: "done", error: "error", idle: "idle", discarded: "discarded"})[t.status] || t.status;
-  $("title").innerHTML = `<b ondblclick="renameTask()" title="${esc(t.title)}">${esc(t.title)}</b>
-    <span class="badge wide">${esc((t.project || "").split(/[\\/]/).pop())}</span>
-    ${t.mode === "worktree" ? `<span class="badge a wide" title="worktree branch">⑂ ${esc(t.branch || "")}</span>` : `<span class="badge wide">local</span>`}
-    <span class="badge">${esc(st)}</span>`;
-  $("actions").innerHTML = `${t.busy ? `<button class="btn sm danger" onclick="stopTask()">${I.stop}Stop</button>` : ""}
-    <button class="btn sm" onclick="panelTab('changes')" title="review changes">${I.diff}<span class="wide">Review</span>${view.files != null ? ` <b>${view.files}</b>` : ""}</button>
-    <button class="ib" onclick="panelTab('term')" title="terminal">${I.term}</button>
-    <button class="ib wide" onclick="api('/api/open', {id: cur}).catch(e => toast(e.message, 'err'))" title="open folder">${I.folder}</button>
-    <button class="ib wide" onclick="archiveTask()" title="${t.archived ? "unarchive" : "archive"}">${I.box}</button>`;
+function renderTop() {
+  const x = task(cur); if (!x) return;
+  const st = statusOf(x), editing = $("ttlEdit");
+  if (!editing) $("ttl").innerHTML = `<b onclick="renameTask()" title="${esc(t("Rename"))}">${esc(x.title)}</b>
+    <span class="meta wide">${esc(base(x.project))}<span class="sep">·</span>${x.mode === "worktree" ? `${I.branch}${esc(x.branch || "")}` : esc(t("Local"))}</span>`;
+  const files = view.files, adds = view.adds || 0, dels = view.dels || 0;
+  $("acts").innerHTML = `<span class="pill ${st}">${st === "running" ? '<span class="spinner"></span>' : ""}${esc(t(STATUS[st] || st))}</span>
+    ${x.busy ? `<button class="btn sm" onclick="stopTask()" title="Esc">${I.stop}${esc(t("Stop"))}</button>` : ""}
+    <button class="btn sm ${panel === "changes" ? "" : "ghost"}" onclick="togglePanel('changes')" title="${esc(t("Changes"))}">${I.diff}<span class="wide">${esc(t("Review"))}</span>${files ? ` <span class="chg"><span class="add">+${adds}</span> <span class="del">−${dels}</span></span>` : ""}</button>
+    <button class="ib ${panel === "term" ? "on" : ""}" onclick="togglePanel('term')" title="${esc(t("Terminal"))}">${I.term}</button>
+    <button class="ib" onclick="taskMenu(this)" aria-label="more">${I.dots}</button>`;
+}
+function taskMenu(el) {
+  const x = task(cur); if (!x) return;
+  menu(el, [[t("Rename"), renameTask], [t("Open folder"), () => api("/api/open", {id: cur}).catch(fail)],
+            [x.archived ? t("Unarchive") : t("Archive"), archiveTask], "-", [t("Discard…"), discardTask, "danger"]], {right: true});
 }
 async function openTask(id) {
-  $("view").innerHTML = `<div id="log"><div class="lw" id="lw"></div></div><div id="todo"></div><div class="foot"><div class="composer">
-      <textarea id="msg" rows="1" placeholder="Reply, steer, or ask for changes — enter to send"></textarea>
-      <div class="opts"><select id="tmodel">${modelOptions((task(id) || {}).model)}</select><select id="teffort">${effortOptions((task(id) || {}).effort)}</select>
-        <button class="btn pri sm push" onclick="sendMsg()">${I.send}Send</button></div></div></div>`;
-  const ta = $("msg");
-  ta.oninput = () => grow(ta);
+  const x = task(id) || {};
+  $("task").innerHTML = `<div id="plan" class="plan hidden"></div><div id="log"><div class="lw" id="lw"></div></div>
+    <div class="foot"><div class="composer"><textarea id="msg" rows="1"></textarea>
+      <div class="crow"><span class="mini"><button class="chip" style="height:26px" onclick="pickModel(this, setTaskModel)">${I.cpu}<span id="tModel"></span>${I.chev}</button></span>
+        <span class="sp"></span><button class="send" id="sendBtn" onclick="sendOrStop()">${I.up}</button></div></div></div>`;
+  const ta = $("msg"); ta.value = draft[id] || "";
+  ta.oninput = () => { grow(ta); setSendBtn(); };
   ta.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendMsg(); } };
-  $("tmodel").onchange = e => api("/api/task/model", {id: cur, model: e.target.value}).catch(er => toast(er.message, "err"));
-  $("teffort").onchange = e => api("/api/task/model", {id: cur, effort: e.target.value}).catch(er => toast(er.message, "err"));
-  renderHeader();
+  renderTop(); setSendBtn(); renderTaskModel();
   let d;
-  try { d = await api("/api/task?id=" + encodeURIComponent(id)); } catch (e) { return toast(e.message, "err"); }
+  try { d = await api("/api/task?id=" + encodeURIComponent(id)); } catch (e) { return fail(e); }
   if (cur !== id) return;
-  renderHistory(d.messages); renderTodo(d.todo);
+  renderHistory(d.messages); renderPlan(d.todo);
   (d.pending || []).forEach(onEvent);
-  after = d.seq; refreshDiffCount();
+  after = d.seq; refreshDiff();
+  setTimeout(() => ta.focus(), 0);
   const my = ++poll;
   while (my === poll && cur === id) {
     try {
       const r = await api(`/api/events?id=${encodeURIComponent(id)}&after=${after}`);
       if (my !== poll) return;
       for (const e of r.events) { after = Math.max(after, e.seq); onEvent(e); }
+      const xx = task(id); if (xx && xx.busy !== r.busy) refresh();
     } catch (e) { await new Promise(r => setTimeout(r, 1500)); }
   }
 }
-function lw() { return $("lw"); }
-function atBottom() { const l = $("log"); return !l || l.scrollHeight - l.scrollTop - l.clientHeight < 120; }
+function renderTaskModel() { const x = task(cur) || {}; const el = $("tModel"); if (el) el.textContent = (x.model || S.model || "—") + (x.effort ? " · " + x.effort : ""); }
+async function setTaskModel(k, v) {
+  try { await api("/api/task/model", {id: cur, [k]: v}); const x = task(cur); if (x) x[k] = v; renderTaskModel(); } catch (e) { fail(e); }
+}
+function setSendBtn() {
+  const x = task(cur) || {}, b = $("sendBtn"), ta = $("msg"); if (!b || !ta) return;
+  const stop = x.busy && !ta.value.trim();
+  b.className = "send" + (stop ? " stop" : ""); b.innerHTML = stop ? I.stop : I.up; b.title = stop ? t("Stop") : t("Send");
+  ta.placeholder = x.busy ? t("Steer the running task — it reads this after the current step") : t("Ask for follow-up changes");
+}
+const lw = () => $("lw");
+function atBottom() { const l = $("log"); return !l || l.scrollHeight - l.scrollTop - l.clientHeight < 140; }
 function add(html) {
-  const stick = atBottom(); const d = document.createElement("div"); d.innerHTML = html.trim(); const n = d.firstChild;
-  if (lw()) lw().appendChild(n); if (stick) $("log").scrollTop = $("log").scrollHeight; return n;
+  const stick = atBottom(), d = document.createElement("div"); d.innerHTML = html.trim(); const n = d.firstChild;
+  if (lw()) lw().appendChild(n); if (stick) scrollDown(true); return n;
 }
 function scrollDown(force) { const l = $("log"); if (l && (force || atBottom())) l.scrollTop = l.scrollHeight; }
 const txt = c => Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : (c || "");
-function userMsg(text, tag) { add(`<div class="msg user">${tag ? `<span class="tag">${esc(tag)}</span>` : ""}<div class="bub">${esc(text)}</div></div>`); }
-function toolCard(name, label) {
-  return add(`<div class="tool closed"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spin"></span></span><b>${esc(name)}</b><span class="lab">${esc(label || "")}</span><span class="t"></span></div><div class="st hidden"></div><div class="body"></div></div>`);
+function userMsg(text, tag) { add(`<div class="msg user">${tag ? `<span class="tag">${esc(t(tag))}</span>` : ""}<div class="bub">${esc(text)}</div></div>`); }
+function toolLabel(name, a) {
+  a = a || {};
+  if (name === "bash") return a.cmd || "";
+  if (name === "todo") return "";
+  return a.path || a.pattern || a.query || a.url || a.name || a.prompt || a.text || "";
+}
+function toolCard(name, a, label) {
+  return add(`<div class="tool closed"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spinner"></span></span>
+    <span class="nm">${esc(verb(name))}</span><span class="lab">${esc(label != null ? label : toolLabel(name, a))}</span><span class="t"></span>${I.right}</div><div class="stl hidden"></div><pre class="body"></pre></div>`);
 }
 function finishCard(c, ok, out, time) {
   c.querySelector(".ic").innerHTML = ok ? I.check : I.x; if (time != null) c.querySelector(".t").textContent = dur(time);
-  c.querySelector(".st").classList.add("hidden");
-  const b = c.querySelector(".body"); if (!b.innerHTML) b.textContent = String(out || "").slice(0, 20000);
-  if (!ok) c.classList.remove("closed");
+  c.querySelector(".stl").classList.add("hidden");
+  const b = c.querySelector(".body"); if (!b.dataset.diff) b.textContent = String(out || "").slice(0, 30000) || "—";
+  if (!ok) c.classList.add("err");
 }
 function renderHistory(msgs) {
   lw().innerHTML = "";
@@ -990,165 +1341,220 @@ function renderHistory(msgs) {
   msgs.forEach(m => { if (m.role === "tool") outs[m.tool_call_id] = m.content; });
   msgs.forEach(m => {
     if (m.role === "user") {
-      const t = txt(m.content);
-      if (m._aux) { if (/^\[message from the user/.test(t)) userMsg(t.split("\n").slice(1).join("\n"), "while working"); return; }
-      if (t && t !== "(images from read)") userMsg(t);
+      const s = txt(m.content);
+      if (m._aux) { if (/^\[message from the user/.test(s)) userMsg(s.split("\n").slice(1).join("\n"), "while working"); return; }
+      if (s && s !== "(images from read)") userMsg(s);
     } else if (m.role === "assistant") {
       if (m.content) add(`<div class="md">${md(m.content)}</div>`);
       (m.tool_calls || []).forEach(tc => {
+        if (tc.function.name === "todo") return;
         let a = {}; try { a = JSON.parse(tc.function.arguments); } catch (e) {}
-        const c = toolCard(tc.function.name, a.path || a.cmd || a.pattern || a.query || a.url || a.name || a.prompt || "");
-        const o = outs[tc.id]; finishCard(c, !/^error/.test(o || ""), o);
+        const c = toolCard(tc.function.name, a); const o = outs[tc.id]; finishCard(c, !/^error/.test(o || ""), o);
       });
     }
   });
+  if (!msgs.length) add(`<div class="note">${esc(t("loading…"))}</div>`);
   scrollDown(true);
 }
-function renderTodo(items) {
-  const t = $("todo"); if (!t) return;
-  const open = (items || []).filter(i => i.s !== "done").length;
-  t.innerHTML = items && items.length && open ? `<div class="todo">${items.map(i => `<div class="${i.s === "done" ? "d" : ""}">${i.s === "done" ? "✓" : i.s === "doing" ? "▸" : "○"} ${esc(i.t)}</div>`).join("")}</div>` : "";
+function renderPlan(items) {
+  const el = $("plan"); if (!el) return;
+  items = items || [];
+  if (!items.length) { el.classList.add("hidden"); return; }
+  const done = items.filter(i => i.s === "done").length;
+  el.classList.remove("hidden"); el.classList.toggle("closed", !!PREF.planClosed);
+  el.innerHTML = `<div class="in"><div class="ph2" onclick="PREF.planClosed=!PREF.planClosed;savePref();this.closest('.plan').classList.toggle('closed')"><b>${esc(t("Plan"))}</b><span>${done}/${items.length}</span>
+    <span class="bar2"><i style="width:${Math.round(done / items.length * 100)}%"></i></span>${I.chev}</div>
+    <div class="items">${items.map(i => `<div class="it ${i.s === "done" ? "d" : i.s === "doing" ? "g" : ""}"><span>${i.s === "done" ? "✓" : i.s === "doing" ? "▸" : "○"}</span><span>${esc(i.t)}</span></div>`).join("")}</div></div>`;
 }
 let raf = 0;
+function flushText() { if (live.text) live.text.innerHTML = md(live.raw); }  // the last streamed piece must not wait for a frame that may never come
+function endThink() { if (live.think && !live.thinkDone) { live.think.querySelector("summary").innerHTML = esc(t("thought for {}", dur((Date.now() - live.thinkT) / 1000))); live.thinkDone = true; } }
 function onEvent(e) {
-  const t = e.type;
-  if (t === "user") { userMsg(e.text); return; }
-  if (t === "queued") { userMsg(e.text, "queued"); return; }
-  if (t === "turn_start") { renderHeader(); return; }
-  if (t === "reasoning") {
-    if (!live.think) { live.think = add(`<details class="think"><summary><span class="shimmer">thinking…</span></summary><pre></pre></details>`); live.thinkT = Date.now(); }
+  const k = e.type;
+  if (k === "user") { const last = lw() && lw().lastElementChild; if (!(last && last.classList.contains("msg") && last.querySelector(".bub").textContent === e.text && view.echo)) userMsg(e.text); view.echo = false; return; }
+  if (k === "queued") { userMsg(e.text, "queued"); return; }
+  if (k === "queued_sent") return;
+  if (k === "turn_start") { refresh(); return; }
+  if (k === "reasoning") {
+    if (!live.think) { live.think = add(`<details class="think"><summary><span class="shimmer">${esc(t("thinking…"))}</span></summary><pre></pre></details>`); live.thinkT = Date.now(); live.thinkDone = false; }
     live.think.querySelector("pre").textContent += e.text; scrollDown(); return;
   }
-  const endThink = () => { if (live.think && !live.thinkDone) { live.think.querySelector("summary").textContent = "thought for " + dur((Date.now() - live.thinkT) / 1000); live.thinkDone = true; } };
-  if (t === "text") {
+  if (k === "text") {
     endThink();
     if (!live.text) { live.text = add(`<div class="md"></div>`); live.raw = ""; }
     live.raw += e.text;
     if (!raf) raf = requestAnimationFrame(() => { raf = 0; if (live.text) { live.text.innerHTML = md(live.raw); scrollDown(); } });
     return;
   }
-  if (t === "tool_start") {
-    endThink(); live.text = null; live.think = null; live.thinkDone = false;
-    live[e.id] = toolCard(e.cli ? e.cli.label : e.name, e.label); return;
+  if (k === "tool_start") {
+    endThink(); flushText(); live.text = null; live.think = null;
+    if (e.name === "todo") return;
+    live[e.id] = toolCard(e.cli ? e.cli.label : e.name, e.args, e.cli ? null : (e.name === "bash" ? (e.args || {}).cmd : toolLabel(e.name, e.args) || e.label)); return;
   }
-  if (t === "tool_event") {
+  if (k === "tool_event") {
     const c = live[e.id]; if (!c) return;
-    if (e.t === "status") { const s = c.querySelector(".st"); s.classList.remove("hidden"); s.textContent = e.text; }
-    else if (e.t === "diff" && (e.text || "").trim()) { c.querySelector(".body").innerHTML = diffHtml(e.text); c.classList.remove("closed"); }
-    else if (e.t === "log") { const s = c.querySelector(".st"); s.classList.remove("hidden"); s.textContent = "› " + e.text; }
+    const s = c.querySelector(".stl");
+    if (e.t === "status" || e.t === "log") { s.classList.remove("hidden"); s.textContent = (e.t === "log" ? "› " : "") + e.text; }
+    else if (e.t === "diff" && (e.text || "").trim()) { const b = c.querySelector(".body"); b.dataset.diff = 1; b.innerHTML = diffHtml(e.text); c.classList.remove("closed"); }
     scrollDown(); return;
   }
-  if (t === "tool_end") { const c = live[e.id]; if (c) { delete live[e.id]; finishCard(c, e.ok, e.output, e.time); } return; }
-  if (t === "confirm") {
-    const c = add(`<div class="ask"><b>Allow ${esc(e.name)}?</b><pre>${esc(JSON.stringify(e.args, null, 1)).slice(0, 3000)}</pre><div class="btns"><button class="btn pri sm">Allow</button><button class="btn sm">${e.name === "bash" ? "Always allow this command" : "Allow all (full access)"}</button><button class="btn sm danger">Deny</button></div></div>`);
+  if (k === "tool_end") { const c = live[e.id]; if (c) { delete live[e.id]; finishCard(c, e.ok, e.output, e.time); } return; }
+  if (k === "confirm") {
+    endThink();
+    const always = e.name === "bash" ? t("Always allow this command") : t("Allow everything (full access)");
+    const a = e.args || {}, what = e.name === "bash" ? a.cmd : e.name === "edit" || e.name === "write" ? (a.path || "") + "\n\n" + (a.new || a.content || "").slice(0, 1500) : JSON.stringify(a, null, 1);
+    const c = add(`<div class="card"><div class="q">${I.warn}<span>${esc(verb(e.name))} — ${esc(t("needs your approval"))}</span></div><pre>${esc(String(what || "").slice(0, 3000))}</pre>
+      <div class="btns"><button class="btn sm pri">${esc(t("Allow"))}</button><button class="btn sm">${esc(always)}</button><button class="btn sm danger">${esc(t("Deny"))}</button></div></div>`);
     const [y, al, n] = c.querySelectorAll("button");
-    const ans = v => { api("/api/task/confirm", {id: cur, rid: e.id, ok: v}); c.innerHTML = `<span class="info">${esc(e.name)} → ${v ? (v === "always" ? "always allowed" : "allowed") : "denied"}</span>`; };
+    const ans = v => { api("/api/task/confirm", {id: cur, rid: e.id, ok: v}).catch(fail); c.className = "card done"; c.innerHTML = `${esc(verb(e.name))} · ${esc(t(v ? (v === "always" ? "always allowed" : "allowed") : "denied"))}`; refresh(); };
     y.onclick = () => ans(true); al.onclick = () => ans("always"); n.onclick = () => ans(false);
-    return;
+    y.focus(); scrollDown(true); return;
   }
-  if (t === "ask") {
+  if (k === "ask") {
     const opts = e.options || [];
-    const c = add(`<div class="ask"><b>${esc(e.text)}</b><div class="btns">${opts.length ? opts.map(o => `<button class="btn sm" data-v="${esc(o)}">${esc(o)}</button>`).join("") : `<input placeholder="answer…"><button class="btn pri sm" data-in="1">Send</button>`}</div></div>`);
-    const send = v => { api("/api/task/answer", {id: cur, rid: e.id, text: v}); c.innerHTML = `<span class="info">${esc(e.text)} → <b>${esc(v || "—")}</b></span>`; };
+    const c = add(`<div class="card"><div class="q">${I.q}${esc(e.text)}</div><div class="btns">${opts.length ? opts.map(o => `<button class="btn sm" data-v="${esc(o)}">${esc(o)}</button>`).join("") : `<input placeholder="${esc(t("answer…"))}"><button class="btn sm pri" data-in="1">${esc(t("Send"))}</button>`}</div></div>`);
+    const send = v => { api("/api/task/answer", {id: cur, rid: e.id, text: v}).catch(fail); c.className = "card done"; c.innerHTML = `${esc(e.text)} → <b>${esc(v || "—")}</b>`; };
     c.querySelectorAll("button").forEach(b => b.onclick = () => send(b.dataset.in ? c.querySelector("input").value : b.dataset.v));
-    const inp = c.querySelector("input"); if (inp) inp.onkeydown = ev => ev.key === "Enter" && send(inp.value);
-    return;
+    const inp = c.querySelector("input"); if (inp) { inp.onkeydown = ev => ev.key === "Enter" && send(inp.value); inp.focus(); }
+    scrollDown(true); return;
   }
-  if (t === "retry") {
-    if (e.discard) { live.text && live.text.remove(); live.think && live.think.remove(); live.text = live.think = null; live.thinkDone = false; }
-    add(`<div class="info warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 160))} — retrying</div>`); return;
+  if (k === "retry") {
+    if (e.discard) { live.text && live.text.remove(); live.think && live.think.remove(); live.text = live.think = null; }
+    add(`<div class="note warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 160))} — ${esc(t("retrying"))}</div>`); return;
   }
-  if (t === "compacting") { add(`<div class="info">compacting history…</div>`); return; }
-  if (t === "compacted") { add(`<div class="info">history compacted · ~${human(e.ctx)} tokens</div>`); return; }
-  if (t === "verify") { add(`<div class="info">self-check: running checks before finishing</div>`); return; }
-  if (t === "error") { add(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${esc(e.text)}</div>`); return; }
-  if (t === "todo") { renderTodo(e.items); return; }
-  if (t === "turn_diff") {
+  if (k === "compacting") { add(`<div class="note">${esc(t("compacting history…"))}</div>`); return; }
+  if (k === "compacted") { add(`<div class="note">${esc(t("history compacted · ~{} tokens", human(e.ctx)))}</div>`); return; }
+  if (k === "verify") { add(`<div class="note">${esc(t("self-check: running checks before finishing"))}</div>`); return; }
+  if (k === "notice") { add(`<div class="note warn">${esc(e.text)}</div>`); return; }
+  if (k === "error") { flushText(); add(`<div class="note ${e.text === "interrupted" ? "warn" : "err"}">${I.x}${esc(e.text)}</div>`); return; }
+  if (k === "todo") { renderPlan(e.items); return; }
+  if (k === "turn_diff") {
     const fs = e.files || []; if (!fs.length) return;
-    add(`<div class="info">Δ ${fs.length} file${fs.length > 1 ? "s" : ""} changed · <a href="#" onclick="panelTab('changes');return false">review</a></div>`);
-    refreshDiffCount(); return;
+    const n = add(`<div class="note">${I.diff}<span>${esc(fs.length === 1 ? t("1 file changed") : t("{} files changed", fs.length))}</span> · <a>${esc(t("review"))}</a></div>`);
+    n.querySelector("a").onclick = () => openPanel("changes");
+    refreshDiff(); return;
   }
-  if (t === "turn_end") {
-    endThink(); live = {};
+  if (k === "turn_end") {
+    endThink(); flushText(); for (const id of Object.keys(live)) if (live[id] && live[id].classList && live[id].classList.contains("tool")) finishCard(live[id], false, "interrupted");
+    live = {};
     const steps = e.steps || 1;
-    add(`<div class="stats">${dur(e.time)} · ${steps} step${steps > 1 ? "s" : ""} · context ${human(e.ctx || 0)} · ↑${human(e.in)} ↓${human(e.out)}${e.cost ? " · $" + e.cost.toFixed(4) : ""}</div>`);
-    refreshDiffCount(); refresh(); return;
+    add(`<div class="turnend">${esc(t("Worked {}", dur(e.time || 0)))} · ${esc(steps === 1 ? t("1 step") : t("{} steps", steps))} · ↑${human(e.in)} ↓${human(e.out)}${e.cost ? " · $" + e.cost.toFixed(4) : ""}</div>`);
+    refreshDiff(); refresh().then(setSendBtn); return;
   }
-  if (t === "status") { refresh(); if (panel === "changes") panelTab("changes"); return; }
+  if (k === "status") { refresh().then(setSendBtn); if (panel === "changes") renderChanges(); return; }
 }
+function sendOrStop() { const x = task(cur) || {}; if (x.busy && !$("msg").value.trim()) stopTask(); else sendMsg(); }
 async function sendMsg() {
   const ta = $("msg"), text = ta.value.trim(); if (!text) return;
-  ta.value = ""; grow(ta);
-  try { await api("/api/task/send", {id: cur, text}); refresh(); } catch (e) { toast(e.message, "err"); }
+  ta.value = ""; draft[cur] = ""; grow(ta);
+  const x = task(cur) || {};
+  if (!x.busy) { userMsg(text); view.echo = true; }
+  try { await api("/api/task/send", {id: cur, text}); await refresh(); setSendBtn(); } catch (e) { fail(e); }
 }
-async function stopTask() { try { await api("/api/task/stop", {id: cur}); } catch (e) { toast(e.message, "err"); } }
-async function archiveTask() { try { await api("/api/task/archive", {id: cur}); await refresh(); } catch (e) { toast(e.message, "err"); } }
-async function renameTask() {
-  const t = task(cur); const v = prompt("Task name", t.title); if (!v) return;
-  await api("/api/task/rename", {id: cur, title: v}); refresh();
+async function stopTask() { try { await api("/api/task/stop", {id: cur}); } catch (e) { fail(e); } }
+async function archiveTask() { try { await api("/api/task/archive", {id: cur}); await refresh(); } catch (e) { fail(e); } }
+function renameTask() {
+  const x = task(cur); if (!x) return;
+  $("ttl").innerHTML = `<input id="ttlEdit" value="${esc(x.title)}">`;
+  const i = $("ttlEdit"); i.focus(); i.select();
+  const done = async save => { if (!$("ttlEdit")) return; const v = i.value.trim(); i.remove(); if (save && v && v !== x.title) { await api("/api/task/rename", {id: cur, title: v}).catch(fail); x.title = v; } renderTop(); renderSide(); };
+  i.onkeydown = e => { if (e.key === "Enter") done(true); if (e.key === "Escape") done(false); };
+  i.onblur = () => done(true);
 }
-async function refreshDiffCount() {
+async function discardTask() {
+  const x = task(cur); if (!x) return;
+  const ok = await confirmBox(t("Discard this task?"), x.mode === "worktree" ? t("Its worktree and branch {} are deleted. This cannot be undone.", x.branch || "") : t("The task is removed from the list; files it changed stay as they are."), t("Discard"), true);
+  if (!ok) return;
+  try { const r = await api("/api/task/discard", {id: cur}); toast(srv(r.text), "ok"); await refresh(); go(""); } catch (e) { fail(e); }
+}
+async function refreshDiff() {
   if (!cur) return;
-  try { const d = await api("/api/diff?id=" + encodeURIComponent(cur)); view.files = d.files.length; renderHeader(); } catch (e) {}
+  try { const d = await api("/api/diff?id=" + encodeURIComponent(cur)); view.diff = d; view.files = d.files.length; view.adds = d.files.reduce((a, f) => a + f.add, 0); view.dels = d.files.reduce((a, f) => a + f.del, 0); renderTop(); if (panel === "changes") renderChanges(true); } catch (e) {}
 }
 
 // ─── review / terminal panel ───
-function closePanel() { panel = null; $("panel").classList.add("hidden"); document.body.classList.remove("panel-open"); }
-async function panelTab(tab) {
-  if (!cur) return;
-  panel = tab; $("panel").classList.remove("hidden"); document.body.classList.add("panel-open");
-  document.querySelectorAll(".ptabs .tab").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
-  if (tab === "term") return renderTerm();
-  const t = task(cur) || {};
-  $("pbody").innerHTML = `<div class="note">loading changes…</div>`;
-  let d; try { d = await api("/api/diff?id=" + encodeURIComponent(cur)); } catch (e) { $("pbody").innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
-  view.files = d.files.length; renderHeader();
-  const adds = d.files.reduce((a, f) => a + f.add, 0), dels = d.files.reduce((a, f) => a + f.del, 0);
-  const wt = t.mode === "worktree";
-  $("pbody").innerHTML = `<div class="pact">
-      ${wt ? `<button class="btn sm pri" onclick="act('apply')" ${d.files.length ? "" : "disabled"}>Apply to project</button>` : `<button class="btn sm" onclick="act('undo')">Undo last turn</button>`}
-      <button class="btn sm" onclick="act('commit')" ${d.files.length || !wt ? "" : "disabled"}>Commit…</button>
-      ${wt ? `<button class="btn sm" onclick="act('push')">Push branch</button><button class="btn sm danger" onclick="act('discard')">Discard</button>` : ""}
-    </div>
-    <div class="note">${d.files.length ? `${d.files.length} file${d.files.length > 1 ? "s" : ""} · <span class="add">+${adds}</span> <span class="del">−${dels}</span>` : "no changes yet"}${wt ? ` · branch <b>${esc(d.branch || t.branch || "")}</b>${d.commits ? ` · ${d.commits} commit${d.commits > 1 ? "s" : ""}` : ""}` : ""}${d.note ? `<br>${esc(d.note)}` : ""}</div>
-    <div class="fl">${d.files.map((f, i) => `<details ${i < 3 && f.add + f.del < 400 ? "open" : ""}><summary><span class="p" title="${esc(f.path)}">${esc(f.path)}</span>${f.new ? `<span class="tag">new</span>` : ""}${f.deleted ? `<span class="tag">deleted</span>` : ""}<span class="add">+${f.add}</span><span class="del">−${f.del}</span></summary><pre>${f.binary ? "binary file" : diffHtml(f.diff)}</pre></details>`).join("")}</div>`;
+function closePanel() { panel = null; $("panel").classList.add("hidden"); if (cur) renderTop(); }
+function togglePanel(tab) { panel === tab ? closePanel() : openPanel(tab); }
+function openPanel(tab) { if (!cur) return; panel = tab; $("panel").classList.remove("hidden"); panelTab(tab); renderTop(); }
+function panelTab(tab) {
+  panel = tab; document.querySelectorAll(".ptab").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  if (tab === "term") renderTerm(); else { $("pbody").innerHTML = `<div class="empty">${esc(t("loading…"))}</div>`; refreshDiff().then(() => renderChanges()); }
+  renderTop();
+}
+function renderChanges(keep) {
+  const x = task(cur) || {}, d = view.diff; if (!d || panel !== "changes") return;
+  const open = new Set(keep ? [...document.querySelectorAll(".fitem.open")].map(f => f.dataset.p) : []);
+  const wt = x.mode === "worktree", n = d.files.length;
+  const sum = n ? `<b>${esc(n === 1 ? t("1 file") : t("{} files", n))}</b> · <span class="add">+${view.adds}</span> <span class="del">−${view.dels}</span>` : esc(t("No changes yet"));
+  $("pbody").innerHTML = `<div class="rv-head"><div class="rv-sum">${sum}${wt ? ` · ${I.branch}<span>${esc(d.branch || x.branch || "")}</span>${d.commits ? ` · ${d.commits} ${esc(t("commits"))}` : ""}` : ""}</div>
+      <div class="rv-acts">${wt ? `<button class="btn sm pri" onclick="act('apply')" ${n ? "" : "disabled"}>${esc(t("Apply to project"))}</button><button class="btn sm" onclick="act('push')">${esc(t("Push branch"))}</button>`
+        : `<button class="btn sm" onclick="act('undo')" ${x.busy ? "disabled" : ""}>${esc(t("Undo last turn"))}</button>`}</div>
+      <div class="commit"><input id="cmsg" placeholder="${esc(t("Commit message"))}" value="${esc(view.cmsg || x.title || "")}" oninput="view.cmsg=this.value" onkeydown="if(event.key==='Enter')act('commit')"><button class="btn sm" onclick="act('commit')" ${n || !wt ? "" : "disabled"}>${esc(t("Commit"))}</button></div>
+      ${d.note ? `<div class="note">${esc(d.note)}</div>` : ""}</div>
+    ${n ? d.files.map((f, i) => `<div class="fitem ${open.has(f.path) || (!keep && i < 4 && f.add + f.del < 300) ? "open" : ""}" data-p="${esc(f.path)}"><div class="fh" onclick="this.parentNode.classList.toggle('open')">${I.right}<span class="p" title="${esc(f.path)}">${esc(f.path)}</span>${f.new ? `<span class="tag new">${esc(t("new"))}</span>` : ""}${f.deleted ? `<span class="tag gone">${esc(t("deleted"))}</span>` : ""}<span class="chg"><span class="add">+${f.add}</span> <span class="del">−${f.del}</span></span></div>
+      <pre>${f.binary ? `<span class="dl">${esc(t("binary file"))}</span>` : diffHtml(f.diff.split("\n").filter(l => !/^(diff --git|index |--- |\+\+\+ |new file mode|deleted file mode)/.test(l)).join("\n"))}</pre></div>`).join("")
+      : `<div class="empty">${I.file}<b>${esc(t("No changes yet"))}</b><span>${esc(t("The agent's edits show up here as it works."))}</span></div>`}`;
 }
 async function act(kind) {
-  const t = task(cur) || {};
-  let body = {id: cur};
-  if (kind === "commit") { const m = prompt("Commit message", t.title); if (!m) return; body.message = m; }
-  if (kind === "discard" && !confirm("Discard this task's worktree and branch? Its changes are lost.")) return;
   try {
-    const r = await api(`/api/task/${kind}`, body);
-    toast(r.text || "done", "ok");
-    await refresh(); if (kind === "discard") go(""); else panelTab("changes");
-  } catch (e) { toast(e.message, "err"); }
+    let r;
+    if (kind === "commit") r = await api("/api/task/commit", {id: cur, message: ($("cmsg") || {}).value || ""});
+    else if (kind === "undo") { r = await api("/api/task/undo", {id: cur}); openTask(cur); }
+    else r = await api("/api/task/" + kind, {id: cur});
+    toast(srv(r.text || "ok"), "ok"); refreshDiff(); refresh();
+  } catch (e) { fail(e); }
 }
 function renderTerm() {
-  const t = task(cur) || {};
-  if (!$("tcmd")) {
-    $("pbody").innerHTML = `<div class="note">runs in ${t.mode === "worktree" ? "the task's worktree" : "the project folder"}</div>
-      <div class="term"><input id="tcmd" placeholder="command, e.g. npm test" autocomplete="off"><button class="btn sm" onclick="runCmd()">Run</button></div><div class="tout" id="tout"></div>`;
-    $("tcmd").onkeydown = e => { if (e.key === "Enter") runCmd(); };
-  }
-  $("tcmd").focus();
-}
-async function runCmd() {
-  const inp = $("tcmd"), cmd = inp.value.trim(); if (!cmd) return; inp.value = "";
-  const out = $("tout"), box = document.createElement("div");
-  box.innerHTML = `<div class="cmd">$ ${esc(cmd)}</div><div class="o">…</div>`; out.appendChild(box);
-  try { const r = await api("/api/term", {id: cur, cmd}); const o = box.querySelector(".o"); o.textContent = r.output || "(no output)"; if (!r.ok) o.classList.add("bad"); }
-  catch (e) { box.querySelector(".o").textContent = e.message; }
-  $("pbody").scrollTop = $("pbody").scrollHeight;
+  if (!view.term) view.term = {};
+  const out = view.term[cur] || "";
+  $("pbody").innerHTML = `<div class="term"><pre id="termOut">${out}</pre><div class="termin"><span>$</span><input id="termIn" placeholder="${esc(t("Run a command in the task folder"))}" spellcheck="false" autocomplete="off"></div></div>`;
+  const i = $("termIn"), o = $("termOut"); o.scrollTop = o.scrollHeight; i.focus();
+  const hist = view.thist = view.thist || []; let hp = hist.length;
+  i.onkeydown = async e => {
+    if (e.key === "ArrowUp" && hp > 0) { hp--; i.value = hist[hp]; e.preventDefault(); return; }
+    if (e.key === "ArrowDown") { hp = Math.min(hist.length, hp + 1); i.value = hist[hp] || ""; e.preventDefault(); return; }
+    if (e.key !== "Enter" || !i.value.trim()) return;
+    const cmd = i.value; i.value = ""; hist.push(cmd); hp = hist.length; i.disabled = true;
+    const id = cur;
+    view.term[id] = (view.term[id] || "") + `<span class="cmd">$ ${esc(cmd)}</span>\n`; if (panel === "term") o.innerHTML = view.term[id];
+    try { const r = await api("/api/term", {id, cmd}); view.term[id] += (r.ok ? esc(r.output) : `<span class="bad">${esc(r.output)}</span>`) + "\n"; }
+    catch (er) { view.term[id] += `<span class="bad">${esc(er.message)}</span>\n`; }
+    if (panel === "term" && cur === id) { o.innerHTML = view.term[id]; o.scrollTop = o.scrollHeight; i.disabled = false; i.focus(); }
+  };
 }
 
-document.addEventListener("keydown", e => { if (e.key === "Escape") { if (panel) closePanel(); else closeSide(); } });
+// ─── settings ───
+function openSettings() {
+  const perms = [["ask", "ask", "edits in the project are free; commands ask"], ["full", "full access", "everything runs without asking"], ["read", "read-only", "no file changes"]];
+  modal(t("Settings"), `
+    <label class="f">${esc(t("Language"))}<div class="opt">${[["", "Auto"], ["en", "English"], ["ru", "Русский"]].map(([v, l]) => `<button class="${(S.lang || "") === v ? "on" : ""}" onclick="setSetting({lang: '${v}'})">${l}</button>`).join("")}</div></label>
+    <label class="f">${esc(t("Permissions"))}<div class="opt">${perms.map(([v, l, d]) => `<button class="${S.perm === v ? "on" : ""}" onclick="setSetting({perm: '${v}'})">${esc(t(l))}<small>${esc(t(d))}</small></button>`).join("")}</div></label>
+    <label class="f">${esc(t("Theme"))}<select onchange="setSetting({theme: this.value})">${(S.themes || []).map(n => `<option ${n === S.theme ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+    <label class="f">${esc(t("Default model"))}<select onchange="setSetting({model: this.value})">${S.models.map(m => `<option ${m.name === S.model ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" ${PREF.archived ? "checked" : ""} onchange="PREF.archived=this.checked;savePref();renderSide()">${esc(t("Show archived tasks"))}</label>
+    <div class="note">${esc(t("Shortcuts"))}: <kbd>Ctrl N</kbd> ${esc(t("New task").toLowerCase())} · <kbd>Ctrl K</kbd> ${esc(t("search"))} · <kbd>Esc</kbd> ${esc(t("stop the task"))}</div>`,
+    `<button class="btn" onclick="closeModal()">${esc(t("Close"))}</button>`);
+}
+async function setSetting(b) { try { S = await api("/api/settings", b); LANG = S.lang || autoLang(); applyTheme(); i18nApply(); openSettings(); renderSide(); cur ? renderTop() : (view.homeSig = "", renderHome()); } catch (e) { fail(e); } }
+
+// ─── keys & boot ───
+document.addEventListener("keydown", e => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "n") { e.preventDefault(); go(""); }
+  else if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSide(); $("q").focus(); }
+  else if (e.key === "Escape") {
+    if ($("menu")) closeMenu(); else if (!$("modal").classList.contains("hidden")) closeModal();
+    else if (cur && (task(cur) || {}).busy) stopTask(); else if (panel) closePanel();
+  }
+});
 (async () => {
-  await refresh();
-  const id = location.hash.slice(1);
-  go(id && task(id) ? id : "");
-  setInterval(refresh, 1500);
+  LANG = autoLang(); i18nApply();
+  await refresh(); i18nApply();
+  const tid = new URLSearchParams(location.search).get("t");
+  go(tid && task(tid) ? tid : "");
+  setInterval(refresh, 4000);
 })();
+
 </script>
 </body>
 </html>

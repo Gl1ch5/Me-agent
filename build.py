@@ -29,6 +29,7 @@ def build_studio():
     """apps/studio/studio.html is embedded into me_studio.py (PAGE), so the studio stays one file too."""
     import re
     py, html = (STUDIO / "me_studio.py").read_text("utf-8"), (STUDIO / "studio.html").read_text("utf-8")
+    html = html.replace("/*JS*/", (STUDIO / "studio.js").read_text("utf-8"))  # the UI logic lives in studio.js for editing
     assert '"""' not in html and not html.endswith("\\"), "studio.html cannot sit in a raw triple-quoted string"
     out, n = re.subn(r'^PAGE = r""".*?"""$', lambda m: 'PAGE = r"""' + html + '"""', py, count=1, flags=re.M | re.S)
     assert n == 1, "PAGE marker missing in me_studio.py"
