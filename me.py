@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.7.2"
+VERSION = "0.7.3"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -2813,6 +2813,34 @@ CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue e
 DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
 
 
+ARG_ALIASES = {  # names other agents use for the same argument: models trained on them send these
+    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd"},
+    "read": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "start_line": "offset"},
+    "write": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "text": "content", "contents": "content"},
+    "edit": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "old_string": "old", "new_string": "new",
+             "old_str": "old", "new_str": "new", "replace_all": "all", "old_text": "old", "new_text": "new"},
+    "grep": {"query": "pattern", "regex": "pattern", "search": "pattern", "include": "glob"},
+    "ls": {"path": "pattern", "glob": "pattern", "dir": "pattern", "directory": "pattern"},
+    "web_search": {"q": "query", "search": "query"},
+    "web_fetch": {"link": "url", "href": "url"},
+}
+
+
+def fix_args(name, args, schema):
+    """Rename well-known argument aliases, then name any required argument still missing (instead of a KeyError)."""
+    if len(args) == 1 and isinstance(next(iter(args.values())), dict) and next(iter(args)) in ("input", "args", "arguments", "parameters", "params"):
+        args = next(iter(args.values()))  # {"input": {...}}: arguments wrapped one level too deep
+    al = ARG_ALIASES.get(name) or {}
+    args = {al.get(k, k) if al.get(k, k) not in args else k: v for k, v in args.items()}
+    if name == "bash" and isinstance(args.get("cmd"), list):
+        args["cmd"] = " && ".join(map(str, args["cmd"]))
+    req = [r for r in ((schema or {}).get("parameters") or {}).get("required", []) if args.get(r) in (None, "")]
+    if req:
+        props = list(((schema or {}).get("parameters") or {}).get("properties", {}))
+        return args, f"error: {name} needs {', '.join(req)} (its arguments: {', '.join(props)}; you sent: {', '.join(args) or 'nothing'})"
+    return args, None
+
+
 def has_images(messages):
     return any(isinstance(m.get("content"), list) and any(x.get("type") == "image_url" for x in m["content"]) for m in messages)
 
@@ -3156,6 +3184,8 @@ class Agent:
             args = parse_args(tc["function"]["arguments"])
             if args is None and cut:
                 args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
+            if isinstance(args, dict):
+                args = fix_args(name, args, None)[0]
             ui = args if isinstance(args, dict) else {}
             tid = tc["id"]
             ev = {"type": "tool_start", "id": tid, "name": name, "args": ui, "label": self.tools.preview(name, ui, self.cwd)}
@@ -3209,6 +3239,9 @@ class Agent:
                            "call: write a big file in parts (write the first part, then add the rest with edit), or raise max_out in /models."), None
         if not isinstance(args, dict):
             return False, "error: arguments were not valid JSON — send a JSON object", None
+        args, err = fix_args(name, args, next((t for t in self.tool_schemas() if t["name"] == name), None))
+        if err:
+            return False, err, None
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
@@ -6338,6 +6371,16 @@ class TUICommands:
         folder = {"theme": "themes", "agent": "agents", "plugin": "plugins", "skill": "skills"}[kind]
         ext = {"theme": "json", "agent": "md", "plugin": "py"}.get(kind, x.get("ext", "py"))
         (self.s.home / folder / f"{x['name']}.{ext}").write_text(x["content"], "utf-8")
+        m = re.search(r"^skills:\s*(.+)$", x["content"].split("\n---", 1)[0], re.M) if kind == "agent" else None
+        for name in [n.strip() for n in m.group(1).split(",") if n.strip()] if m else []:  # the skills this agent brings
+            try:
+                sk = next((y for y in self.cloud.req("GET", "/api/market?kind=skill&q=" + urllib.request.quote(name), token=False)
+                           if y["name"] == name), None)
+                if sk:
+                    sk = self.cloud.req("GET", f"/api/market/{sk['id']}", token=False)
+                    (self.s.home / "skills" / f"{name}.{sk.get('ext') or 'md'}").write_text(sk["content"], "utf-8")
+            except CloudError:
+                pass
         if self.cloud.online:
             try:
                 self.cloud.req("POST", f"/api/market/{mid}/install", {})
