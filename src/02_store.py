@@ -107,9 +107,9 @@ class Store:
 
     def latest(self, cwd):
         """id of the newest chat started in `cwd` (me -c), or None."""
-        here = os.path.normcase(os.path.abspath(str(cwd)))
-        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n")
-                     and os.path.normcase(os.path.abspath(x.get("cwd") or "/")) == here), None)
+        key = lambda p: os.path.normcase(os.path.realpath(str(p)))  # realpath: macOS /var is /private/var
+        here = key(cwd)
+        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n") and key(x.get("cwd") or "/") == here), None)
 
     def search(self, q, limit=40):
         """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""
