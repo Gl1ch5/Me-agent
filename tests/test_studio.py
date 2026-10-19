@@ -55,6 +55,7 @@ def test_parallel_worktrees_review_apply_commit_discard():
     b = st.new_task(proj, write("b.py", "B = 2\n"), "worktree")
     ta, tb = wait(st, a), wait(st, b)
     assert ta.meta["cwd"] != tb.meta["cwd"] != proj and ta.meta["branch"] != tb.meta["branch"]
+    assert Path(ta.meta["cwd"]) == Path(ta.meta["wt"]) and Path(tb.meta["cwd"]) == Path(tb.meta["wt"]), (ta.meta, tb.meta)
     assert Path(ta.meta["cwd"], "a.py").is_file() and not Path(proj, "a.py").exists()  # the checkout is untouched
     da = ta.diff()
     assert [f["path"] for f in da["files"]] == ["a.py"] and da["files"][0]["new"] and da["files"][0]["add"] == 1, da
@@ -70,6 +71,26 @@ def test_parallel_worktrees_review_apply_commit_discard():
     assert tb.meta["branch"] not in branches and not os.path.isdir(tb.meta["wt"])
     state = st.state()
     assert {t["id"] for t in state["tasks"]} == {a, b} and state["projects"][0]["git"]
+
+
+def test_worktree_cwd_when_git_spells_the_root_differently():
+    # git reports the root resolved (long names on Windows, no symlinks): the task must still land inside its worktree
+    st, real = studio(), repo()
+    Path(real, "sub").mkdir()
+    Path(real, "sub", "keep.txt").write_text("k\n")
+    subprocess.run(["git", "add", "-A"], cwd=real, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "sub"], cwd=real, check=True)
+    link = Path(tempfile.mkdtemp(), "link")
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):  # Windows without the symlink privilege
+        link = Path(real)
+    tid = st.new_task(str(link / "sub"), write("c.py", "C = 3\n"), "worktree")
+    t = wait(st, tid)
+    assert Path(t.meta["cwd"]) == Path(t.meta["wt"], "sub"), t.meta
+    assert Path(t.meta["wt"], "sub", "c.py").is_file()
+    assert [f["path"] for f in t.diff()["files"]] == ["sub/c.py"]
+    st.discard(tid)
 
 
 def test_local_task_follow_up_and_undo():

@@ -286,8 +286,10 @@ class Studio:
             wt = WORKTREES / f"{Path(root).name}-{hashlib.sha1(root.encode()).hexdigest()[:6]}" / tid
             wt.parent.mkdir(parents=True, exist_ok=True)
             git(root, "worktree", "add", "-b", branch, str(wt), base)
-            sub = os.path.relpath(project, root)
-            meta.update(root=root, base=base, branch=branch, wt=str(wt), cwd=str(wt if sub == "." else wt / sub))
+            # the project's place inside the repo, from git itself: on Windows `root` comes back long-named with "/" while the
+            # project may be an 8.3 short path (C:\Users\RUNNER~1\…), and relpath between the two walks out of the worktree
+            sub = git(project, "rev-parse", "--show-prefix", check=False).strip().strip("/")
+            meta.update(root=root, base=base, branch=branch, wt=str(wt), cwd=str(wt / sub if sub else wt))
         with self.lock:
             self.metas[tid] = meta
         t = self.task(tid)
