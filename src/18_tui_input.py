@@ -11,7 +11,7 @@ class TUIInput:
                 self.mouse(*k[1:])
             return
         if k not in ("wheel-up", "wheel-down"):
-            self.sel = None  # typing ends a mouse selection
+            self.msel = None  # typing ends a mouse selection
         if self.modal:
             if k in ("wheel-up", "wheel-down") and self.modal["kind"] in ("pick", "confirm"):
                 k = "up" if k == "wheel-up" else "down"
@@ -166,7 +166,7 @@ class TUIInput:
 
     # ─── mouse: drag selects transcript text and copies it, click toggles a tool card, right click pastes (Windows) ───
     def sel_range(self):
-        sel = getattr(self, "sel", None)
+        sel = getattr(self, "msel", None)
         if not sel or sel["a"] == sel["b"] and not sel.get("word"):
             return None
         return tuple(sorted([sel["a"], sel["b"]]))
@@ -190,7 +190,7 @@ class TUIInput:
             return
         if kind == "press":
             if y > avail:
-                self.sel = None
+                self.msel = None
                 return
             p, now = point(y, x), time.time()
             last = getattr(self, "_click", None)
@@ -198,7 +198,7 @@ class TUIInput:
             self._click = (now, p, n)
             if n == 2:
                 a, b = word_at(lines[p[0]], p[1])
-                self.sel = {"a": (p[0], a), "b": (p[0], b), "word": True}
+                self.msel = {"a": (p[0], a), "b": (p[0], b), "word": True}
                 self.copy_selection()
             elif n >= 3:  # the whole logical line, across soft wraps
                 i0, i1 = p[0], p[0]
@@ -206,22 +206,22 @@ class TUIInput:
                     i0 -= 1
                 while i1 + 1 < len(lines) and lines[i1 + 1].soft is not None:
                     i1 += 1
-                self.sel = {"a": (i0, 0), "b": (i1, 1 << 20), "word": True}
+                self.msel = {"a": (i0, 0), "b": (i1, 1 << 20), "word": True}
                 self.copy_selection()
             else:
-                self.sel = {"a": p, "b": p, "drag": True}
-        elif kind == "drag" and getattr(self, "sel", None) and self.sel.get("drag"):
+                self.msel = {"a": p, "b": p, "drag": True}
+        elif kind == "drag" and getattr(self, "msel", None) and self.msel.get("drag"):
             if y <= 1 and self.scroll < maxscroll:  # dragging past the edge scrolls
                 self.scroll += 1
             elif y >= avail and self.scroll > 0:
                 self.scroll -= 1
-            self.sel["b"] = point(y, x)
-        elif kind == "release" and getattr(self, "sel", None) and self.sel.get("drag"):
-            self.sel["drag"] = False
-            if self.sel["a"] != self.sel["b"]:
+            self.msel["b"] = point(y, x)
+        elif kind == "release" and getattr(self, "msel", None) and self.msel.get("drag"):
+            self.msel["drag"] = False
+            if self.msel["a"] != self.msel["b"]:
                 self.copy_selection()
                 return
-            self.sel = None
+            self.msel = None
             i = point(y, x)[0]
             b = owners[i] if 0 <= top + y - 1 < len(owners) else None
             if b and b.kind in ("tool", "skill", "reason") and b.done:  # click a card to open / close it

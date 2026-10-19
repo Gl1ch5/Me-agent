@@ -132,7 +132,7 @@ class TUICommands:
             self.agent.session = new_session()
             self.agent.ctx_used, self.agent.snap = 0, {}
             self.blocks, self.tools_live, self.cur_text, self.cur_reason = [], {}, None, None
-            self.scroll, self.sel, self.turn_tokens = 0, None, (0, 0)
+            self.scroll, self.msel, self.turn_tokens = 0, None, (0, 0)
             self._prev_rows = None
             self.term.write(CSI + "2J")
             self.welcome()

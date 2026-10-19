@@ -31,7 +31,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.update_avail = None
         self.files_cache = None
         self.notice = ("", 0)
-        self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
+        self.msel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
         self.attached = []  # image files attached to the message being typed ([image #n] in the input)
         self.pastes = []  # big pastes, shown as [paste #n · N lines] in the input and expanded when it is sent
         store.on_change = self._schedule_sync
