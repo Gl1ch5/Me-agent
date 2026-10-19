@@ -2949,6 +2949,18 @@ def todo_lines(items):
     return "\n".join(f"{n}. [{'x' if i['s'] == 'done' else '>' if i['s'] == 'doing' else ' '}] {i['t']}" for n, i in enumerate(items, 1))
 
 
+ACT_NUDGE = ("[self-check] You answered with code but changed no files, and the user asked for a change in the project. Make it now with "
+             "write/edit (do not paste the code again). If they only wanted to see code, say so in one line.")
+ACT_RX = re.compile(r"\b(?:create|write|add|implement|fix|make|change|update|refactor|edit|build|"
+                    r"созда\w*|напиши|напис\w*|добав\w*|реализ\w*|исправ\w*|сделай|измени|поправь|обнови)\b", re.I)
+FILE_RX = re.compile(r"\b[\w./-]+\.(?:py|js|mjs|ts|tsx|jsx|go|rs|java|c|cc|cpp|h|hpp|cs|rb|php|html|css|scss|json|sh|ps1|ya?ml|toml|sql|kt|swift|vue|svelte|lua|gd|dart)\b")
+
+
+def should_have_acted(request, reply):
+    """A first reply that is all talk: the user asked to create/change a named file, the model pasted code instead of calling a tool."""
+    return bool(ACT_RX.search(request or "") and FILE_RX.search(request or "") and re.search(r"```[^\n]*\n(?:.*\n){3,}?```", reply or ""))
+
+
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
                 "or the code itself, and fix any failure. If nothing can be run, say so and why.")
 GOAL_PROMPT = """GOAL: {objective}
@@ -3153,7 +3165,7 @@ class Agent:
             self.session["title"] = text.strip().split("\n")[0][:60]
         self._trim_history(start_idx)
         t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
-        wrote, ran, nudged = False, False, False
+        wrote, ran, nudged, acted = False, False, False, False
         todo_used, todo_idle, todo_nudged = False, 0, False
         squeezed, cutoffs, empties, seen = False, 0, 0, []
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
@@ -3219,6 +3231,10 @@ class Agent:
                     if cut and cutoffs < 2:  # the reply hit the output limit: let it carry on where it stopped
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
+                        continue
+                    if steps == 1 and not acted and self.depth == 0 and "write" in self._tool_names and should_have_acted(text, msg.get("content")):
+                        acted = True  # weak models sometimes "answer" a coding task with a code block: send them back to do it
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": ACT_NUDGE})
                         continue
                     open_steps = [i for i in self.session.get("todo") or [] if i["s"] != "done"]
                     if todo_used and open_steps and not todo_nudged and self.depth == 0:

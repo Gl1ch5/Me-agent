@@ -885,6 +885,15 @@ def test_mentions(tmp=Path(tempfile.mkdtemp())):
     assert "5\tline5" in json.dumps(mock_llm.LAST, ensure_ascii=False).encode().decode("unicode_escape") and [r for _, r in ag.requests()] == ["what is in @src/a.py:5"]
 
 
+def test_act_nudge():
+    s = make()
+    ag, ev = run(s, "talk: create lru.py with an LRU cache class")
+    assert sum(m.get("content") == me.ACT_NUDGE for m in ag.session["messages"]) == 1
+    ag, ev = run(s, "talk: explain how an LRU cache works")
+    assert not any(m.get("content") == me.ACT_NUDGE for m in ag.session["messages"])
+    assert me.should_have_acted("Создай файл game.js с игрой", "```js\na\nb\nc\n```") and not me.should_have_acted("create game.js", "no code")
+
+
 def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):
     s = make()
     f = tmp / "w.txt"
