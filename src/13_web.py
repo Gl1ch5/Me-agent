@@ -24,15 +24,16 @@ self.addEventListener('notificationclick', e => {
 });"""
 
 
-def apply_setting(cfg, key, value):
-    """Settings the web UI may change by name (same keys on the local agent and, client side, on the cloud config doc)."""
+def apply_setting(cfg, key, value, model=None):
+    """Settings the web UI may change by name (same keys on the local agent and, client side, on the cloud config doc).
+    `model`: the chat's model (effort is set on it), default the config's."""
     st = cfg["settings"]
     if key == "prompt":
         cfg["prompt"] = str(value or "")
     elif key == "autocompact":
         st["autocompact"] = 0 if value in (0, "0", "off", None) else max(10, min(95, int(str(value).rstrip("%"))))
     elif key == "effort":
-        m = next((x for x in cfg.get("models", []) if x.get("name") == cfg.get("model")), None)
+        m = next((x for x in cfg.get("models", []) if x.get("name") == (model or cfg.get("model"))), None)
         if not m:
             raise ValueError("no model")
         m["effort"] = "" if value in ("none", "", None) else str(value)
@@ -93,7 +94,7 @@ class WebSession:
     def state(self):
         ses = self.agent.session
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": self.agent.cwd, "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
-                "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
+                "config": {"model": self.agent.model_name(), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
                            "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
@@ -204,7 +205,7 @@ class WebSession:
             dis = set(self.s.config["settings"].get("disabled_skills", []))
             return {"skills": [{"name": n, "description": k.get("description", ""), "on": n not in dis} for n, k in Skills(self.s).all().items()]}
         if path == "/config":
-            apply_setting(self.s.config, body["key"], body.get("value"))
+            apply_setting(self.s.config, body["key"], body.get("value"), a.model_name())
             self.s.save()
             return self.state()
         if path == "/themes":
@@ -223,8 +224,7 @@ class WebSession:
             a.ctx_used = 0
             return self.state()
         if path == "/model":
-            self.s.config["model"] = body["name"]
-            self.s.save()
+            a.set_model(body["name"])
             return {"ok": True}
         if path in ("/confirm", "/answer"):
             w = self.waits.get(body.get("id"))

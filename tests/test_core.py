@@ -682,6 +682,97 @@ def test_history_trim_and_usage(tmp=Path(tempfile.mkdtemp())):
     assert not any(e["type"] == "verify" for e in ev[-20:])  # a doc edit needs no test-run round
 
 
+
+def test_each_chat_keeps_its_model():
+    s = make()
+    s.config["models"].append({"name": "m2", "id": "mock-2", "provider": "mock", "api": "chat", "context": 32000})
+    a, _ = run(s, "hi")
+    assert a.session["model"] == "m"  # pinned on the first turn
+    b = me.Agent(s, lambda e: None)
+    b.set_model("m2")  # switching in another chat (or terminal) …
+    a.run("hi again")
+    assert mock_llm.LAST["model"] == "mock-1" and a.model_name() == "m"  # … does not reach this one
+    c = me.Agent(s, lambda e: None)
+    assert c.model_name() == "m2"  # a new chat starts with the model picked last
+    a.session["model"] = "deleted-since"
+    assert a.model()["name"] == "m2"  # a model removed since falls back to the default
+    s.config["models"] = s.config["models"][:1]
+    s.config["model"] = "m"
+
+
+def test_todo_marks_by_number_and_reminds():
+    s = make()
+    ag, ev = run(s, "tool:todo " + json.dumps({"items": ["read", "fix", "test"]}))
+    ag.run("tool:todo " + json.dumps({"done": [1], "doing": 2}))
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo"], ag.session["todo"]
+    aux = [m["content"] for m in ag.session["messages"] if m.get("_aux") and isinstance(m["content"], str)]
+    assert any("checklist still has open steps" in x and "2. [>] fix" in x for x in aux), aux  # finishing with open steps: nudged
+    for _ in range(me.TODO_EVERY):
+        ag.run("tool:ls " + json.dumps({"pattern": "*"}))
+    assert not any("[reminder]" in str(m.get("content")) for m in ag.session["messages"])  # one tool round per turn: no reminder
+    ag.session["messages"].append({"role": "user", "content": "x"})
+    ok, out, _ = ag._todo({"done": "x"})
+    assert not ok and "numbers" in out
+
+
+def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):
+    ag, ev = run(make(), "tool:write " + json.dumps({"path": str(tmp / "a.py"), "content": "def f(:\n"}))
+    assert "no longer parses — line 1" in ends(ev)[0]["output"]
+    ag.run("tool:write " + json.dumps({"path": str(tmp / "b.json"), "content": "{\"a\": 1}"}))
+    assert me.syntax_note(tmp / "b.json", '{"a": 1}') == "" and "invalid JSON" in me.syntax_note(tmp / "b.json", "{")
+
+
+def test_images_without_vision(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    s.config["models"].append({"name": "blind", "id": "blind-1", "provider": "mock", "api": "chat", "context": 32000})
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.set_model("blind")
+    ag.run("what is this", ["data:image/png;base64,iVBORw0KGgo="])
+    assert any(e["type"] == "notice" and "rejected the image" in e["text"] for e in ev), ev
+    assert "Hello" in "".join(e["text"] for e in ev if e["type"] == "text")  # answered without the picture
+    s.config["models"][-1]["vision"] = False  # vision off: images never reach the API
+    ev.clear()
+    ag.run("and this", ["data:image/png;base64,iVBORw0KGgo="])
+    assert not any(e["type"] in ("notice", "error") for e in ev) and "image_url" not in json.dumps(mock_llm.LAST["messages"])
+    s.config["models"] = s.config["models"][:1]
+    s.config["model"] = "m"
+
+
+def test_windows_drag_image_is_a_paste(tmp=Path(tempfile.mkdtemp())):
+    img = tmp / "shot 1.png"
+    img.write_bytes(b"\x89PNG")
+    keys = lambda text: me.win_paste_burst(me.win_keys([("k", 1, 1, 0, ord(c), 0) for c in text], {}))
+    assert keys(f'"{img}" ') == [("paste", f'"{img}" ')]
+    assert keys("hello") == [("char", c) for c in "hello"]  # typed text stays typed
+
+
+
+def test_model_picker_keeps_the_search():
+    # adding several models from one provider: the typed filter and the row stay after each pick
+    s = make()
+    t = me.TUI.__new__(me.TUI)
+    t.s, t.agent = s, me.Agent(s, lambda e: None)
+    seen, answers = [], iter(["opencode/mock-1", "opencode/mock-2", None])
+
+    def modal(m):
+        shown = [it for it in m["items"] if me.fuzzy(m["filter"], it[1] + " " + it[2]) is not None] if m["filter"] else m["items"]
+        seen.append((m["filter"], shown[m["sel"]][0]))
+        m["filter"] = "opencode"  # the user typed a search
+        return next(answers)
+    t._modal = modal
+    t.toast = t.info = lambda *a, **k: None
+    orig = me.list_models
+    me.list_models = lambda p: [{"id": "opencode/mock-1"}, {"id": "other/z"}, {"id": "opencode/mock-2"}]
+    try:
+        t.sync_models("mock")
+    finally:
+        me.list_models = orig
+    assert seen == [("", "*"), ("opencode", "opencode/mock-1"), ("opencode", "opencode/mock-2")], seen
+    assert {m["id"] for m in s.config["models"]} >= {"opencode/mock-1", "opencode/mock-2"}
+    s.config["models"] = s.config["models"][:1]
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

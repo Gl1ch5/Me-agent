@@ -34,8 +34,10 @@ TOOLS = [
     {"name": "web_search", "description": "Search the web.", "parameters": _obj({"query": "string"}, ["query"])},
     {"name": "web_fetch", "description": "Fetch a URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
     {"name": "skill", "description": "Use a skill (no action = its guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
-    {"name": "todo", "description": "Set the checklist (whole list each time); prefix 'x ' done, '> ' doing.",
-     "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}}, ["items"])},
+    {"name": "todo", "description": "Plan checklist the user sees live. items = the whole list ('x ' done, '> ' doing); "
+                                    "done=[n] / doing=n mark steps by number — do it as each step ends.",
+     "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}, "done": {"type": "array", "items": {"type": "integer"}},
+                         "doing": "integer"}, [])},
     {"name": "memory", "description": "Global memory across chats: text adds a note, forget=id removes one.",
      "parameters": _obj({"text": "string", "forget": "string"}, [])},
     {"name": "task", "description": "Run a subagent on a self-contained job in a fresh context; returns its report.",

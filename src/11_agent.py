@@ -4,27 +4,27 @@ SYSTEM = """You are me, an expert software engineer working in the user's termin
 cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
 
 Scope (most important):
-- Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting gets a short reply, a one-line fix gets a one-line edit.
+- Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
-- Do not refactor, reformat, rename, add features, docs or tests nobody asked for. Mention worthwhile extras in one line instead of doing them.
-- If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go.
+- No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
+- If the request is unclear in a way that changes the result, ask one short question; otherwise pick the obvious reading and go. Once you start a task, finish all of it.
 
 Tools:
 - Explore with ls (glob), grep and read, not shell cat/find/grep. Put independent reads/searches in one message: they run in parallel.
-- Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, keep it short but unique; several changes to one file go in one call (edits=[…]). If an edit fails, read that part again, then retry. write only for new files or full rewrites.
-- bash runs non-interactively (no prompts: pass -y / --yes, CI=1); dev servers and watchers need background=true.
-- Never undo or delete work you did not make, and no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked.
-- Lines in [brackets] from the "user" mid-task come from me (self-check, a message the user queued, an interruption).
+- Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, short but unique; several changes to one file in one call (edits=[…]). If an edit fails, read that part again first. write only for new files or full rewrites.
+- bash is non-interactive (pass -y / --yes, CI=1); servers and watchers need background=true.
+- Never undo or delete work you did not make; no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked; confirm anything irreversible.
+- [Bracketed] "user" lines mid-task come from me (self-check, reminder, a queued user message).
 
 Work:
-- Read the relevant code before changing it. Prefer edit over rewrite; paths relative to cwd.
-- For 3+ step tasks keep a todo list current; skip it for small ones.
-- Match the project's style; clean small functions; no hacks, no needless deps.
-- After changing code, verify it (run tests, build, lint or the code). Never claim untested success.
+- Never guess what code, an API or a command does: check it. Find the root cause before fixing; read errors fully.
+- A failed approach: say what you learned and change it; never repeat the same failing call.
+- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.
+- Match the project's style; no hacks, no needless deps.
+- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
-- Confirm before destructive or irreversible actions.
-UI work: no emoji; inline SVG icons, one stroke style; neutral + one accent palette, spacing scale, light+dark; empty/loading/error states; responsive.
-Reply: in the user's language, concise. After changes say what changed and how you verified it.{extra}{skills}{project}{user}"""
+UI work: no emoji; SVG icons; neutral palette + one accent; light+dark; empty/loading/error states; responsive.
+Reply: in the user's language, concise. After changes: what changed, how you verified it, and anything left undone.{extra}{skills}{project}{user}"""
 
 
 
@@ -59,8 +59,19 @@ CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue e
 DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
 
 
+def has_images(messages):
+    return any(isinstance(m.get("content"), list) and any(x.get("type") == "image_url" for x in m["content"]) for m in messages)
+
+
 def tc_args(tc):
     return parse_args(tc["function"]["arguments"])
+
+
+TODO_EVERY = 4  # tool rounds without a todo update (while steps are open) before the checklist is shown again
+
+
+def todo_lines(items):
+    return "\n".join(f"{n}. [{'x' if i['s'] == 'done' else '>' if i['s'] == 'doing' else ' '}] {i['t']}" for n, i in enumerate(items, 1))
 
 
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
@@ -140,6 +151,21 @@ class Agent:
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
 
+    def model_name(self):
+        """Each chat keeps the model it was started with: switching models in one chat (or terminal) never changes another.
+        A new chat starts with the model picked last."""
+        return self.session.get("model") or self.preset().get("model") or self.s.config.get("model")
+
+    def model(self):
+        return self.s.model(self.model_name())
+
+    def set_model(self, name):
+        """Switch this chat's model; it also becomes the default for new chats."""
+        self.session["model"] = self.s.config["model"] = name
+        self.s.save()
+        if self.persist and self.session.get("messages"):
+            self.s.save_session(self.session)
+
     @property
     def cwd(self):
         return self.session.get("cwd") or os.getcwd()
@@ -186,7 +212,9 @@ class Agent:
 
     def _run(self, text, images=()):
         pr = self.preset()
-        m = self.s.model(self.session.get("model") or pr.get("model") or None)  # a session (e.g. a studio task) may pin its own model
+        m = self.model()
+        if m and not self.session.get("model") and not pr.get("model"):
+            self.session["model"] = m["name"]  # pinned: a model switched in another chat or terminal does not reach this one
         effort = self.session.get("effort") or pr.get("effort")
         if m and effort:
             m = dict(m, effort="" if effort == "none" else effort)
@@ -205,6 +233,7 @@ class Agent:
         self._trim_history(start_idx)
         t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
         wrote, ran, nudged = False, False, False
+        todo_used, todo_idle, todo_nudged = False, 0, False
         squeezed, cutoffs, empties, seen = False, 0, 0, []
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
@@ -223,6 +252,12 @@ class Agent:
                     # the history outgrew the model: summarize the older part once and try again
                     if e.overflow and not squeezed and self.compact(reason="context full", model=m, keep_frac=0.15):
                         squeezed = True
+                        continue
+                    if not e.retryable and IMAGE_RX.search(str(e)) and has_images(self.session["messages"]):
+                        # the model does not take images: keep the request, drop the pictures, tell the user why
+                        self.session["messages"] = no_images(self.session["messages"], "[image removed: this model rejected images]")
+                        self.emit({"type": "notice", "text": f"{m['name']} rejected the image ({str(e)[:160]}) — sent without it. "
+                                                            "Pick a model with vision for images (/model), or set vision off in /models."})
                         continue
                     raise
                 if not usage["in"]:  # provider sent no usage (some proxies drop stream_options): estimate, ~4 chars per token
@@ -264,6 +299,14 @@ class Agent:
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
                         continue
+                    open_steps = [i for i in self.session.get("todo") or [] if i["s"] != "done"]
+                    if todo_used and open_steps and not todo_nudged and self.depth == 0:
+                        todo_nudged = True  # the plan says work is left: finish it, or at least leave the checklist true
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": (
+                            "[self-check] Your checklist still has open steps:\n" + todo_lines(self.session["todo"]) +
+                            "\nMark finished ones done (todo done=[…]) and do the rest. If you stopped on purpose (blocked, or waiting "
+                            "for the user's go), keep them open and say so.")})
+                        continue
                     if wrote and not ran and not nudged and "bash" in self._tool_names and not st.get("no_verify"):
                         nudged = True  # self-check before "done": changes were made but nothing was run since
                         self.emit({"type": "verify"})
@@ -283,9 +326,18 @@ class Agent:
                         imgs.append(img)
                 if self.cancel.is_set():
                     raise Cancelled()
+                if any(tc["function"]["name"] == "todo" for tc, _ in results):
+                    todo_used, todo_idle = True, 0
+                elif any(i["s"] != "done" for i in self.session.get("todo") or []):
+                    todo_idle += 1
+                    if todo_idle >= TODO_EVERY and "todo" in self._tool_names:
+                        todo_idle = 0  # models forget the checklist mid-task: show it again with what to do
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": (
+                            "[reminder] Your checklist:\n" + todo_lines(self.session["todo"]) +
+                            "\nIf a step is finished, mark it now: todo(done=[n], doing=next). A list left from an earlier task: replace it.")})
                 sig = json.dumps([(tc["function"]["name"], tc["function"]["arguments"], r[1][:2000]) for tc, r in results])
-                seen = (seen + [sig])[-3:]
-                if len(seen) == 3 and len(set(seen)) == 1:  # the same calls with the same results three times: a loop
+                seen = (seen + [sig])[-6:]
+                if seen.count(sig) >= 3:  # the same calls with the same results three times (also A-B-A-B-A): a loop
                     seen = []
                     self.session["messages"].append({"role": "user", "_aux": True, "content": LOOP_NUDGE})
                 if imgs and m.get("vision", True):
@@ -483,6 +535,23 @@ class Agent:
 
     # ─── todo / goal ───
     def _todo(self, a):
+        if not a.get("items") and (a.get("done") or a.get("doing")):  # mark steps by number, no need to resend the list
+            items = [dict(i) for i in self.session.get("todo") or []]
+            if not items:
+                return False, "error: no checklist yet — set it with items=[…]", None
+            try:
+                done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])}
+                doing = int(a.get("doing") or 0)
+            except (TypeError, ValueError):
+                return False, "error: done is a list of step numbers (1-based), doing one number", None
+            for n, i in enumerate(items, 1):
+                if n in done:
+                    i["s"] = "done"
+                elif n == doing:
+                    i["s"] = "doing"
+                elif i["s"] == "doing" and doing:
+                    i["s"] = "todo"
+            a = {"items": [{"t": i["t"], "s": i["s"]} for i in items]}
         items = []
         for i in a.get("items") or []:
             if isinstance(i, dict):  # tolerate {t, s} / {text, done}
@@ -498,7 +567,8 @@ class Agent:
         self.emit({"type": "todo", "items": self.session["todo"]})
         n = sum(1 for i in items if i["s"] == "done")
         nxt = next((i["t"] for i in items if i["s"] != "done"), None)
-        return True, f"todo: {n}/{len(items)} done" + (f"; next: {nxt}" if nxt else "; all done — verify, then report"), None
+        return True, (f"todo: {n}/{len(items)} done" + (f"; next: {nxt} — mark each step done right after finishing it" if nxt
+                                                          else "; all done — verify, then report")), None
 
     def goal(self, objective, max_rounds=None):
         """/goal: work autonomously until the objective is verifiably met or blocked. Binary result."""
@@ -627,7 +697,7 @@ class Agent:
         context) stay verbatim. The cut may fall inside one long turn (an assistant step and its tool results stay together),
         so a single big task can be compacted too."""
         msgs = self.session["messages"]
-        m = model or self.s.model()
+        m = model or self.model()
         if not m or len(msgs) < 3:
             return False
         size = lambda x: len(json.dumps(x, ensure_ascii=False)) // 4

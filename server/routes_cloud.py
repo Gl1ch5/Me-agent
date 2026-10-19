@@ -161,6 +161,16 @@ def cloud_answer(wid: str, a: Answer, u=Depends(user)):
     return {"ok": True}
 
 
+class ModelPick(BaseModel):
+    name: str
+
+
+@app.post("/api/cloud/{wid}/model")
+def cloud_model(wid: str, p: ModelPick, u=Depends(user)):
+    _worker(u, wid).send({"type": "model", "name": p.name})  # this chat's model; other chats keep theirs
+    return {"ok": True}
+
+
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
     if action not in ("cancel", "new", "sync", "compact", "undo"):

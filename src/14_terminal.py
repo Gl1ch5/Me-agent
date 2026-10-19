@@ -324,6 +324,10 @@ def win_keys(recs, st):
 def win_paste_burst(keys):
     """Pasting into a console arrives as typed keys, one Enter per line. An Enter followed by more input in the same burst
     (no human types that fast) is a paste: fold the burst into one paste so it is not sent line by line."""
+    if len(keys) >= 4 and all(isinstance(k, tuple) and k[0] == "char" for k in keys):
+        burst = "".join(k[1] for k in keys)
+        if image_paths(burst):  # an image file dragged into Windows Terminal arrives as typed keys: make it a paste, so it attaches
+            return [("paste", burst)]
     first = next((i for i, k in enumerate(keys) if k == "enter"), -1)
     many = len(keys) > 64  # nobody types 64 characters between two reads
     if (first < 0 or first == len(keys) - 1) and not many or not any(isinstance(k, tuple) and k[0] == "char" for k in keys):

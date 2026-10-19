@@ -30,7 +30,7 @@ const A = {
     const [ag, man] = await Promise.all([api("/api/agents").catch(() => ({agents: [], current: "code"})),
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
-    return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: cfg.model, models: cfg.models || [], prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80}, sessions, session, ws: w && w.ws, worker: w,
+    return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: (session?.model && (cfg.models || []).some(m => m.name === session.model)) ? session.model : cfg.model, models: cfg.models || [], prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80}, sessions, session, ws: w && w.ws, worker: w,
             agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },
   async load(id) {
@@ -51,8 +51,10 @@ const A = {
   },
   async setModel(name) {
     if (MODE === "local") return api(base + "/model", {name});
+    // the chat keeps this model (other chats keep theirs); it is also the default for new chats
     const d = await api("/api/doc?key=config"); const cfg = JSON.parse(d.content); cfg.model = name;
     await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); await api(base + "/sync", {});
+    await api(base + "/model", {name}).catch(() => {});
   },
   prompt: (text, images) => api(base + "/prompt", {text, images: images || []}),
   goal: (text) => api(base + "/goal", {text}),
