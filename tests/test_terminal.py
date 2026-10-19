@@ -87,6 +87,23 @@ def fake_tui():
     return t, out
 
 
+def test_typing_a_command_shows_suggestions_and_mouse_hover_is_harmless():
+    # the mouse selection and the suggestion index were both `sel`: typing "/" crashed the render ("None - int")
+    t, out = fake_tui()
+    t.welcome()
+    for ch in "/model":
+        t.handle_key(("char", ch))
+        t.draw()
+    assert t.sugg and isinstance(t.sel, int), (t.sugg, t.sel)
+    for k in [("mouse", "drag", 3, 10, 5), ("mouse", "press", 0, 10, 18), ("mouse", "release", 0, 10, 18), "wheel-up", "down", "up"]:
+        t.handle_key(k)
+        t.draw()
+    assert isinstance(t.sel, int) and t.sugg
+    t.handle_key("tab")
+    t.draw()
+    assert t.input.startswith("/model")
+
+
 def test_tui_drag_copies_and_click_toggles():
     t, out = fake_tui()
     copied = []
@@ -108,7 +125,7 @@ def test_tui_drag_copies_and_click_toggles():
     t.draw()
     assert any("\x1b[7m" in s for s in out), "selection is highlighted"
     t.handle_key(("char", "x"))
-    assert t.sel is None and t.input == "x"
+    assert t.msel is None and t.input == "x"
     # a plain click on the tool card opens it
     t.draw()
     lines, owners, top, avail, _ = t._tx
