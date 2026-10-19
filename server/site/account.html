@@ -367,7 +367,8 @@ const RU_D = {
   "behavior": "поведение", "Switches for how the agent works, on every machine (also": "Переключатели того, как работает агент, на всех устройствах (а также",
   "in the terminal and the web chat).": "в терминале и веб-чате).",
   "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "off: you test; the agent ends with the commands to run — saves tokens": "выкл: тестируете вы; агент в конце пишет, что запустить — экономит токены",
-  "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах", "search the web for current facts and docs": "ищет в интернете актуальные факты и доки",
+  "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах", "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы",
+  "does not wander through other folders; anywhere you ask is still fine": "не бродит по другим папкам; куда попросите — пойдёт",
   "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»", "very short replies": "очень короткие ответы",
   "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи", "never pushes without asking": "без вашего разрешения не пушит",
   "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
@@ -628,6 +629,7 @@ async function saveModel(i) {
 async function delModel(i) { const n = cfg.models[i].name; cfg.models.splice(i, 1); if (cfg.model === n) cfg.model = cfg.models[0]?.name || null; closeModal(); await saveCfg(); }
 const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "off: you test; the agent ends with the commands to run — saves tokens"],
   ["todo", true, "keep a todo checklist on multi-step tasks", ""], ["web", true, "search the web for current facts and docs", ""],
+  ["stay_in_project", true, "stay in the project folder unless asked", "does not wander through other folders; anywhere you ask is still fine"],
   ["plan_first", false, "show a plan and wait for a go before big changes", ""], ["brief", false, "very short replies", ""],
   ["explain", false, "explain the why (learning mode)", ""], ["commit", false, "git commit each finished task", "never pushes without asking"],
   ["agents_md", true, "offer to create AGENTS.md in new projects", ""]];

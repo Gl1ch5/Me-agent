@@ -10,17 +10,17 @@ Object.assign(RU, {
   "saved": "сохранено", "nothing to retry": "нечего повторять", "take back the last request and run it again": "отменить последний запрос и выполнить заново",
   "save this chat as Markdown": "сохранить чат в Markdown", "switches: self-testing, todo, web, plan first, brief…": "переключатели: самопроверка, todo, веб, сначала план, кратко…",
   "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах",
-  "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
+  "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
   "very short replies": "очень короткие ответы", "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
   "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const note = (txt, cls = "") => el(`<div class="info ${cls}">${esc(txt)}</div>`);
 const say = txt => el(`<div class="msg md">${md(txt)}</div>`);
-const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", todo: "keep a todo checklist on multi-step tasks", web: "search the web for current facts and docs",
+const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", todo: "keep a todo checklist on multi-step tasks", web: "search the web for current facts and docs", stay_in_project: "stay in the project folder unless asked",
   plan_first: "show a plan and wait for a go before big changes", brief: "very short replies", explain: "explain the why (learning mode)",
   commit: "git commit each finished task", agents_md: "offer to create AGENTS.md in new projects"};
-const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true};
+const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true};
 function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
   if (key.startsWith("behavior:")) { cfg.settings.behavior = {...(cfg.settings.behavior || {}), [key.slice(9)]: !!v}; if (key === "behavior:tests") delete cfg.settings.no_verify; return; }

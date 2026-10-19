@@ -797,10 +797,10 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     st = s.config["settings"]
     ag = me.Agent(s, lambda e: None)
     base = ag.system_prompt()
-    assert "verify it (tests" in base and "User's settings" not in base
-    st["behavior"] = {"tests": False, "todo": False, "web": False, "brief": True}
+    assert "verify it (tests" in base and "Work inside cwd" in base
+    st["behavior"] = {"tests": False, "todo": False, "web": False, "brief": True, "stay_in_project": False}
     p = ag.system_prompt()
-    assert "verify it (tests" not in p and "Do NOT run tests" in p and "Be terse" in p and "3+ steps" not in p
+    assert "verify it (tests" not in p and "Do NOT run tests" in p and "Be terse" in p and "3+ steps" not in p and "Work inside cwd" not in p
     names = {t["name"] for t in ag.tool_schemas()}
     assert not names & {"todo", "web_search", "web_fetch"} and "bash" in names
     ev = []
