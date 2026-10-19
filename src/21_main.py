@@ -14,9 +14,12 @@ def main():
         PLUGINS.load(store)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
+    if args and args[0] == "studio":
+        return run_studio(store, args[1:])
     if args and args[0] in ("-h", "--help"):
         return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me -p \"task\"     run once (add -y to auto-approve)\n"
-                     f"  me web [port]   browser UI on localhost:8080 (--lan to open on your network)\n  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
+                     f"  me web [port]   browser UI on localhost:8080 (--lan to open on your network)\n"
+                     f"  me studio       desktop command center: parallel tasks in git worktrees, review, apply, commit (--browser, update)\n  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
                      f"  env: ME_HOME={HOME}  ME_SERVER={SERVER}")
     if args and args[0] in ("web", "--web"):
         port = next((int(a) for a in args[1:] if a.isdigit()), 8080)
@@ -44,6 +47,30 @@ def main():
     tui = TUI(store)
     PLUGINS.tui = tui
     tui.run()
+
+
+def run_studio(store, args):
+    """me studio: the desktop app (apps/studio/me_studio.py). Taken from a checkout next to me.py, else downloaded once from the
+    server into ~/.me/apps (`me studio update` fetches it again)."""
+    here = Path(os.path.abspath(__file__)).parent
+    local = here / "apps" / "studio" / "me_studio.py"
+    path = local if local.is_file() else HOME / "apps" / "me_studio.py"
+    if path != local and (not path.is_file() or "update" in args):
+        try:
+            src = Cloud(store).req("GET", "/studio.py", token=False, timeout=60)
+            src = src.decode("utf-8") if isinstance(src, bytes) else src
+            if "def main(" not in str(src):
+                raise CloudError("bad download")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(str(src).encode("utf-8"))
+            print(f"me studio downloaded → {path}")
+        except CloudError as e:
+            if not path.is_file():
+                return print(f"me studio: could not download it ({e}). Get it from the releases page: me-studio.exe, or apps/studio/me_studio.py")
+    sys.modules.setdefault("me", sys.modules[__name__])  # the studio imports me: give it this very module
+    import runpy
+    sys.argv = [str(path)] + [a for a in args if a != "update"]
+    runpy.run_path(str(path), run_name="__main__")
 
 
 if __name__ == "__main__":

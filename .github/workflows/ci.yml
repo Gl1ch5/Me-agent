@@ -36,3 +36,5 @@ jobs:
         run: pip install pyte && python tests/test_tui.py
       - run: python tests/test_terminal.py
         env: {PYTHONIOENCODING: utf-8}
+      - run: python tests/test_studio.py
+        env: {PYTHONIOENCODING: utf-8}

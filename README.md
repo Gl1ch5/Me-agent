@@ -71,9 +71,23 @@ It is also **tiny on purpose**: the system prompt and tools take about 2k tokens
 </tr>
 </table>
 
+### me studio: many agents at once
+
+A desktop command center in the spirit of the Codex app (`me studio`, or `me-studio.exe`). Projects on the left, tasks under them;
+every task is its own agent, and in **worktree** mode it works on its own git branch, so several run side by side without touching
+your checkout. Watch them live, answer approvals, then review the diff and **apply** it to the project, **commit**, **push** or
+**discard** it. A terminal runs in the task's folder. [More](apps/studio/README.md)
+
+<table>
+<tr>
+<td width="78%"><img src="docs/screenshots/studio-1280.webp" alt="me studio: a task with its tool steps and the review panel"></td>
+<td width="22%"><img src="docs/screenshots/studio-360.webp" alt="me studio on a narrow screen"></td>
+</tr>
+</table>
+
 ### The terminal UI
 
-A full-screen TUI that works in any terminal, including Termux on Android: fuzzy slash-command suggestions, `@file` completion, diffs, collapsible tool cards, a context meter.
+A full-screen TUI that works in any terminal, including Termux on Android: fuzzy slash-command suggestions, `@file` completion, diffs, collapsible tool cards, a context meter. Drag with the mouse to select: the text is copied clean (no borders, no padding, wrapped lines joined); `ctrl+v` pastes text or an image, a big paste folds into one `[paste #1 · N lines]` marker.
 
 <table>
 <tr>
@@ -128,7 +142,9 @@ Terminal, web app and site share one palette. Pick one with `/theme` (live previ
 | **AGENTS.md** | Always loaded into the session and shown in the UI. `/init` writes it and the agent keeps it current. `ME.md`, `CLAUDE.md`, `DESIGN.md` and `PLAN.md` are picked up too. |
 | **Safe edits** | Multi-edit and line-range patches with clear errors for weak models. A checkpoint per turn: `/undo` restores the files of the last turn, and the web UI shows the diff with keep or revert. |
 | **Permissions** | read-only · ask · full access, plus a command allow-list ("always allow `npm test`"). |
-| **Context** | Context meter, `/compact`, and `/autocompact` before the window fills up. |
+| **Context** | Context meter, `/compact`, and `/autocompact` before the window fills up. Compaction works inside one long task too, and a "context too long" error compacts and retries by itself. |
+| **Reliability** | Rate limits, overloads, 5xx and dropped streams are retried with backoff. The model's reasoning goes back to it between tool calls (DeepSeek, Kimi, Qwen, OpenRouter, Gemini thought signatures, GPT-5 encrypted reasoning), replies cut by the output limit continue, `Esc` stops at once. |
+| **Windows** | Commands run in Git Bash when it is installed (else PowerShell, else cmd), edits keep CRLF/LF, encoding (cp1251) and BOM, the console input is read by key codes (no lost letters, no `Esc+[A` garbage), and a paste can never spill into cmd.exe. |
 | **Cost** | Price table per model, prompt caching, parallel read-only tools. Cost per task, session and day, with optional limits (`/cost`). |
 | **Search and fetch** | `web_search` through DeepSeek's built-in search (DuckDuckGo fallback) and `web_fetch`. |
 
@@ -161,7 +177,7 @@ Terminal, web app and site share one palette. Pick one with `/theme` (live previ
 
 ### Everywhere
 
-TUI (compact on narrow terminals) · `me web` on localhost · cloud web app (PWA) · Windows desktop app · Android app · Telegram · headless `me -p` and JSON-lines `me --rpc` for your own UI.
+TUI (compact on narrow terminals) · `me web` on localhost · **me studio** (parallel tasks in git worktrees) · cloud web app (PWA) · Windows desktop app · Android app · me IDE and a VS Code extension · Telegram · headless `me -p` and JSON-lines `me --rpc` for your own UI.
 
 ## Commands
 
@@ -194,6 +210,7 @@ Type `/` and start typing, suggestions are fuzzy.
 |---|---|
 | `me` | full-screen TUI, press `/` for commands |
 | `me web [port]` | browser UI with the local agent (`--lan` for other devices) |
+| `me studio` | desktop command center: parallel tasks in git worktrees, review, apply, commit, push (`--browser`, `update`) |
 | `me -p "task" [-y]` | one-shot, headless |
 | `me --rpc` | JSON-lines agent over stdio (what the cloud runner uses) |
 
@@ -216,7 +233,7 @@ src/web/         web UI: index.html + style.css + NN_*.js
 build.py         src/ → me.py (single file, committed; CI checks it is fresh)
 server/          FastAPI: accounts, TOTP, sync, workspaces, sandbox runner, Telegram, site
 server/market/   built-in skills, plugins, themes and agents
-apps/            desktop (pywebview) and Android (WebView) shells
+apps/            studio (Codex-style command center), desktop (pywebview), Android (WebView), VS Code extension
 tests/           test_core.py (offline) · test_cloud.py (needs a server) · test_restart.py · test_features.py (own server)
                  screenshots.py (playwright, every UI × 360/1280 × every theme) · measure_tokens.py (startup budget)
 scripts/promo/   promo clips: pty+pyte terminal recorder, local stand, playwright web scenes, ffmpeg assembly

@@ -186,9 +186,10 @@ class Agent:
 
     def _run(self, text, images=()):
         pr = self.preset()
-        m = self.s.model(pr.get("model") or None)
-        if m and pr.get("effort"):
-            m = dict(m, effort=pr["effort"])
+        m = self.s.model(self.session.get("model") or pr.get("model") or None)  # a session (e.g. a studio task) may pin its own model
+        effort = self.session.get("effort") or pr.get("effort")
+        if m and effort:
+            m = dict(m, effort="" if effort == "none" else effort)
         if not m:
             self.emit({"type": "error", "text": "no model configured — use /provider then /models"})
             return
