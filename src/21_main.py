@@ -4,13 +4,18 @@
 def main():
     args = sys.argv[1:]
     cont = any(a in ("-c", "--continue") for a in args)
-    args = [a for a in args if a not in ("-c", "--continue")]
+    yolo = any(a in ("-y", "--yes") for a in args)
+    args = [a for a in args if a not in ("-c", "--continue", "-y", "--yes")]
     want = None  # -m NAME: the model for this run
     for i, a in enumerate(args[:-1]):
         if a in ("-m", "--model"):
             want = args[i + 1]
             args = args[:i] + args[i + 2:]
             break
+    for f in ("-p", "--print"):  # flags in any order: `me -m x -y -p "task"` is `me -p "task" -m x -y`
+        if f in args[1:]:
+            args.remove(f)
+            args.insert(0, f)
     store = Store()
     if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
         # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
@@ -44,9 +49,7 @@ def main():
     if args and args[0] == "--rpc":
         return run_rpc(store)
     if args and args[0] in ("-p", "--print"):
-        yolo = "-y" in args
-        rest = [a for a in args[1:] if a != "-y"]
-        prompt = " ".join(rest)
+        prompt = " ".join(args[1:])
         if not prompt or stdin_ready():  # `cat log | me -p "why does it fail"`: the piped text comes with the task
             piped = sys.stdin.read().strip()
             prompt = f"{prompt}\n\n```\n{piped}\n```" if prompt and piped else prompt or piped

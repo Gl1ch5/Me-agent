@@ -938,6 +938,9 @@ def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
         assert "· bash" in err.getvalue() and "· bash" not in out.getvalue() and out.getvalue().strip(), (out.getvalue(), err.getvalue())
         d = json.loads(s.session_path(ag.session["id"]).read_text())
         assert [m["content"] for m in d["messages"] if m["role"] == "user"][:2] == ["remember kiwi", "and now?"]
+        r = subprocess.run([sys.executable, str(ROOT / "me.py"), "-y", "-m", "nope", "-p", "hi"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, env=dict(os.environ, ME_HOME=str(tmp / "h")), timeout=60)
+        assert "no model matches 'nope'" in r.stdout, r.stdout  # flags in any order still mean -p
     finally:
         os.chdir(cwd)
 
