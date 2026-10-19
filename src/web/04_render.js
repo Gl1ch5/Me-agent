@@ -95,7 +95,7 @@ function onEvent(e) {
     if (e.discard) { cur.text?.remove(); cur.think?.remove(); cur.text = null; cur.think = null; cur.thinkDone = false; }
     el(`<div class="info warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 140))}</div>`); return;
   }
-  if (t === "compacting") { el(`<div class="info">${tt("compacting history…")}</div>`); return; }
+  if (t === "compacting") { cur.text = null; el(`<div class="info">${tt("compacting history…")}</div>`); return; }
   if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">${tt("compacted {a} → {b} messages · ~{c} tokens", {a: e.before, b: e.after, c: human(e.ctx)})}</div>`); return; }
   if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
   if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(e.text)}</div>`); return; }
@@ -107,8 +107,8 @@ function onEvent(e) {
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
   if (t === "goal") { goalEvent(e); return; }
-  if (t === "notice") { el(`<div class="info${e.level === "info" ? "" : " warn"}">${esc(e.text)}</div>`); return; }
-  if (t === "verify") { el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
+  if (t === "notice") { cur.text = null; el(`<div class="info${e.level === "info" ? "" : " warn"}">${esc(e.text)}</div>`); return; }
+  if (t === "verify") { cur.text = null; el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
   if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
   if (t === "loaded" && e.session && state.worker) state.worker.session = e.session;  // later reloads must read this session
@@ -124,7 +124,11 @@ function renderHistory(s) {
   const outs = {};
   s.messages.forEach(m => { if (m.role === "tool") outs[m.tool_call_id] = m.content; });
   s.messages.forEach(m => {
-    if (m.role === "user" && m._aux) { if (/^\[message from the user/.test(txt(m.content))) userMsg(txt(m.content).split("\n").slice(1).join("\n")); }
+    if (m.role === "user" && m._aux) {
+      const a = txt(m.content);
+      if (/^\[message from the user/.test(a)) userMsg(a.split("\n").slice(1).join("\n"));
+      else if (/^\[files the user attached with @\]/.test(a)) el(`<div class="info">${esc("attached " + [...a.matchAll(/^\[([^\]\n]+)\]$/gm)].slice(1).map(x => x[1]).join(", "))}</div>`);
+    }
     else if (m.role === "user" && txt(m.content) !== "(images from read)") userMsg(txt(m.content));
     else if (m.role === "assistant") {
       if (m.content) el(`<div class="msg md">${md(m.content)}</div>`);

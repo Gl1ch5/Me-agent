@@ -133,7 +133,7 @@ def test_task_model_and_reload():
 def test_http_api_requires_key():
     st = studio()
     server, url = me_studio.serve(st)
-    import urllib.request, urllib.error
+    import urllib.request, urllib.error, urllib.parse
     base = url.split("/?")[0]
     try:
         urllib.request.urlopen(base + "/api/state")
@@ -145,6 +145,15 @@ def test_http_api_requires_key():
     assert "tasks" in json.loads(urllib.request.urlopen(r).read())
     page = urllib.request.urlopen(url).read().decode()
     assert "me studio" in page and key in page
+    proj = repo()
+    st.add_project(proj)
+    get = lambda q: json.loads(urllib.request.urlopen(urllib.request.Request(base + "/api/files?" + q, headers={"X-Key": key})).read())
+    assert get("path=" + urllib.parse.quote(proj))["paths"] == ["app.py"]  # @ completion lists project files, not .git
+    try:
+        get("path=" + urllib.parse.quote(tempfile.gettempdir()))
+        raise AssertionError("listed a folder that is not a project")
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
     server.shutdown()
 
 

@@ -218,13 +218,13 @@ def run_one(name, home, agent, timeout):
     t0 = time.time()
     try:
         p = subprocess.run([PY, str(ROOT / "me.py"), "-p", "-y", prompt], cwd=d, env=env, capture_output=True, text=True, timeout=timeout)
-        out = p.stdout + p.stderr
+        ans, out = p.stdout, p.stdout + p.stderr
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        out += "\n[timeout]"
+        ans = out = out + "\n[timeout]"
     dt = time.time() - t0
     try:
-        ok, note = check(d, out)
+        ok, note = check(d, ans)  # checks see only the reply; tool lines go to stderr
     except Exception as e:
         ok, note = False, f"check crashed: {e}"
     steps = len(re.findall(r"^· ", out, re.M))
