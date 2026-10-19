@@ -4052,8 +4052,22 @@ def run_headless(store, prompt, yolo, resume=None, model=None):
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
         print("".join(buf).strip())
         return 0 if g["status"] == "done" else 2
+    stopped = []
+
+    def on_term(*_):  # `timeout`, kill, CI: stop like Ctrl+C so the chat is saved and `me -c` can pick it up
+        if stopped:
+            os._exit(143)
+        stopped.append(1)
+        ag.cancel.set()
+    try:
+        signal.signal(signal.SIGTERM, on_term)
+    except (ValueError, OSError):  # not the main thread
+        pass
     ag.run(prompt)
     print("".join(buf).strip() if buf else "")
+    if stopped:
+        sys.stderr.write("\nstopped - `me -c` continues this chat\n")
+        return 143
 
 
 def run_rpc(store):
@@ -8463,9 +8477,11 @@ def main():
             piped = sys.stdin.read().strip()
             prompt = f"{prompt}\n\n```\n{piped}\n```" if prompt and piped else prompt or piped
         c = Cloud(store)
-        run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None, model)
+        rc = run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None, model)
         if store.auth.get("token"):
             c.sync()
+        if rc:
+            sys.exit(rc)  # 2: /goal not reached, 143: stopped by SIGTERM
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         if WIN and (os.environ.get("TERM_PROGRAM") == "mintty" or os.environ.get("MSYSTEM")):
