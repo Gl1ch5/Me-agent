@@ -4,7 +4,7 @@
 class TUICommands:
     # ─── commands (run in worker thread; may block on modals) ───
     def all_commands(self):
-        return COMMANDS + [(n, d) for n, (_, d) in PLUGINS.commands.items()]
+        return [(c, T(d)) for c, d in COMMANDS] + [(n, d) for n, (_, d) in PLUGINS.commands.items()]
 
     def command(self, cmd, arg):
         names = [c for c, _ in self.all_commands()]
@@ -19,6 +19,17 @@ class TUICommands:
         getattr(self, "cmd_" + cmd.replace("2fa", "twofa"))(arg)
 
     def cmd_help(self, arg):
+        if UI_LANG["v"] == "ru":
+            txt = "## Команды\n" + "\n".join(f"- `/{c}` {T(d)}" for c, d in COMMANDS)
+            txt += ("\n\n## Клавиши\n- `enter` отправить · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter новая строка\n- `esc` прервать · `ctrl+c` очистить/выход"
+                    "\n- `↑↓` история · `pgup/pgdn` / колесо — прокрутка · `ctrl+o` раскрыть последний инструмент (или клик)\n- `@путь` прикрепить файл (картинки уходят модели)"
+                    "\n- `tab` принять подсказку · `ctrl+v` / `alt+v` вставить текст или картинку · перетащите картинку, чтобы прикрепить"
+                    "\n- `alt+c` скопировать последний ответ · `/copy` ответ, блок кода или весь чат"
+                    "\n\n## Мышь\n- выделите текст мышью — он скопируется, как только отпустите (двойной клик — слово, тройной — строка)"
+                    "\n- правый клик: скопировать выделение или вставить · клик по карточке инструмента — открыть её"
+                    "\n- `shift`+выделение — выделение самого терминала · `/config` → мышь выкл возвращает его везде"
+                    "\n\nЯзык интерфейса: `/lang en` или `/lang ru`.")
+            return self.add("assistant", text=txt).__setattr__("done", True)
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
                 "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model)"
@@ -259,6 +270,37 @@ class TUICommands:
         self.info("↻ retrying the last request", "dim")
         self.dispatch(text)
 
+    def cmd_lang(self, arg):
+        """/lang en · /lang ru · /lang auto — the interface language (commands stay as they are)."""
+        st = self.s.config["settings"]
+        v = arg.strip().lower() or self.pick("Language", [("auto", "auto (system)", system_lang()[:5]), ("en", "English", ""), ("ru", "Русский", "")],
+                                             current=st.get("lang") or "auto")
+        if v not in ("auto", "en", "ru"):
+            return
+        st["lang"] = "" if v == "auto" else v
+        set_ui_lang(st)
+        self.s.save()
+        with self.lock:
+            for b in self.blocks:
+                b.touch()
+        self.toast(f"language → {UI_LANG['v']}", "ok")
+
+    def cmd_diff(self, arg):
+        """Every file this chat changed: the first snapshot against the file now."""
+        diffs = self.agent.chat_diff()
+        if not diffs:
+            return self.toast("no changes in this chat yet")
+        txt = "\n\n".join(f"### {p}\n```diff\n{d[:6000]}\n```" for p, d in diffs[:20])
+        self.add("assistant", text=txt).done = True
+
+    def cmd_rename(self, arg):
+        name = arg.strip() or self.prompt("Chat name", self.agent.session.get("title", ""))
+        if not name:
+            return
+        self.agent.session["title"] = name.strip()[:80]
+        self.s.save_session(self.agent.session)
+        self.toast(f"chat renamed: {name.strip()[:80]}", "ok")
+
     def cmd_context(self, arg):
         self.add("assistant", text=self.agent.context_report()).done = True
 
@@ -417,9 +459,7 @@ class TUICommands:
                 added -= 1
             else:
                 r = next(x for x in remote if x["id"] == v)
-                nm = v.split("/")[-1]
-                if any(m["name"] == nm for m in self.s.config["models"]):
-                    nm = f"{pname}/{nm}"
+                nm = self.s.unique_model_name(v, pname)
                 self.s.config["models"].append({"name": nm, "id": v, "provider": pname, "api": "chat", "context": r.get("context") or 128000,
                                                 "max_out": "", "effort": "", "temperature": "", "vision": True})
                 have.add((pname, v))
@@ -453,7 +493,7 @@ class TUICommands:
                 p = provs[0] if len(provs) == 1 else self.pick("Provider", provs)
                 mid = p and self.prompt("Model id (as the API expects it)")
                 if mid:
-                    ms.append({"name": mid.split("/")[-1], "id": mid, "provider": p, "api": "chat", "context": 128000, "max_out": "",
+                    ms.append({"name": self.s.unique_model_name(mid, p), "id": mid, "provider": p, "api": "chat", "context": 128000, "max_out": "",
                                "effort": "", "temperature": "", "vision": True})
                     self.s.save()
                     self.edit_model(ms[-1])
@@ -512,6 +552,9 @@ class TUICommands:
                 except ValueError:
                     self.toast("must be a number", "err")
                     continue
+            if f == "name" and any(x is not m and x["name"] == v for x in self.s.config["models"]):
+                self.toast(f"another model is already called {v}", "err")
+                continue
             if f == "name" and self.s.config.get("model") == m["name"]:
                 self.s.config["model"] = v
             if f == "name" and self.agent.session.get("model") == m["name"]:
@@ -800,10 +843,13 @@ class TUICommands:
     def cmd_config(self, arg):
         st = self.s.config["settings"]
         while True:
-            items = [("yolo", f"auto-approve tools   {'on' if st.get('yolo') else 'off'}", ""),
-                     ("mouse", f"mouse                {'on' if st.get('mouse', True) else 'off'}",
+            onoff = lambda x: T("on" if x else "off")
+            items = [("lang", f"language             {st.get('lang') or 'auto'}", "en / ru"),
+                     ("yolo", f"auto-approve tools   {onoff(st.get('yolo'))}", ""),
+                     ("mouse", f"mouse                {onoff(st.get('mouse', True))}",
                       "on: wheel scroll, drag to select+copy · off: the terminal's own selection"),
-                     ("show_thinking", f"show thinking        {'on' if st.get('show_thinking') else 'off'}", ""),
+                     ("show_thinking", f"show thinking        {onoff(st.get('show_thinking'))}", ""),
+                     ("notify", f"notify when done     {onoff(st.get('notify', True))}", "a sound + a desktop notification when a task took over 30 s"),
                      ("behavior", "behavior switches…", "self-testing, todo, web, plan first, brief, explain, commit"),
                      ("home", "data dir", str(self.s.home))]
             v = self.pick("Settings", items)
@@ -812,7 +858,10 @@ class TUICommands:
             if v == "behavior":
                 self.cmd_behavior("")
                 continue
-            st[v] = not st.get(v, v == "mouse")
+            if v == "lang":
+                self.cmd_lang("")
+                continue
+            st[v] = not st.get(v, v in ("mouse", "notify"))
             if v == "mouse":
                 self.term.set_mouse(st[v])
             self.s.save()

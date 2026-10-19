@@ -23,6 +23,7 @@ const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", tod
 const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true};
 function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
+  if (key === "lang") { cfg.settings.lang = ["en", "ru"].includes(v) ? v : ""; return; }
   if (key.startsWith("behavior:")) { cfg.settings.behavior = {...(cfg.settings.behavior || {}), [key.slice(9)]: !!v}; if (key === "behavior:tests") delete cfg.settings.no_verify; return; }
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));

@@ -75,4 +75,5 @@ function setLang(l) {
   if (typeof renderChrome === "function") { renderChrome(); renderStatus(); renderSessions(); renderTodo(state.session?.todo || []); if (log.querySelector(".empty")) emptyState(); }
   $("input").placeholder = t("Ask anything…");
 }
-document.addEventListener("click", e => { const b = e.target.closest && e.target.closest(".lang button"); if (b) setLang(b.dataset.l); });
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest(".lang button");
+  if (b) { setLang(b.dataset.l); if (typeof cfgSet === "function" && base) cfgSet("lang", b.dataset.l).catch(() => {}); } });  // the choice follows you to every device

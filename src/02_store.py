@@ -25,6 +25,8 @@ class Store:
             self.config.setdefault(k, json.loads(json.dumps(v)))
         for k, v in DEFAULT_CONFIG["settings"].items():
             self.config["settings"].setdefault(k, v)
+        if self.dedupe_models():
+            jsave(self.cfg_path, self.config)
         st = self.config["settings"]
         if st.get("mouse_rev", 0) < 2:  # 0.7: the mouse now selects + copies text on every platform (Windows had it off)
             st["mouse"], st["mouse_rev"] = True, 2
@@ -47,6 +49,30 @@ class Store:
                 if n and m["name"] == n:
                     return m
         return self.config["models"][0] if self.config["models"] else None
+
+    def unique_model_name(self, mid, provider="", skip=None):
+        """A display name no other model has: the id's last part, then more of the id, then the provider, then a number."""
+        taken = {m["name"] for m in self.config["models"] if m is not skip}
+        parts = [x for x in str(mid).split("/") if x]
+        cands = ["/".join(parts[-k:]) for k in range(1, len(parts) + 1)] + [f"{provider}/{mid}" if provider else mid]
+        for c in cands:
+            if c and c not in taken:
+                return c
+        n = 2
+        while f"{cands[0]} {n}" in taken:
+            n += 1
+        return f"{cands[0]} {n}"
+
+    def dedupe_models(self):
+        """Older versions could give two models the same name; a chat remembers its model by name, so rename the later ones.
+        Returns True if anything changed."""
+        seen, changed = set(), False
+        for m in self.config["models"]:
+            if m.get("name") in seen or not m.get("name"):
+                m["name"] = self.unique_model_name(m.get("id", "model"), m.get("provider", ""), skip=m)
+                changed = True
+            seen.add(m["name"])
+        return changed
 
     def provider(self, m):
         return self.config["providers"].get(m.get("provider", ""), {})

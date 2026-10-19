@@ -32,6 +32,8 @@ def apply_setting(cfg, key, value, model=None):
         st.setdefault("behavior", {})[key[9:]] = bool(value) and value not in ("off", "0", "false")
         if key == "behavior:tests":
             st.pop("no_verify", None)
+    elif key == "lang":
+        st["lang"] = value if value in ("en", "ru") else ""
     elif key == "prompt":
         cfg["prompt"] = str(value or "")
     elif key == "autocompact":
@@ -102,7 +104,7 @@ class WebSession:
                            "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
-                "day_cost": day_cost(self.s.home), "preview": "", "behavior": behavior(self.s.config["settings"]),
+                "day_cost": day_cost(self.s.home), "preview": "", "behavior": behavior(self.s.config["settings"]), "lang": self.s.config["settings"].get("lang", ""),
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
                 "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd"), "n": x.get("n", 0)}

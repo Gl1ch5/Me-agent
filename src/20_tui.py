@@ -21,6 +21,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.dirty = True
         self.frame = 0
         self.lock = threading.RLock()
+        set_ui_lang(store.config["settings"])
         self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
         self.agent.take_queued = self.take_pending
         self.tools_live = {}
@@ -51,10 +52,12 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.dirty = True
 
     def toast(self, msg, color="dim"):
-        self.notice = (msg, time.time(), color)
+        self.notice = (T(msg), time.time(), color)
         self.redraw()
 
     def add(self, kind, **kw):
+        if kind == "info" and isinstance(kw.get("text"), str):
+            kw["text"] = T(kw["text"])
         with self.lock:
             b = Block(kind, **kw)
             self.blocks.append(b)
@@ -143,7 +146,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                             self.blocks.remove(b)
                     self.cur_text = self.cur_reason = None
                 why = (e.get("error") or "").split("\n")[0][:140]
-                self.add("info", text=f"↻ {why} — retrying" + (f" in {e['delay']:.0f}s" if e.get("delay") else "")
+                self.add("info", text=T(f"↻ {why} — retrying" + (f" in {e['delay']:.0f}s" if e.get("delay") else ""))
                          + (f" ({e['attempt']}/{e['of']})" if e.get("of", 1) > 1 else ""), color="warn")
             elif t == "compacting":
                 self.add("info", text=f"◌ compacting history ({e['reason']})…", color="accent")
@@ -161,7 +164,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.add("info", text=f"◎ goal: {e['text']}", color="accent")
                 else:
                     ok = e["status"] == "done"
-                    self.add("info", text=("✓ goal done" if ok else "✗ goal blocked") + (f" — {e['reason']}" if e.get("reason") else ""),
+                    self.add("info", text=T("✓ goal done" if ok else "✗ goal blocked") + (f" — {e['reason']}" if e.get("reason") else ""),
                              color="ok" if ok else "err")
             elif t == "turn_diff":
                 files = e.get("files") or []
@@ -171,7 +174,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         add = sum(1 for l in f["diff"].splitlines() if l.startswith("+") and not l.startswith("+++"))
                         rem = sum(1 for l in f["diff"].splitlines() if l.startswith("-") and not l.startswith("---"))
                         stats.append(f"{f['path']} +{add} −{rem}")
-                    self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6} more" if len(stats) > 6 else "") + "   /undo reverts",
+                    self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6}" if len(stats) > 6 else "") + "   /undo",
                              color="dim")
             elif t == "notice":
                 self.add("info", text="! " + e["text"], color="warn")
@@ -196,6 +199,10 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.add("stats", text=turn_stats(e))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
+                if e.get("time", 0) >= 30 and self.s.config["settings"].get("notify", True) and self.agent.depth == 0:
+                    self.term.write("\a")  # a long task finished: the terminal bell, and a desktop notification where there is one
+                    title = (self.agent.session.get("title") or "")[:80]
+                    threading.Thread(target=desktop_notify, args=(T("me: task finished"), title), daemon=True).start()
             self.redraw()
 
     # ─── modal helpers (called from worker threads; block until answered) ───
@@ -216,6 +223,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         """items: list of (value, label, detail). Returns value or None. `keep` (a dict) carries the typed filter from one
         call to the next, for pickers reopened in a loop."""
         items = [i if isinstance(i, tuple) else (i, str(i), "") for i in items]
+        items = [(v, T(lab), T(det)) for v, lab, det in items]
+        title, hint = T(title), T(hint)
         flt = (keep or {}).get("filter", "")
         shown = [it for it in items if fuzzy(flt.lower(), it[1] + " " + it[2]) is not None] if flt else items
         sel = next((i for i, it in enumerate(shown) if current is not None and it[0] == current), 0)
@@ -226,6 +235,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         return v
 
     def prompt(self, title, default="", secret=False, multiline=False, hint=""):
+        title, hint = T(title), T(hint)
         return self._modal({"kind": "input", "title": title, "text": str(default or ""), "cur": len(str(default or "")), "secret": secret,
                             "multiline": multiline, "hint": hint})
 
@@ -240,7 +250,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
             detail = json.dumps(a.get("args", {}), ensure_ascii=False)
         always = (f"Yes, always allow `{allow_pattern(a.get('cmd', ''))}`" if name == "bash" else "Yes, and switch to full access (/perm)")
         v = self._modal({"kind": "confirm", "title": f"{name}  {label}", "detail": detail, "sel": 0,
-                         "items": [("y", "Yes"), ("a", always), ("n", "No, tell me what to do")]})
+                         "items": [("y", T("Yes")), ("a", T(always)), ("n", T("No, tell me what to do"))]})
         if v == "a" and name != "bash":
             self.s.config["settings"]["perm"] = "full"
             self.s.save()
@@ -387,8 +397,8 @@ def turn_stats(e):
     """One honest line per turn: every step re-sends the context, so ↑ is the sum over steps; cached input is billed at a fraction."""
     steps = e.get("steps") or 1
     cached = e.get("cached", 0)
-    parts = [dur(e["time"]), f"{steps} step{'s' if steps != 1 else ''}", f"context {human(e.get('ctx', 0))}",
-             f"sent ↑{human(e['in'])}" + (f" ({int(100 * cached / e['in'])}% cached)" if cached and e["in"] else ""), f"↓{human(e['out'])}"]
+    parts = [dur(e["time"]), T(f"{steps} step{'s' if steps != 1 else ''}"), T(f"context {human(e.get('ctx', 0))}"),
+             T(f"sent ↑{human(e['in'])}" + (f" ({int(100 * cached / e['in'])}% cached)" if cached and e["in"] else "")), f"↓{human(e['out'])}"]
     if e.get("cost"):
         parts.append(money(e["cost"]))
     return "  ·  ".join(parts)
