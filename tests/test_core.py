@@ -902,6 +902,8 @@ def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
         os.chdir(tmp)
         ag, ev = run(s, "remember kiwi")
         assert s.latest(tmp) == ag.session["id"] and s.latest(tmp / "elsewhere") is None
+        s.config["models"].append({"name": "deep", "id": "deepseek-x", "provider": "mock", "api": "chat"})
+        assert me.pick_model(s, "m") == "m" and me.pick_model(s, "SEEK") == "deep" and me.pick_model(s, "x") is None  # x: ambiguous
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             me.run_headless(s, "and now?", True, s.latest(tmp))  # me -p -c: the follow-up lands in the same chat

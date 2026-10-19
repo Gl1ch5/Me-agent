@@ -288,13 +288,15 @@ class TUI(TUIRender, TUIInput, TUICommands):
         if not self.s.config.get("models"):
             self.info("Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).")
             self.setup_provider()
-        cont, prompt = getattr(self, "first", (False, ""))
+        cont, prompt, model = getattr(self, "first", (False, "", None))
         if cont:
             sid = self.s.latest(os.getcwd())
             if sid:
                 self.resume(sid)
             else:
                 self.toast("no earlier chat in this folder", "warn")
+        if model:
+            self.agent.set_model(model)
         if prompt:
             self.pending.append(prompt)
         try:

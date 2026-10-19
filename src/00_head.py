@@ -12,7 +12,7 @@ Layers (top → bottom), each usable on its own:
 Stdlib only. Python 3.8+.
 """
 import ast, atexit, base64, collections, difflib, fnmatch, glob, hashlib, http.client, io, json, os, platform, queue, re
-import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
+import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 

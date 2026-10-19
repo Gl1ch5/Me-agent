@@ -1,7 +1,7 @@
 # ───────────────────────────── headless / rpc ─────────────────────────────
 
 
-def run_headless(store, prompt, yolo, resume=None):
+def run_headless(store, prompt, yolo, resume=None, model=None):
     # a terminal sees the reply stream in; a pipe gets only the final answer on stdout (narration between tools goes to stderr)
     live = sys.stdout.isatty()
     gap = [None]  # None: nothing printed yet; True: a tool ran since the last text, so start a new paragraph
@@ -51,6 +51,8 @@ def run_headless(store, prompt, yolo, resume=None):
     ag = Agent(store, emit, confirm, ask)
     if resume:
         ag.load(resume)
+    if model:
+        ag.session["model"] = model  # this run only: the default model stays as it was
     if prompt.startswith("/goal "):
         g = ag.goal(prompt[6:].strip().strip('"'))
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")

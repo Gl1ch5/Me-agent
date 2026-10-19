@@ -5,6 +5,12 @@ def main():
     args = sys.argv[1:]
     cont = any(a in ("-c", "--continue") for a in args)
     args = [a for a in args if a not in ("-c", "--continue")]
+    want = None  # -m NAME: the model for this run
+    for i, a in enumerate(args[:-1]):
+        if a in ("-m", "--model"):
+            want = args[i + 1]
+            args = args[:i] + args[i + 2:]
+            break
     store = Store()
     if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
         # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
@@ -16,11 +22,14 @@ def main():
         PLUGINS.load(store)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
+    model = want and pick_model(store, want)
+    if want and not model:
+        return print(f"me: no model matches {want!r}. models: " + ", ".join(m["name"] for m in store.config["models"]))
     if args and args[0] == "studio":
         return run_studio(store, args[1:])
     if args and args[0] in ("-h", "--help"):
-        return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me \"task\"       start with a first message\n  me -c           continue the last chat in this folder (-p too)\n"
-                     f"  me -p \"task\"     run once (add -y to auto-approve)\n"
+        return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me \"task\"       start with a first message\n  me -c           continue the last chat in this folder (-p too)\n  me -m NAME      use this model (-p too; part of a name is enough)\n"
+                     f"  me -p \"task\"     run once (add -y to auto-approve; piped stdin is added to the task)\n"
                      f"  me web [port]   browser UI on localhost:8080 (--lan to open on your network)\n"
                      f"  me studio       desktop command center: parallel tasks in git worktrees, review, apply, commit (--browser, update)\n  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
                      f"  env: ME_HOME={HOME}  ME_SERVER={SERVER}")
@@ -37,9 +46,12 @@ def main():
     if args and args[0] in ("-p", "--print"):
         yolo = "-y" in args
         rest = [a for a in args[1:] if a != "-y"]
-        prompt = " ".join(rest) or sys.stdin.read()
+        prompt = " ".join(rest)
+        if not prompt or stdin_ready():  # `cat log | me -p "why does it fail"`: the piped text comes with the task
+            piped = sys.stdin.read().strip()
+            prompt = f"{prompt}\n\n```\n{piped}\n```" if prompt and piped else prompt or piped
         c = Cloud(store)
-        run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None)
+        run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None, model)
         if store.auth.get("token"):
             c.sync()
         return
@@ -48,9 +60,31 @@ def main():
             return print("me: Git Bash's window (mintty) is not a Windows console. Run `winpty me`, or open me in Windows Terminal / cmd.exe.")
         return print("me: not a terminal. use: me -p \"task\"")
     tui = TUI(store)
-    tui.first = (cont, " ".join(a for a in args if not a.startswith("-")).strip())  # me -c: continue here; me "task": start with it
+    tui.first = (cont, " ".join(a for a in args if not a.startswith("-")).strip(), model)  # me -c: continue here; me "task": start with it
     PLUGINS.tui = tui
     tui.run()
+
+
+def stdin_ready():
+    """Piped or redirected input to read along with a prompt; an inherited stdin nobody writes to (a script's, CI's) must not hang -p."""
+    if sys.stdin is None or sys.stdin.isatty():
+        return False
+    try:
+        if stat.S_ISREG(os.fstat(sys.stdin.fileno()).st_mode):
+            return True
+        if WIN:
+            return False
+        import select
+        return bool(select.select([sys.stdin], [], [], 1.0)[0])
+    except (OSError, ValueError):
+        return False
+
+
+def pick_model(store, name):
+    """-m: an exact model name, else the only one whose name or id contains it."""
+    ms = store.config.get("models") or []
+    hit = [m for m in ms if m["name"] == name] or [m for m in ms if name.lower() in (m["name"] + " " + m.get("id", "")).lower()]
+    return hit[0]["name"] if len(hit) == 1 else None
 
 
 def run_studio(store, args):
