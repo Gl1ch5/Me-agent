@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.9.2"
+VERSION = "0.10.0"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -8113,20 +8113,21 @@ def main():
 
 
 def run_studio(store, args):
-    """me studio: the desktop app (apps/studio/me_studio.py). Taken from a checkout next to me.py, else downloaded once from the
-    server into ~/.me/apps (`me studio update` fetches it again)."""
+    """me studio: the desktop app (apps/studio/me_studio.py). Taken from a checkout next to me.py, else from the server into
+    ~/.me/apps, refreshed on every start when the server has a newer one (offline: the copy already there)."""
     here = Path(os.path.abspath(__file__)).parent
     local = here / "apps" / "studio" / "me_studio.py"
     path = local if local.is_file() else HOME / "apps" / "me_studio.py"
-    if path != local and (not path.is_file() or "update" in args):
+    if path != local:
         try:
-            src = Cloud(store).req("GET", "/studio.py", token=False, timeout=60)
+            src = Cloud(store).req("GET", "/studio.py", token=False, timeout=60 if not path.is_file() or "update" in args else 8)
             src = src.decode("utf-8") if isinstance(src, bytes) else src
             if "def main(" not in str(src):
                 raise CloudError("bad download")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(str(src).encode("utf-8"))
-            print(f"me studio downloaded → {path}")
+            if not path.is_file() or path.read_bytes() != str(src).encode("utf-8"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(str(src).encode("utf-8"))
+                print(f"me studio updated → {path}")
         except CloudError as e:
             if not path.is_file():
                 return print(f"me studio: could not download it ({e}). Get it from the releases page: me-studio.exe, or apps/studio/me_studio.py")

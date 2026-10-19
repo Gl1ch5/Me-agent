@@ -148,6 +148,26 @@ def test_http_api_requires_key():
     server.shutdown()
 
 
+def test_folder_browser_and_open():
+    st = me_studio.Studio()
+    root = Path(tempfile.mkdtemp())
+    (root / "a").mkdir()
+    (root / "b" / ".git").mkdir(parents=True)
+    (root / ".hidden").mkdir()
+    d = st.folders(str(root))
+    assert [x["name"] for x in d["dirs"]] == ["a", "b"] and d["dirs"][1]["git"] and d["parent"]
+    try:
+        st.folders(str(root / "missing"))
+        raise AssertionError("a missing folder must be an error")
+    except ValueError:
+        pass
+    try:
+        me_studio.route(st, "/api/open", {"path": str(root / "missing")})
+        raise AssertionError("opening a missing folder must be an error")
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):
@@ -161,3 +181,4 @@ if __name__ == "__main__":
                 print("FAIL", name)
                 fails += 1
     sys.exit(1 if fails else 0)
+
