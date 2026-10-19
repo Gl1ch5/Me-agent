@@ -2,20 +2,7 @@
 
 
 def main():
-    args = sys.argv[1:]
-    cont = any(a in ("-c", "--continue") for a in args)
-    yolo = any(a in ("-y", "--yes") for a in args)
-    args = [a for a in args if a not in ("-c", "--continue", "-y", "--yes")]
-    want = None  # -m NAME: the model for this run
-    for i, a in enumerate(args[:-1]):
-        if a in ("-m", "--model"):
-            want = args[i + 1]
-            args = args[:i] + args[i + 2:]
-            break
-    for f in ("-p", "--print"):  # flags in any order: `me -m x -y -p "task"` is `me -p "task" -m x -y`
-        if f in args[1:]:
-            args.remove(f)
-            args.insert(0, f)
+    args, cont, yolo, want = parse_flags(sys.argv[1:])
     store = Store()
     if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
         # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
@@ -66,6 +53,24 @@ def main():
     tui.first = (cont, " ".join(a for a in args if not a.startswith("-")).strip(), model)  # me -c: continue here; me "task": start with it
     PLUGINS.tui = tui
     tui.run()
+
+
+def parse_flags(args):
+    """-c, -y and -m NAME anywhere; -p first, so `me -m x -y -p "task"` is `me -p "task" -m x -y`. -> (args, cont, yolo, model)"""
+    cont = any(a in ("-c", "--continue") for a in args)
+    yolo = any(a in ("-y", "--yes") for a in args)
+    args = [a for a in args if a not in ("-c", "--continue", "-y", "--yes")]
+    want = None
+    for i, a in enumerate(args[:-1]):
+        if a in ("-m", "--model"):
+            want = args[i + 1]
+            args = args[:i] + args[i + 2:]
+            break
+    for f in ("-p", "--print"):
+        if f in args[1:]:
+            args.remove(f)
+            args.insert(0, f)
+    return args, cont, yolo, want
 
 
 def stdin_ready():
