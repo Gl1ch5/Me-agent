@@ -14,7 +14,7 @@ COLS, ROWS = 110, 32
 
 
 class TUI:
-    def __init__(self, home, cwd):
+    def __init__(self, home, cwd, args=()):
         self.screen = pyte.Screen(COLS, ROWS)
         self.stream = pyte.ByteStream(self.screen)
         self.raw = b""
@@ -24,7 +24,7 @@ class TUI:
             os.environ.update(ME_HOME=home, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS), ME_LANG=os.environ.get("ME_LANG", "en"))
             os.environ.pop("DISPLAY", None)
             os.environ.pop("WAYLAND_DISPLAY", None)
-            os.execv(sys.executable, [sys.executable, str(ROOT / "me.py")])
+            os.execv(sys.executable, [sys.executable, str(ROOT / "me.py"), *args])
         self.pid, self.fd = pid, fd
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.lock = threading.Lock()
@@ -146,6 +146,16 @@ def main():
         t.wait("› ")
         assert "render error" not in t.text()
         print("ok   wheel scrolling, no render errors")
+        t.send("\x03\x03")
+        time.sleep(0.5)
+    finally:
+        t.close()
+    t = TUI(home, cwd, ["-c", "one more"])
+    try:
+        t.wait("resumed")
+        t.wait("one more")
+        t.wait("Hello world")
+        print("ok   me -c \"task\" resumes the last chat here and sends the task")
         t.send("\x03\x03")
         time.sleep(0.5)
     finally:

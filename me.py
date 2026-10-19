@@ -232,6 +232,12 @@ class Store:
             cache.pop(k, None)
         return sorted(out, key=lambda s: s.get("updated", 0), reverse=True)
 
+    def latest(self, cwd):
+        """id of the newest chat started in `cwd` (me -c), or None."""
+        here = os.path.normcase(os.path.abspath(str(cwd)))
+        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n")
+                     and os.path.normcase(os.path.abspath(x.get("cwd") or "/")) == here), None)
+
     def search(self, q, limit=40):
         """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""
         words = [w for w in q.lower().split() if w]
@@ -3904,7 +3910,7 @@ class Agent:
 # ───────────────────────────── headless / rpc ─────────────────────────────
 
 
-def run_headless(store, prompt, yolo):
+def run_headless(store, prompt, yolo, resume=None):
     gap = [None]  # None: nothing printed yet; True: a tool ran since the last text, so start a new paragraph
 
     def emit(e):
@@ -3940,6 +3946,8 @@ def run_headless(store, prompt, yolo):
             return ""
         return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
     ag = Agent(store, emit, confirm, ask)
+    if resume:
+        ag.load(resume)
     if prompt.startswith("/goal "):
         g = ag.goal(prompt[6:].strip().strip('"'))
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
@@ -8095,6 +8103,15 @@ class TUI(TUIRender, TUIInput, TUICommands):
         if not self.s.config.get("models"):
             self.info("Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).")
             self.setup_provider()
+        cont, prompt = getattr(self, "first", (False, ""))
+        if cont:
+            sid = self.s.latest(os.getcwd())
+            if sid:
+                self.resume(sid)
+            else:
+                self.toast("no earlier chat in this folder", "warn")
+        if prompt:
+            self.pending.append(prompt)
         try:
             r = self.cloud.req("GET", "/api/version", token=False, timeout=5)
             if r.get("version") and r["version"] != VERSION:
@@ -8307,6 +8324,8 @@ def meta_line(text):
 
 def main():
     args = sys.argv[1:]
+    cont = any(a in ("-c", "--continue") for a in args)
+    args = [a for a in args if a not in ("-c", "--continue")]
     store = Store()
     if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
         # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
@@ -8321,7 +8340,8 @@ def main():
     if args and args[0] == "studio":
         return run_studio(store, args[1:])
     if args and args[0] in ("-h", "--help"):
-        return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me -p \"task\"     run once (add -y to auto-approve)\n"
+        return print(f"me {VERSION} — minimal cloud-synced agent\n  me              TUI\n  me \"task\"       start with a first message\n  me -c           continue the last chat in this folder (-p too)\n"
+                     f"  me -p \"task\"     run once (add -y to auto-approve)\n"
                      f"  me web [port]   browser UI on localhost:8080 (--lan to open on your network)\n"
                      f"  me studio       desktop command center: parallel tasks in git worktrees, review, apply, commit (--browser, update)\n  me --rpc        JSON-lines agent over stdio (for web/telegram/IDE frontends)\n  me --sync       sync with cloud and exit\n"
                      f"  env: ME_HOME={HOME}  ME_SERVER={SERVER}")
@@ -8340,7 +8360,7 @@ def main():
         rest = [a for a in args[1:] if a != "-y"]
         prompt = " ".join(rest) or sys.stdin.read()
         c = Cloud(store)
-        run_headless(store, prompt, yolo)
+        run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None)
         if store.auth.get("token"):
             c.sync()
         return
@@ -8349,6 +8369,7 @@ def main():
             return print("me: Git Bash's window (mintty) is not a Windows console. Run `winpty me`, or open me in Windows Terminal / cmd.exe.")
         return print("me: not a terminal. use: me -p \"task\"")
     tui = TUI(store)
+    tui.first = (cont, " ".join(a for a in args if not a.startswith("-")).strip())  # me -c: continue here; me "task": start with it
     PLUGINS.tui = tui
     tui.run()
 

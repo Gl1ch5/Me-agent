@@ -1,5 +1,5 @@
 """Run: python3 tests/test_core.py   (no deps; spins up the mock LLM)"""
-import json, os, re, subprocess, sys, tempfile, threading, time
+import contextlib, io, json, os, re, subprocess, sys, tempfile, threading, time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -892,6 +892,22 @@ def test_act_nudge():
     ag, ev = run(s, "talk: explain how an LRU cache works")
     assert not any(m.get("content") == me.ACT_NUDGE for m in ag.session["messages"])
     assert me.should_have_acted("Создай файл game.js с игрой", "```js\na\nb\nc\n```") and not me.should_have_acted("create game.js", "no code")
+
+
+def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        ag, ev = run(s, "remember kiwi")
+        assert s.latest(tmp) == ag.session["id"] and s.latest(tmp / "elsewhere") is None
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            me.run_headless(s, "and now?", True, s.latest(tmp))  # me -p -c: the follow-up lands in the same chat
+        d = json.loads(s.session_path(ag.session["id"]).read_text())
+        assert [m["content"] for m in d["messages"] if m["role"] == "user"][:2] == ["remember kiwi", "and now?"]
+    finally:
+        os.chdir(cwd)
 
 
 def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):

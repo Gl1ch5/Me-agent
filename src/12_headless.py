@@ -1,7 +1,7 @@
 # ───────────────────────────── headless / rpc ─────────────────────────────
 
 
-def run_headless(store, prompt, yolo):
+def run_headless(store, prompt, yolo, resume=None):
     gap = [None]  # None: nothing printed yet; True: a tool ran since the last text, so start a new paragraph
 
     def emit(e):
@@ -37,6 +37,8 @@ def run_headless(store, prompt, yolo):
             return ""
         return input(q + (f" [{' / '.join(options)}]" if options else "") + " ")
     ag = Agent(store, emit, confirm, ask)
+    if resume:
+        ag.load(resume)
     if prompt.startswith("/goal "):
         g = ag.goal(prompt[6:].strip().strip('"'))
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
