@@ -3207,7 +3207,7 @@ class Agent:
             a = int(mt.group(2) or 1)
             b = int(mt.group(3) or (mt.group(2) and a + 99) or len(lines))
             a, b = max(1, a), min(len(lines), b, a + 799)
-            name = relp(p, self.cwd) + (f":{a}-{b}" if mt.group(2) or b < len(lines) else "")
+            name = relp(p, self.cwd).replace(os.sep, "/") + (f":{a}-{b}" if mt.group(2) or b < len(lines) else "")
             if name in names:
                 continue
             names.append(name)
