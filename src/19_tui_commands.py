@@ -115,6 +115,16 @@ class TUICommands:
         folder = {"theme": "themes", "agent": "agents", "plugin": "plugins", "skill": "skills"}[kind]
         ext = {"theme": "json", "agent": "md", "plugin": "py"}.get(kind, x.get("ext", "py"))
         (self.s.home / folder / f"{x['name']}.{ext}").write_text(x["content"], "utf-8")
+        m = re.search(r"^skills:\s*(.+)$", x["content"].split("\n---", 1)[0], re.M) if kind == "agent" else None
+        for name in [n.strip() for n in m.group(1).split(",") if n.strip()] if m else []:  # the skills this agent brings
+            try:
+                sk = next((y for y in self.cloud.req("GET", "/api/market?kind=skill&q=" + urllib.request.quote(name), token=False)
+                           if y["name"] == name), None)
+                if sk:
+                    sk = self.cloud.req("GET", f"/api/market/{sk['id']}", token=False)
+                    (self.s.home / "skills" / f"{name}.{sk.get('ext') or 'md'}").write_text(sk["content"], "utf-8")
+            except CloudError:
+                pass
         if self.cloud.online:
             try:
                 self.cloud.req("POST", f"/api/market/{mid}/install", {})

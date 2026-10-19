@@ -773,6 +773,24 @@ def test_model_picker_keeps_the_search():
     s.config["models"] = s.config["models"][:1]
 
 
+
+def test_tool_arg_aliases(tmp=Path(tempfile.mkdtemp())):
+    # models trained on other agents send command / file_path / old_string: they work; a missing argument is named, not a KeyError
+    s = make()
+    ag, ev = run(s, "tool:bash " + json.dumps({"command": "echo alias-ok"}))
+    assert "alias-ok" in ends(ev)[0]["output"], ends(ev)
+    f = tmp / "a.txt"
+    f.write_text("one\n")
+    ag.run("tool:edit " + json.dumps({"file_path": str(f), "old_string": "one", "new_string": "two"}))
+    assert f.read_text() == "two\n"
+    ev.clear()
+    ag2, ev = run(s, "tool:bash " + json.dumps({"timeout": 5}))
+    out = ends(ev)[0]["output"]
+    assert "bash needs cmd" in out and "KeyError" not in out, out
+    ag3, ev = run(s, "tool:bash " + json.dumps({"input": {"cmd": "echo wrapped"}}))
+    assert "wrapped" in ends(ev)[0]["output"]
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

@@ -500,11 +500,23 @@ def market_install(mid: int, u=Depends(user)):
     r = conn.execute("SELECT * FROM market WHERE id=?", (mid,)).fetchone()
     if not r:
         raise HTTPException(404)
-    put_doc(u["id"], doc_key_for(r), r["content"])
-    if not conn.execute("SELECT 1 FROM installs WHERE user_id=? AND mid=?", (u["id"], mid)).fetchone():
-        conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (mid,))
-    record_install(u["id"], r)
-    return {"ok": True, "version": r["version"]}
+    names = [r["name"]] + bundle_names(r)
+    for name in names:  # an agent brings the skills it names in `skills:`
+        x = conn.execute("SELECT * FROM market WHERE name=?", (name,)).fetchone()
+        if not x or (x["id"] != r["id"] and x["kind"] == "agent"):
+            continue
+        put_doc(u["id"], doc_key_for(x), x["content"])
+        if not conn.execute("SELECT 1 FROM installs WHERE user_id=? AND mid=?", (u["id"], x["id"])).fetchone():
+            conn.execute("UPDATE market SET installs=installs+1 WHERE id=?", (x["id"],))
+        record_install(u["id"], x)
+    return {"ok": True, "version": r["version"], "installed": names}
+
+
+def bundle_names(r):
+    """Skills an agent lists in its front matter (`skills: a, b`)."""
+    if r["kind"] != "agent":
+        return []
+    return [n.strip() for n in (skill_meta(r["content"]).get("skills") or "").split(",") if n.strip()]
 
 
 class Rate(BaseModel):
