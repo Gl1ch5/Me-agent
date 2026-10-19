@@ -80,7 +80,7 @@ RU = {
     "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы",
     "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»", "very short replies": "очень короткие ответы",
     "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
-    "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
+    "change only what the task needs": "меняет только то, что нужно для задачи", "ask before adding dependencies": "спрашивает перед добавлением зависимостей", "ask when the request is unclear": "переспрашивает, если запрос неясен", "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач", "global memory across chats": "глобальная память между чатами", "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили", "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
     "↻ retrying the last request": "↻ повторяю последний запрос", "busy": "занят", "nothing to retry": "нечего повторять", "nothing to undo": "нечего откатывать",
     "✓ chat saved to {}": "✓ чат сохранён в {}", "no todo list in this session": "в этой сессии нет todo-списка", "no changes in this chat yet": "в этом чате файлы ещё не менялись",
     "chat renamed: {}": "чат переименован: {}", "Chat name": "Название чата",

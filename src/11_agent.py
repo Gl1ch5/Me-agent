@@ -53,6 +53,16 @@ BEHAVIOR = {
                "In a git repo, when a task is done (and verified, if you verify), commit just its changes with a clear message. "
                "Never push unless asked.", ""),
     "agents_md": (True, "offer to create AGENTS.md in new projects", "", ""),
+    "minimal_diff": (False, "change only what the task needs",
+                     "Change only what the task needs: no refactors, renames, reformatting or extra improvements of code you were not "
+                     "asked to touch. Mention other problems you notice instead of fixing them.", ""),
+    "no_new_deps": (False, "ask before adding dependencies",
+                    "Don't add dependencies (packages, libraries, CDN scripts) without asking: use what the project already has or the "
+                    "standard library.", ""),
+    "ask_unclear": (False, "ask when the request is unclear",
+                    "If a request is ambiguous or misses a key detail, ask one short question before starting instead of guessing.", ""),
+    "subagents": (True, "use subagents for big separate jobs", "", ""),
+    "memory": (True, "global memory across chats", "", ""),
 }
 
 
@@ -247,7 +257,7 @@ class Agent:
         user = ("\n\n" + self.s.config["prompt"].strip()) if self.s.config.get("prompt", "").strip() else ""
         user += "".join("\n\n" + x for x in PLUGINS.collect("system_prompt", self))
         extra = ""
-        mem = mem_prompt(self.s.home)
+        mem = mem_prompt(self.s.home) if bh["memory"] else ""
         if mem:
             extra += "\nGlobal memory (notes you kept earlier, newest first; use memory tool to add or forget):\n" + mem
         if "task" in {t["name"] for t in self.tool_schemas()}:
@@ -323,6 +333,10 @@ class Agent:
             allowed.discard("todo")
         if not bh["web"]:
             allowed -= {"web_search", "web_fetch"}
+        if not bh["subagents"]:
+            allowed.discard("task")
+        if not bh["memory"]:
+            allowed.discard("memory")
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
             out.append(NOTIFY_TOOL)

@@ -12,15 +12,17 @@ Object.assign(RU, {
   "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах",
   "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
   "very short replies": "очень короткие ответы", "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
-  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
+  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "change only what the task needs": "меняет только то, что нужно для задачи", "ask before adding dependencies": "спрашивает перед добавлением зависимостей", "ask when the request is unclear": "переспрашивает, если запрос неясен", "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач", "global memory across chats": "глобальная память между чатами", "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
+  "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const note = (txt, cls = "") => el(`<div class="info ${cls}">${esc(txt)}</div>`);
 const say = txt => el(`<div class="msg md">${md(txt)}</div>`);
 const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", todo: "keep a todo checklist on multi-step tasks", web: "search the web for current facts and docs", stay_in_project: "stay in the project folder unless asked",
   plan_first: "show a plan and wait for a go before big changes", brief: "very short replies", explain: "explain the why (learning mode)",
-  commit: "git commit each finished task", agents_md: "offer to create AGENTS.md in new projects"};
-const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true};
+  commit: "git commit each finished task", agents_md: "offer to create AGENTS.md in new projects", minimal_diff: "change only what the task needs",
+  no_new_deps: "ask before adding dependencies", ask_unclear: "ask when the request is unclear", subagents: "use subagents for big separate jobs", memory: "global memory across chats"};
+const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true, minimal_diff: false, no_new_deps: false, ask_unclear: false, subagents: true, memory: true};
 function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
   if (key === "lang") { cfg.settings.lang = ["en", "ru"].includes(v) ? v : ""; return; }

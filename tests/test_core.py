@@ -837,6 +837,10 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     cfg = {"settings": {}}
     me.apply_setting(cfg, "behavior:commit", True)
     assert cfg["settings"]["behavior"] == {"commit": True}
+    st["behavior"] = {"subagents": False, "memory": False, "minimal_diff": True}
+    names = [t["name"] for t in ag.tool_schemas()]
+    assert "task" not in names and "memory" not in names and "Change only what the task needs" in ag.system_prompt()
+    st.pop("behavior")
 
 
 def test_retry_and_export(tmp=Path(tempfile.mkdtemp())):
