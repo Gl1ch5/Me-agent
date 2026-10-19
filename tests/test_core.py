@@ -713,6 +713,19 @@ def test_todo_marks_by_number_and_reminds():
     ag.session["messages"].append({"role": "user", "content": "x"})
     ok, out, _ = ag._todo({"done": "x"})
     assert not ok and "numbers" in out
+    ag._todo({"items": ["read", "fix", "test", "docs"]})  # resent without marks: progress stays, a new step is added
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo", "todo"], ag.session["todo"]
+    ok, out, _ = ag._todo({"items": ["read", "fix", "test", "docs"], "done": [2], "doing": 3})  # marks on top of the list
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "done", "doing", "todo"] and "2/4" in out, ag.session["todo"]
+    ag._todo({"items": ["[ ] read", "x fix"]})  # explicit marks still win
+    assert [i["s"] for i in ag.session["todo"]] == ["todo", "done"]
+    # shapes real models send
+    ag._todo({"items": [{"text": "a", "status": "completed"}, {"text": "b", "status": "in_progress"}, {"x": "c"}, "d — готово", {"items": ["e"]}]})
+    assert [(i["t"], i["s"]) for i in ag.session["todo"]] == [("a", "done"), ("b", "doing"), ("c", "done"), ("d", "done"), ("e", "todo")]
+    ag._todo({"done": [0, 1], "doing": 4})  # counted from 0
+    assert [i["s"] for i in ag.session["todo"]][:2] == ["done", "done"] and ag.session["todo"][4]["s"] == "doing", ag.session["todo"]
+    ok, out, _ = ag._todo({"items": [{"x": "", "": ""}]})
+    assert not ok and "no steps" in out and len(ag.session["todo"]) == 5
 
 
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):

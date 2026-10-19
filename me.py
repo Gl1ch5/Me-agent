@@ -2984,6 +2984,33 @@ def tc_args(tc):
 TODO_EVERY = 4  # tool rounds without a todo update (while steps are open) before the checklist is shown again
 
 
+TODO_STATE = {"x": "done", "✓": "done", "done": "done", "completed": "done", "complete": "done", "finished": "done",
+              ">": "doing", "doing": "doing", "in_progress": "doing", "in progress": "doing", "active": "doing", "current": "doing",
+              " ": "todo", "todo": "todo", "pending": "todo", "open": "todo", "not_started": "todo"}
+TODO_DONE_RX = re.compile(r"\s*[—–-]+\s*(?:done|готово|сделано|выполнено)\W*$", re.I)
+
+
+def todo_parse(x, st=None):
+    """todo items in whatever shape a model sends: "x step" / "[>] step" / "step — DONE", {t|text|title|task: …, s|status: …,
+    done: true}, {"x": "step"}, nested lists. → [(text, state or None)]; None = no mark given."""
+    if isinstance(x, (list, tuple)):
+        return [r for i in x for r in todo_parse(i, st)]
+    if isinstance(x, dict):
+        mark = x.get("s") or x.get("status") or x.get("state") or ("done" if x.get("done") in (True, "true") else None)
+        mark = TODO_STATE.get(str(mark).strip().lower()) if mark else st
+        for k in ("t", "text", "title", "task", "step", "content", "name", "item", "items", "description"):
+            if x.get(k):
+                return todo_parse(x[k], mark)
+        return [r for k, v in x.items() if isinstance(v, str) for r in todo_parse(v, TODO_STATE.get(k.split()[0].lower() if k.strip() else " "))]
+    t = str(x).strip()
+    m = re.match(r"^(?:\[(x|X|>| |✓)\]|(x|X|>|✓|-))\s+", t)
+    if m:
+        t, st = t[m.end():], TODO_STATE.get((m.group(1) or m.group(2)).lower()) or st
+    if TODO_DONE_RX.search(t):
+        t, st = TODO_DONE_RX.sub("", t), "done"
+    return [(t.strip(), st)] if t.strip() else []
+
+
 def todo_lines(items):
     return "\n".join(f"{n}. [{'x' if i['s'] == 'done' else '>' if i['s'] == 'doing' else ' '}] {i['t']}" for n, i in enumerate(items, 1))
 
@@ -3040,7 +3067,7 @@ class Agent:
 
     def system_prompt(self):
         sks = self.skills.enabled()
-        skills = ("\nSkills (load via skill tool):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
+        skills = ("\nSkills (skill tool: name alone loads the guide; name + action + args runs a tool skill — not shell commands):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
         project, budget = "", 24000
         for name in self.context_files():
             text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
@@ -3526,15 +3553,26 @@ class Agent:
 
     # ─── todo / goal ───
     def _todo(self, a):
-        if not a.get("items") and (a.get("done") or a.get("doing")):  # mark steps by number, no need to resend the list
+        old = {i["t"]: i["s"] for i in self.session.get("todo") or []}
+        if a.get("items"):
+            items = []
+            for t, st in todo_parse(a["items"]):
+                t = t[:200]  # a step resent without a mark keeps its state: resending the list must not undo progress
+                items.append({"t": t, "s": st or old.get(t, "todo")})
+            if not items:
+                return False, 'error: no steps found — items is a list of strings, e.g. ["x read the code", "> fix it", "test"]', None
+        else:
             items = [dict(i) for i in self.session.get("todo") or []]
             if not items:
                 return False, "error: no checklist yet — set it with items=[…]", None
+        if a.get("done") or a.get("doing"):  # mark steps by number (also on top of a resent list)
             try:
-                done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])}
+                done = {int(x) for x in (a.get("done") or [])} if isinstance(a.get("done"), list) else {int(a["done"])} if a.get("done") else set()
                 doing = int(a.get("doing") or 0)
             except (TypeError, ValueError):
                 return False, "error: done is a list of step numbers (1-based), doing one number", None
+            if 0 in done or a.get("doing") == 0:  # counted from 0
+                done, doing = {x + 1 for x in done}, doing + 1
             for n, i in enumerate(items, 1):
                 if n in done:
                     i["s"] = "done"
@@ -3542,18 +3580,6 @@ class Agent:
                     i["s"] = "doing"
                 elif i["s"] == "doing" and doing:
                     i["s"] = "todo"
-            a = {"items": [{"t": i["t"], "s": i["s"]} for i in items]}
-        items = []
-        for i in a.get("items") or []:
-            if isinstance(i, dict):  # tolerate {t, s} / {text, done}
-                t, st = str(i.get("t") or i.get("text") or ""), i.get("s") or ("done" if i.get("done") else "todo")
-            else:
-                t = str(i).strip()
-                m = re.match(r"^(?:\[(x|X|>| )\]|(x|X|>|✓|-))\s+", t)
-                mark = (m.group(1) or m.group(2)) if m else ""
-                t, st = (t[m.end():] if m else t), {"x": "done", "X": "done", "✓": "done", ">": "doing"}.get(mark, "todo")
-            if t.strip():
-                items.append({"t": t.strip()[:200], "s": st if st in ("todo", "doing", "done") else "todo"})
         self.session["todo"] = items[:50]
         self.emit({"type": "todo", "items": self.session["todo"]})
         n = sum(1 for i in items if i["s"] == "done")
