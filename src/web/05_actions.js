@@ -57,7 +57,7 @@ async function newChatIn(cwd) {  // a new chat inside a given project folder (si
   closeSide(); polling++;
   try { await api(base + "/new", {cwd}); await apply(await api(base + "/state")); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 }
-async function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
+async function newChat() { closeSide(); polling++; busy = false; await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
 async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
   const ms = state.config?.models || [];

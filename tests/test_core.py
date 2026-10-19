@@ -791,6 +791,48 @@ def test_tool_arg_aliases(tmp=Path(tempfile.mkdtemp())):
     assert "wrapped" in ends(ev)[0]["output"]
 
 
+
+def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    st = s.config["settings"]
+    ag = me.Agent(s, lambda e: None)
+    base = ag.system_prompt()
+    assert "verify it (tests" in base and "User's settings" not in base
+    st["behavior"] = {"tests": False, "todo": False, "web": False, "brief": True}
+    p = ag.system_prompt()
+    assert "verify it (tests" not in p and "Do NOT run tests" in p and "Be terse" in p and "3+ steps" not in p
+    names = {t["name"] for t in ag.tool_schemas()}
+    assert not names & {"todo", "web_search", "web_fetch"} and "bash" in names
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
+    assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
+    st.pop("behavior")
+    st["no_verify"] = True  # the old setting still means tests off
+    assert me.behavior(st)["tests"] is False
+    st.pop("no_verify")
+    cfg = {"settings": {}}
+    me.apply_setting(cfg, "behavior:commit", True)
+    assert cfg["settings"]["behavior"] == {"commit": True}
+
+
+def test_retry_and_export(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    f = tmp / "r.txt"
+    ag, ev = run(s, "hi")
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "new"}))
+    assert f.exists()
+    text, err = ag.retry()
+    assert not err and text.startswith("tool:write") and not f.exists()  # files of the last turn restored
+    assert [m["content"] for m in ag.session["messages"] if m["role"] == "user"] == ["hi"]
+    md = ag.export_md()
+    assert md.startswith("# hi") and "## You\n\nhi" in md and "Hello" in md
+    rep = ag.context_report()
+    assert rep.startswith("## Context") and "system prompt" in rep and "tools (" in rep
+    ag.session["messages"] = []
+    assert ag.retry() == (None, "nothing to retry")
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

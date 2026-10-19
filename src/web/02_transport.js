@@ -31,6 +31,7 @@ const A = {
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
     return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: (session?.model && (cfg.models || []).some(m => m.name === session.model)) ? session.model : cfg.model, models: cfg.models || [], prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80}, sessions, session, ws: w && w.ws, worker: w,
+            behavior: {...BEHAVIOR_DEFAULTS, ...((cfg.settings || {}).no_verify ? {tests: false} : {}), ...((cfg.settings || {}).behavior || {})},
             agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },
   async load(id) {
@@ -38,6 +39,13 @@ const A = {
     const w = await api("/api/cloud", {session: id}); return A.attach(w);
   },
   async newChat() {
+    if (MODE === "cloud") {  // the sandbox is still working on the previous chat: the new one gets its own, so both can run
+      const mine = await api("/api/cloud").catch(() => []), w0 = mine.find(x => x.id === state.worker?.id);
+      if (!w0 || w0.busy) {
+        const w = await api("/api/cloud", {ws: state.ws}), s = await A.attach(w);  // no session = a new sandbox
+        return {...s, session: null, ctx: 0};
+      }
+    }
     await api(base + "/new", {});
     if (MODE === "local") return A.state();
     // the sandbox starts the new session asynchronously: never reload the old one through the worker's previous session id

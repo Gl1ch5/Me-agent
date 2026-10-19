@@ -94,6 +94,9 @@ def run_rpc(store):
             threading.Thread(target=ag.run, args=(cmd["text"], cmd.get("images", ())), daemon=True).start()
         elif t == "goal" and not ag.busy:
             threading.Thread(target=ag.goal, args=(cmd["text"],), daemon=True).start()
+        elif t == "retry":
+            text, err = ag.retry()
+            emit({"type": "error", "text": err} if err else {"type": "retried", "text": text})
         elif t == "undo":
             r = ag.undo()
             if not r["ok"]:

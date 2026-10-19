@@ -173,7 +173,7 @@ def cloud_model(wid: str, p: ModelPick, u=Depends(user)):
 
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
-    if action not in ("cancel", "new", "sync", "compact", "undo"):
+    if action not in ("cancel", "new", "sync", "compact", "undo", "retry"):
         raise HTTPException(404)
     _worker(u, wid).send({"type": action})
     return {"ok": True}

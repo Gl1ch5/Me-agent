@@ -230,6 +230,44 @@ class TUICommands:
             self.render_history()
             self.info("↶ " + r["text"], "warn")
 
+    def cmd_behavior(self, arg):
+        """One switch per line; enter flips it. `/behavior tests off` sets one directly."""
+        st = self.s.config["settings"]
+        w = arg.split()
+        if w and w[0] in BEHAVIOR:
+            on = (w[1] in ("on", "1", "true", "yes")) if len(w) > 1 else not behavior(st)[w[0]]
+            st.setdefault("behavior", {})[w[0]] = on
+            self.s.save()
+            return self.toast(f"{w[0]} {'on' if on else 'off'}", "ok")
+        keep = {}
+        while True:
+            b = behavior(st)
+            items = [(k, f"{'[x]' if b[k] else '[ ]'} {BEHAVIOR[k][1]}", k) for k in BEHAVIOR]
+            v = self.pick("Behavior — enter toggles, esc closes", items, current=keep.get("v"), keep=keep)
+            if v is None:
+                return
+            keep["v"] = v
+            st.setdefault("behavior", {})[v] = not b[v]
+            st.pop("no_verify", None)
+            self.s.save()
+
+    def cmd_retry(self, arg):
+        text, err = self.agent.retry()
+        if err:
+            return self.toast(err, "warn")
+        self.render_history()
+        self.info("↻ retrying the last request", "dim")
+        self.dispatch(text)
+
+    def cmd_context(self, arg):
+        self.add("assistant", text=self.agent.context_report()).done = True
+
+    def cmd_export(self, arg):
+        name = arg.strip() or f"me-chat-{self.agent.session['id']}.md"
+        p = Path(self.agent.abspath(name))
+        p.write_text(self.agent.export_md(), "utf-8")
+        self.info(f"✓ chat saved to {p}", "ok")
+
     def cmd_todo(self, arg):
         items = self.agent.session.get("todo") or []
         if not items:
@@ -766,10 +804,14 @@ class TUICommands:
                      ("mouse", f"mouse                {'on' if st.get('mouse', True) else 'off'}",
                       "on: wheel scroll, drag to select+copy · off: the terminal's own selection"),
                      ("show_thinking", f"show thinking        {'on' if st.get('show_thinking') else 'off'}", ""),
+                     ("behavior", "behavior switches…", "self-testing, todo, web, plan first, brief, explain, commit"),
                      ("home", "data dir", str(self.s.home))]
             v = self.pick("Settings", items)
             if v is None or v == "home":
                 return
+            if v == "behavior":
+                self.cmd_behavior("")
+                continue
             st[v] = not st.get(v, v == "mouse")
             if v == "mouse":
                 self.term.set_mouse(st[v])
