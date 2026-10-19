@@ -31,7 +31,7 @@ const A = {
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
     return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: (session?.model && (cfg.models || []).some(m => m.name === session.model)) ? session.model : cfg.model, models: cfg.models || [], prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80}, sessions, session, ws: w && w.ws, worker: w,
-            behavior: {...BEHAVIOR_DEFAULTS, ...((cfg.settings || {}).no_verify ? {tests: false} : {}), ...((cfg.settings || {}).behavior || {})},
+            lang: (cfg.settings || {}).lang || "", behavior: {...BEHAVIOR_DEFAULTS, ...((cfg.settings || {}).no_verify ? {tests: false} : {}), ...((cfg.settings || {}).behavior || {})},
             agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },
   async load(id) {

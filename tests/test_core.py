@@ -833,6 +833,31 @@ def test_retry_and_export(tmp=Path(tempfile.mkdtemp())):
     assert ag.retry() == (None, "nothing to retry")
 
 
+
+def test_ui_language_and_unique_models(tmp=Path(tempfile.mkdtemp())):
+    os.environ.pop("ME_LANG", None)
+    assert me.set_ui_lang({"lang": "ru"}) == "ru"
+    assert me.T("no models yet") == "моделей пока нет"
+    assert me.T("model → gpt-5 (this chat; new chats start with it too)").startswith("модель → gpt-5 (в этом чате")
+    assert me.T("some model output") == "some model output"  # anything that is not UI text stays as is
+    assert me.set_ui_lang({"lang": "en"}) == "en" and me.T("no models yet") == "no models yet"
+    s = make()
+    s.config["models"] += [{"name": "omni/glm", "id": "cbcn/glm", "provider": "omni"}, {"name": "omni/glm", "id": "cb-cn/glm", "provider": "omni"}]
+    assert s.dedupe_models() and len({m["name"] for m in s.config["models"]}) == len(s.config["models"])
+    assert s.unique_model_name("x/m", "p") == "x/m"  # "m" is taken by the first model: more of the id
+    s.config["models"] = s.config["models"][:1]
+
+
+def test_chat_diff(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    f = tmp / "d.txt"
+    f.write_text("one\n")
+    ag, ev = run(s, "tool:write " + json.dumps({"path": str(f), "content": "two\n"}))
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "three\n"}))
+    (path, d), = ag.chat_diff()
+    assert "-one" in d and "+three" in d and "two" not in d  # the whole chat: first snapshot against now
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

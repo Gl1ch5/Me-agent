@@ -791,6 +791,19 @@ class Agent:
         out.append("\n/compact summarizes old history; old tool output is trimmed automatically before each new request.")
         return "\n".join(out)
 
+    def chat_diff(self):
+        """[(path, unified diff)] for every file this chat changed: its first snapshot (checkpoints) against the file now."""
+        first = {}
+        for cp in Checkpoints(self.s, self.session["id"]).load():
+            for p, old in (cp.get("files") or {}).items():
+                first.setdefault(p, old)
+        out = []
+        for p, old in first.items():
+            d = file_diff(p, old)
+            if d:
+                out.append((relp(p, self.cwd), d))
+        return out
+
     def export_md(self):
         """The chat as Markdown: requests, answers, and one line per tool call."""
         out = [f"# {self.session.get('title') or 'chat'}\n"]

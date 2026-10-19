@@ -23,7 +23,8 @@ function renderChrome() {
   $("who").textContent = state.user || t(MODE === "local" ? "local" : "account");
 }
 async function apply(s, history = true) {
-  state = s; if (history) renderHistory(s.session); renderSessions(); renderStatus();
+  state = s; if (s.lang && s.lang !== LANG) setLang(s.lang);
+  if (history) renderHistory(s.session); renderSessions(); renderStatus();
   renderChrome();
   after = s.after ?? after;
   if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }

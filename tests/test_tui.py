@@ -21,7 +21,7 @@ class TUI:
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(cwd)
-            os.environ.update(ME_HOME=home, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS))
+            os.environ.update(ME_HOME=home, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS), ME_LANG=os.environ.get("ME_LANG", "en"))
             os.environ.pop("DISPLAY", None)
             os.environ.pop("WAYLAND_DISPLAY", None)
             os.execv(sys.executable, [sys.executable, str(ROOT / "me.py")])

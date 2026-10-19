@@ -202,6 +202,27 @@ def clip_image(dest_dir):
     return str(out) if ok and out.exists() and out.stat().st_size > 0 else None
 
 
+def desktop_notify(title, body=""):
+    """Best effort system notification (Linux notify-send, macOS, Windows balloon, Termux). Never raises, never blocks the UI."""
+    try:
+        if os.environ.get("TERMUX_VERSION") and shutil.which("termux-notification"):
+            _run_clip(["termux-notification", "-t", title, "-c", body or title], capture=False)
+        elif sys.platform == "darwin":
+            q = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+            _run_clip(["osascript", "-e", f'display notification "{q(body)}" with title "{q(title)}"'], capture=False)
+        elif WIN:
+            ps = ("Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; "
+                  "$n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; "
+                  "$n.ShowBalloonTip(5000, $env:ME_N_TITLE, $env:ME_N_BODY, 'Info'); Start-Sleep 6; $n.Dispose()")
+            env = dict(os.environ, ME_N_TITLE=title, ME_N_BODY=body or title)
+            subprocess.Popen([shutil.which("powershell") or "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], env=env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+        elif shutil.which("notify-send") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            _run_clip(["notify-send", "-a", "me", title, body], capture=False)
+    except Exception:
+        pass
+
+
 def image_paths(text):
     """A paste that is just image file path(s) — what dragging files into a terminal produces — → those paths."""
     text = text.strip()

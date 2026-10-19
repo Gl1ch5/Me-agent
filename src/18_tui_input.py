@@ -462,6 +462,9 @@ class TUIInput:
         cfg = jload(self.s.cfg_path)
         if cfg:
             self.s.config = cfg
+            if self.s.dedupe_models():
+                self.s.save()
+            set_ui_lang(cfg.get("settings") or {})
             self.retheme()
         if self.agent.refresh_from_disk(os.getcwd()):
             self.render_history()

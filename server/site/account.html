@@ -340,7 +340,9 @@ function setLang(l, save) {
   const lo = document.querySelector("#who button"); if (lo) lo.textContent = L("logout");
   const la = document.querySelector("#who a"); if (la) la.textContent = L("m_login");
   if (typeof i18nApply === "function" && document.body) i18nApply();
-  if (save) { try { localStorage.setItem("me-lang", l); } catch (e) {} if (me && typeof load === "function") load(); }
+  if (save) { try { localStorage.setItem("me-lang", l); } catch (e) {}
+    if (me && typeof cfg === "object" && cfg && cfg.settings) { cfg.settings.lang = l; api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT").catch(() => {}); }
+    if (me && typeof load === "function") load(); }
 }
 document.querySelectorAll(".lang button").forEach(b => b.onclick = () => setLang(b.dataset.l, true));
 // ── full-page translation layer: exact EN->RU dictionary + patterns, DOM walker, MutationObserver ──
@@ -372,6 +374,7 @@ const RU_D = {
   "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»", "very short replies": "очень короткие ответы",
   "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи", "never pushes without asking": "без вашего разрешения не пушит",
   "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах",
+  "another model already has this name": "модель с таким именем уже есть",
   "system prompt": "системный промпт", "Appended to me's tiny base prompt on every machine.": "Добавляется к короткому базовому промпту me на каждой машине.",
   "e.g. Answer in Russian. Prefer uv over pip.": "напр. Отвечай по-русски. Предпочитай uv вместо pip.",
   "memory": "память", "Notes the agent keeps for itself across every chat and device, newest first. It reads them at the start of each chat. You can delete any note.": "Заметки, которые агент ведёт для себя во всех чатах и на всех устройствах, сначала новые. Он читает их в начале каждого чата. Любую заметку можно удалить.",
@@ -570,6 +573,8 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => tab(b.d
 async function loadCfg() {
   try { cfg = JSON.parse((await api("/api/doc?key=config")).content); } catch (e) { cfg = {}; }
   cfg.providers ??= {}; cfg.models ??= []; cfg.secrets ??= {}; cfg.settings ??= {yolo: false, mouse: true, disabled_skills: []}; cfg.prompt ??= "";
+  if (cfg.settings.lang && cfg.settings.lang !== LANG) setLang(cfg.settings.lang);  // the language picked on any device
+  const seen = new Set(); cfg.models.forEach(m => { if (seen.has(m.name)) m.name = uniqueName(m.id, m.provider, m); seen.add(m.name); });  // older duplicates
 }
 async function saveCfg(msg) { await api("/api/doc", {key: "config", content: JSON.stringify(cfg, null, 1)}, "PUT"); toast(msg || "saved · syncing to your devices"); renderModels(); renderSkills(); }
 
@@ -622,6 +627,7 @@ async function saveModel(i) {
   const m = {name: $("m_name").value.trim() || $("m_id").value.trim(), id: $("m_id").value.trim(), provider: $("m_prov").value, api: $("m_api").value,
     context: num($("m_ctx").value) || 128000, max_out: num($("m_max").value), effort: $("m_eff").value, temperature: $("m_t").value, vision: $("m_vis").checked};
   if (!m.id) return;
+  if (cfg.models.some((x, j) => j !== i && x.name === m.name)) return alert(L("another model already has this name") || "another model already has this name");
   if (i < 0) cfg.models.push(m); else { if (cfg.model === cfg.models[i].name) cfg.model = m.name; cfg.models[i] = m; }
   if (!cfg.model) cfg.model = m.name;
   closeModal(); await saveCfg();
@@ -662,9 +668,15 @@ async function doFetch() {
       <div class="btns"><button onclick="addFetched('${esc(name)}')">add selected</button></div>`;
   } catch (e) { $("fl").innerHTML = `<p class="err">${esc(e.message)} — try /models in the terminal</p>`; }
 }
+function uniqueName(id, prov, skip) {  // same rule as the agent: the id's last part, then more of it, then the provider, then a number
+  const taken = new Set(cfg.models.filter(m => m !== skip).map(m => m.name)), parts = String(id).split("/").filter(Boolean);
+  const cands = parts.map((_, k) => parts.slice(parts.length - k - 1).join("/")).concat(prov ? [prov + "/" + id] : []);
+  for (const c of cands) if (c && !taken.has(c)) return c;
+  let n = 2; while (taken.has(cands[0] + " " + n)) n++; return cands[0] + " " + n;
+}
 async function addFetched(prov) {
   document.querySelectorAll("#fl input[type=checkbox]:checked:not(:disabled)").forEach(c => {
-    let n = c.value.split("/").pop(); if (cfg.models.some(m => m.name === n)) n = prov + "/" + n;
+    const n = uniqueName(c.value, prov);
     cfg.models.push({name: n, id: c.value, provider: prov, api: "chat", context: parseInt(c.dataset.ctx) || 128000, max_out: "", effort: "", temperature: "", vision: true});
   });
   if (!cfg.model && cfg.models.length) cfg.model = cfg.models[0].name;
