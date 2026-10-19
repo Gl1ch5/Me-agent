@@ -60,7 +60,7 @@ NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). D
 CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
                       r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
                       r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|build|check|typecheck)|go\s+(?:test|vet|build)|cargo\s+(?:test|build|check|clippy)|"
-                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
+                      r"dotnet\s+(?:test|build)|mvn|gradle\w*|make\s+(?:test|check)|node\s+--check|node\s+(?:\S*/)?(?:check|test|verify|smoke)(?:[-_.]\w+)?\.[cm]?js|py_compile|vite\s+(?:build|preview)|--headless)\b", re.I)
 
 
 def behavior(settings):
@@ -555,6 +555,8 @@ class Agent:
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
+        if name == "skill" and args.get("name") == pr["name"] and args["name"] not in self.skills.enabled():
+            return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
         if name == "bash" and self._no_checks(args.get("cmd")):
             return False, NO_CHECKS, None
         if name == "todo":

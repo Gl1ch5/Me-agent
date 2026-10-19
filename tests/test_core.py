@@ -808,9 +808,10 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
     assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
     for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png", "npx vite build",
-                "godot --headless --path . --quit-after 300"):
+                "godot --headless --path . --quit-after 300", "cd /tmp/chk && node check.mjs main.js"):
         ag.run("tool:bash " + json.dumps({"cmd": cmd}))
         assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
+    assert not me.CHECK_RX.search("node server.js") and not me.CHECK_RX.search("node scripts/checkout.js")
     ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
     assert "fine" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
     ok, out, _ = ag._cli({"cmd": "npx vite build", "params": {}}, {}, lambda e: None)  # an agent's own CLI tools obey it too
