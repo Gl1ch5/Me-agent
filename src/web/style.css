@@ -186,3 +186,10 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .popup>div:has(.fview){width:min(900px,100%)}
 @media (max-width:760px){#filesBtn span{display:none}}
 .popup .fhead .ib{width:30px;height:30px;flex:0 0 30px;padding:0;justify-content:center;border-radius:8px}
+.psearch{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:9px;color:var(--fg);padding:9px 11px;font:inherit;outline:none;margin-bottom:6px}
+.psearch:focus{border-color:var(--a)}
+.pgroup{font:11px var(--mono);color:var(--faint);padding:8px 12px 2px;text-transform:lowercase}
+.popup button.on{background:color-mix(in srgb,var(--a) 12%,transparent)}.popup button.on>span:first-child{color:var(--a)}.popup button.sel{outline:1px solid var(--line)}
+.popup .mn{display:flex;flex-direction:column;min-width:0;flex:1}.popup .mn b{overflow:hidden;text-overflow:ellipsis}.popup .mn small{color:var(--faint);font:11px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.popup .tags{display:flex;gap:4px;flex-shrink:0}.popup .tags i{font:10.5px var(--mono);font-style:normal;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.phint{font-size:11.5px;color:var(--faint);padding:6px 12px 4px;margin:0}

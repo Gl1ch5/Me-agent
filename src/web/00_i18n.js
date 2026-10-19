@@ -26,6 +26,8 @@ const RU = {"files": "файлы", "empty folder": "пустая папка", "b
   "everything runs without asking": "всё выполняется без запроса",
   "Cloud sessions run in an isolated sandbox, so tools run without asking. Permissions apply to the local agent": "Облачные сессии работают в изолированной песочнице, поэтому инструменты выполняются без запроса. Разрешения относятся к локальному агенту",
   "terminal": "терминал",
+  "search models…": "поиск моделей…", "This chat keeps the model you pick; new chats start with it.": "Этот чат запомнит выбранную модель; новые чаты начнутся с неё.",
+  "nothing found": "ничего не найдено", "could not switch the model: {m}": "не удалось сменить модель: {m}",
   "No models — add one in your account or with /models.": "Нет моделей — добавьте их в аккаунте или командой /models.",
   "more agents in the marketplace →": "больше агентов в каталоге →", "more themes in the marketplace →": "больше тем в каталоге →",
   "Install more with /theme in the terminal or the marketplace on the site": "Установите другие командой /theme в терминале или в каталоге на сайте",

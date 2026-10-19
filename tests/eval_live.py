@@ -16,6 +16,7 @@ def sh(cmd, cwd):
 
 
 def git_init(d):
+    Path(d, ".gitignore").write_text("__pycache__/\n.eval.log\n")
     sh("git init -q && git add -A && git -c user.email=e@x -c user.name=e commit -qm init", d)
 
 
@@ -37,6 +38,7 @@ def task(name, files, prompt):
 @task("bugfix", {
     "calc/__init__.py": "",
     "calc/stats.py": "def mean(xs):\n    return sum(xs) / len(xs)\n\n\ndef median(xs):\n    s = sorted(xs)\n    n = len(s)\n    return s[n // 2]\n",
+    "tests/__init__.py": "",
     "tests/test_stats.py": "import unittest\nfrom calc.stats import mean, median\n\n\nclass T(unittest.TestCase):\n    def test_mean(self):\n        self.assertEqual(mean([1, 2, 3]), 2)\n\n    def test_median_odd(self):\n        self.assertEqual(median([3, 1, 2]), 2)\n\n    def test_median_even(self):\n        self.assertEqual(median([4, 1, 3, 2]), 2.5)\n\n    def test_empty(self):\n        with self.assertRaises(ValueError):\n            mean([])\n        with self.assertRaises(ValueError):\n            median([])\n\n\nif __name__ == '__main__':\n    unittest.main()\n",
 }, "The tests in tests/test_stats.py fail. Fix the code so they pass. Do not change the tests.")
 def _(d, out):
@@ -48,8 +50,8 @@ def _(d, out):
 
 @task("feature", {
     "todo.py": "import sys\n\nITEMS = [\"buy milk\", \"write report\", \"call mom\"]\n\n\ndef main(argv):\n    for i, t in enumerate(ITEMS, 1):\n        print(f\"{i}. {t}\")\n\n\nif __name__ == \"__main__\":\n    main(sys.argv[1:])\n",
-}, "Add a --json flag to todo.py: with it, print the items as a JSON array of objects {\"id\": n, \"text\": ...} (ids from 1). "
-   "Without the flag the output must stay exactly as it is now. Also add --grep WORD that keeps only items containing WORD (case-insensitive); it works with and without --json.")
+}, "Add a --json flag to todo.py: with it, print the items as a JSON array of objects {\"id\": n, \"text\": ...} where id is the item's position in the full list, from 1. "
+   "Without the flag the output must stay exactly as it is now. Also add --grep WORD that keeps only items containing WORD (case-insensitive); it works with and without --json, and keeps the original numbers/ids.")
 def _(d, out):
     rc, a = sh(f"{PY} todo.py", d)
     if a != "1. buy milk\n2. write report\n3. call mom\n":
@@ -62,7 +64,7 @@ def _(d, out):
     rc, c = sh(f"{PY} todo.py --grep MOM --json", d)
     rc2, e = sh(f"{PY} todo.py --grep write", d)
     try:
-        ok = ok and json.loads(c) == [{"id": 3, "text": "call mom"}] and e.strip() in ("2. write report", "1. write report")
+        ok = ok and json.loads(c) == [{"id": 3, "text": "call mom"}] and e.strip() == "2. write report"
     except ValueError:
         return False, "--grep --json is not JSON: " + c[:120]
     return ok, "ok" if ok else f"grep: {c[:80]!r} / {e[:80]!r}"

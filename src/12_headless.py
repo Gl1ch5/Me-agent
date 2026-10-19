@@ -2,12 +2,17 @@
 
 
 def run_headless(store, prompt, yolo):
+    gap = [None]  # None: nothing printed yet; True: a tool ran since the last text, so start a new paragraph
+
     def emit(e):
         t = e["type"]
         if t == "text":
-            sys.stdout.write(e["text"])
+            sys.stdout.write(("\n\n" if gap[0] else "") + e["text"])
             sys.stdout.flush()
+            gap[0] = False
         elif t == "tool_start":
+            if gap[0] is not None:
+                gap[0] = True
             sys.stderr.write(f"\n· {e['name']} {e['label'][:100]}\n")
         elif t == "tool_end" and not e["ok"]:
             sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
