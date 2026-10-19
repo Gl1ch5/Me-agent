@@ -735,6 +735,20 @@ def test_todo_marks_by_number_and_reminds():
     assert [i["s"] for i in ag.session["todo"]] == ["doing", "todo"] and ag.tools.preview("todo", {"items": ["a", "b"], "done": [0]}) == "1/2 done"
 
 
+def test_agent_name_as_skill_loads_its_guide():
+    s = make()
+    (s.home / "agents").mkdir(exist_ok=True)
+    (s.home / "skills").mkdir(exist_ok=True)
+    (s.home / "agents" / "gamer.md").write_text("---\nname: gamer\nkind: agent\nskills: kit, guide\n---\nMode: games.")
+    (s.home / "skills" / "guide.md").write_text("---\nname: guide\ndescription: how to\n---\nUse the game loop.")
+    s.config["agent"] = "gamer"
+    try:
+        ag, ev = run(s, "tool:skill " + json.dumps({"name": "gamer"}))
+        assert "Use the game loop." in ends(ev)[0]["output"], ends(ev)
+    finally:
+        s.config["agent"] = None
+
+
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):
     ag, ev = run(make(), "tool:write " + json.dumps({"path": str(tmp / "a.py"), "content": "def f(:\n"}))
     assert "no longer parses — line 1" in ends(ev)[0]["output"]

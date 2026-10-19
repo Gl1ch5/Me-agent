@@ -647,7 +647,11 @@ class Agent:
         if isinstance(veto, str):
             return False, veto, None
         if name == "skill" and args.get("name") == pr["name"] and args["name"] not in self.skills.enabled():
-            return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
+            en = self.skills.enabled()  # the agent's own name: load its main guide (webgame -> threejs) instead of failing
+            guide = next((n for n in str(pr.get("skills") or "").replace(",", " ").split() if str(en.get(n, {}).get("path", "")).endswith(".md")), None)
+            if not guide or args.get("action"):
+                return False, f"error: {pr['name']} is the agent mode you run in, not a skill; its guide is already in your instructions. Load one of the skills listed there.", None
+            args["name"] = guide
         if name == "bash" and self._no_checks(args.get("cmd")):
             return False, NO_CHECKS, None
         if name == "todo":
