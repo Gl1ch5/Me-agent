@@ -277,7 +277,9 @@ def run_shell(cmd, timeout, cancel, env=None, on_line=None, cwd=None, pref=None)
             return False, _long_out(buf.text()) + f"\n[timed out after {timeout}s and was stopped; for servers or watchers use background=true]"
         time.sleep(0.05)
     eof.wait(2)
-    return proc.returncode == 0, _long_out(buf.text()) + (f"\n[exit {proc.returncode}]" if proc.returncode else "")
+    rc = proc.returncode
+    hint = "; pkill -f also matched this command's own shell - write the pattern as '[v]ite' so it does not" if rc in (-15, -9, 143, 137) and re.search(r"\bp(kill|grep)\b[^|;&]*-f", cmd) else ""
+    return rc == 0, _long_out(buf.text()) + (f"\n[exit {rc}{hint}]" if rc else "")
 
 
 def _long_out(text, cap=30000):
