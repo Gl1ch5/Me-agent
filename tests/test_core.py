@@ -889,6 +889,17 @@ def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):
     assert ag.side_question("what is this?") and len(ag.session["messages"]) == n  # /btw stays out of the history
 
 
+
+def test_market_names_unique():
+    """The marketplace keys items by name alone: an agent and a skill with one name overwrite each other."""
+    seen = {}
+    for p in sorted((Path(__file__).parent.parent / "server" / "market").glob("*.*")):
+        m = re.search(r"^name:\s*(\S+)", p.read_text(encoding="utf-8"), re.M)
+        n = m.group(1) if m else p.stem
+        assert n not in seen, f"{p.name} and {seen[n]} are both named {n}"
+        seen[n] = p.name
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):
