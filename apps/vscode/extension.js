@@ -131,7 +131,7 @@ async function attach(ctx, webview, onGone) {
   webview.html = `<body style="font:13px sans-serif;color:#9aa;padding:14px">starting the me agent…</body>`;
   try { await start(ctx); } catch (e) { webview.html = `<body style="font:13px sans-serif;color:#f88;padding:14px">me: ${String(e.message).replace(/</g, "&lt;")}</body>`; return; }
   webview.html = await chatHtml(webview);
-  webview.onDidReceiveMessage(m => m && m.type === "open" && openFile(m.path, m.line));
+  webview.onDidReceiveMessage(m => m && m.type === "open" && openFile(m.path, m.line, m.diff));
   views.add(webview);
   onGone(() => views.delete(webview));
 }
@@ -167,13 +167,24 @@ async function ask(ctx, text) {
   try { await start(ctx); await call("/prompt", {text}); } catch (e) { vscode.window.showWarningMessage("me: " + (String(e.message).includes("still working") ? "the agent is busy — try again when it finishes" : e.message)); }
 }
 
-async function openFile(p, line) {  // a path the agent read or changed, clicked in the chat
+async function openFile(p, line, diff) {  // a path the agent read or changed, clicked in the chat
   const root = (vscode.workspace.workspaceFolders || [])[0];
   const uri = path.isAbsolute(p) || !root ? vscode.Uri.file(p) : vscode.Uri.joinPath(root.uri, p);
+  if (diff && changed(uri)) {  // a changed file: its git diff
+    try { await vscode.commands.executeCommand("git.openChange", uri); return; } catch (e) { /* fall back to the file */ }
+  }
   try {
     const ed = await vscode.window.showTextDocument(uri, {viewColumn: vscode.ViewColumn.One, preview: true});
     if (line > 0) { const pos = new vscode.Position(line - 1, 0); ed.selection = new vscode.Selection(pos, pos); ed.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter); }
   } catch (e) { vscode.window.showWarningMessage("me: cannot open " + p); }
+}
+
+function changed(uri) {  // does git see changes in this file? (false without the git extension or outside a repo)
+  try {
+    const git = vscode.extensions.getExtension("vscode.git")?.exports?.getAPI(1), repo = git && git.getRepository(uri);
+    const st = repo && repo.state;
+    return !!st && [...st.workingTreeChanges, ...st.indexChanges].some(c => c.uri.fsPath === uri.fsPath);
+  } catch (e) { return false; }
 }
 
 function ref(uri, sel) {
