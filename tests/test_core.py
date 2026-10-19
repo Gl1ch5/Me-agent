@@ -867,6 +867,23 @@ def test_chat_diff(tmp=Path(tempfile.mkdtemp())):
     assert "-one" in d and "+three" in d and "two" not in d  # the whole chat: first snapshot against now
 
 
+def test_mentions(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    (tmp / "src").mkdir()
+    (tmp / "src" / "a.py").write_text("".join(f"line{i}\n" for i in range(1, 301)))
+    ag = me.Agent(s, lambda e: None)
+    ag.session["cwd"] = str(tmp)
+    names, body = ag.mentions("look at @src/a.py:10-12 and @nothing.py, mail me@x.org, then @src/a.py")
+    assert names == ["src/a.py:10-12", "src/a.py"] and "10\tline10" in body and "12\tline12" in body and "13\tline13" in body
+    assert ag.mentions("no refs here, @types/node") is None
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.session["cwd"] = str(tmp)
+    ag.run("what is in @src/a.py:5")
+    assert any(e["type"] == "notice" and "src/a.py:5-104" in e["text"] for e in ev)
+    assert "5\tline5" in json.dumps(mock_llm.LAST, ensure_ascii=False).encode().decode("unicode_escape") and [r for _, r in ag.requests()] == ["what is in @src/a.py:5"]
+
+
 def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):
     s = make()
     f = tmp / "w.txt"

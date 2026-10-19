@@ -67,7 +67,10 @@ class Provider:
                 text = (err.get("message") if isinstance(err, dict) else err) or j.get("message") or text
             except (ValueError, AttributeError):
                 pass
-            raise ProviderError(f"HTTP {e.code}: {str(text)[:800]}", e.code, _retry_after(e.headers),
+            text = str(text)[:800]
+            if e.code in (400, 404) and "model" not in text.lower() and body.get("model"):  # a proxy that drops the reason: the id is the usual suspect
+                text += f" (if this repeats, check the model id {body['model']!r} in /models or pick another model)"
+            raise ProviderError(f"HTTP {e.code}: {text}", e.code, _retry_after(e.headers),
                                 e.code in RETRY_STATUS or bool(RETRY_RX.search(str(text)) and e.code >= 500))
 
     @staticmethod

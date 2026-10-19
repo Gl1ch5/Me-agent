@@ -89,7 +89,7 @@ function pickModel() {
   draw();
   $("popup").classList.remove("hidden");
   $("mlist").querySelector(".on")?.scrollIntoView({block: "center"});
-  if (innerWidth > 760) $("msearch").focus();
+  if (!TOUCH) $("msearch").focus();
 }
 function pickAgent() {
   $("pbody").innerHTML = (state.agents || []).map(a => `<button onclick="setAgent('${esc(a.name)}')"><span>${a.name === state.agent ? "●" : "○"}</span><b>${esc(a.label)}</b><span class="d">${esc(a.description)}</span></button>`).join("")
@@ -105,7 +105,7 @@ async function setModel(n) {  // switch at once; roll back if the server says no
 const inp = $("input");
 function grow() { inp.style.height = "auto"; inp.style.height = Math.min(220, inp.scrollHeight) + "px"; setBusy(); }
 inp.addEventListener("input", grow);
-inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && innerWidth > 760) { e.preventDefault(); send(); } if (e.key === "Escape" && busy) api(base + "/cancel", {}); });
+inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); } if (e.key === "Escape" && busy) api(base + "/cancel", {}); });
 // voice: hold the mic button (or hold space in an empty input)
 let rec = null, chunks = [];
 async function recStart() {
@@ -139,4 +139,11 @@ $("wsPill").onclick = async () => {
   if (!p) return;
   try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };
+if (EMBED) window.addEventListener("message", e => {  // the IDE puts a selection / file reference into the input, or sends a prompt
+  if (e.source !== window.parent || !e.data) return;
+  if (e.data.type === "new") return newChat();
+  if (typeof e.data.text !== "string") return;
+  if (e.data.type === "insert") { inp.value += (inp.value && !/\s$/.test(inp.value) ? "\n" : "") + e.data.text; grow(); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  if (e.data.type === "send" && !busy) { inp.value = e.data.text; send(); }
+});
 A.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));

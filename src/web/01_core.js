@@ -1,6 +1,9 @@
 const MODE = "__MODE__";
 const $ = id => document.getElementById(id);
 const side = $("side");
+const TOUCH = matchMedia("(pointer: coarse)").matches;  // phones: Enter makes a new line; a narrow IDE panel still sends on Enter
+const EMBED = new URLSearchParams(location.search).get("embed") || "";  // "vscode": inside the IDE side bar
+if (EMBED) document.documentElement.classList.add("embed");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const human = n => !n ? "0" : n < 1000 ? String(n) : n < 1e6 ? (n / 1000).toFixed(1).replace(".0", "") + "k" : (n / 1e6).toFixed(1).replace(".0", "") + "M";
 const money = x => !x ? "$0" : x < 0.01 ? "$" + x.toFixed(4) : x < 1 ? "$" + x.toFixed(3) : "$" + x.toFixed(2);

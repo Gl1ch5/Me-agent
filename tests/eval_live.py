@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
 
 
-def sh(cmd, cwd):
+def sh(cmd, cwd, err=True):
     p = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True, timeout=120)
-    return p.returncode, p.stdout + p.stderr
+    return p.returncode, p.stdout + (p.stderr if err else "")
 
 
 def git_init(d):
@@ -166,7 +166,7 @@ def _(d, out):
         bad.append("no docstring")
     if "print(" in src:
         bad.append("uses print")
-    rc, o = sh(f"{PY} -c \"from utils import slugify as s;print(s('  Hello, World!! 2026 '), s('--a__b--'), repr(s('!!!')))\"", d)
+    rc, o = sh(f"{PY} -c \"from utils import slugify as s;print(s('  Hello, World!! 2026 '), s('--a__b--'), repr(s('!!!')))\"", d, err=False)
     if o.strip().splitlines()[-1:] != ["hello-world-2026 a-b ''"]:
         bad.append("wrong output: " + o.strip()[-80:])
     return not bad, ", ".join(bad) or "follows AGENTS.md"

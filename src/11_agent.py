@@ -291,6 +291,31 @@ class Agent:
         out += [cli_schema(n, c, pr["name"]) for n, c in (pr.get("cli") or {}).items()]
         return out + PLUGINS.tool_schemas()
 
+    MENTION_RX = re.compile(r"(?<![\w/@])@([\w.~/\\-]*[\w/])(?::(\d+)(?:-(\d+))?)?")
+
+    def mentions(self, text):
+        """@path or @path:10-40 in a message attaches that file (or line range), like other agents do: the model starts
+        with the code instead of spending a step on read. Returns (names, text) or None."""
+        names, parts = [], []
+        for mt in self.MENTION_RX.finditer(text or ""):
+            p = self.abspath(mt.group(1))
+            try:
+                if len(names) >= 8 or not os.path.isfile(p) or os.path.getsize(p) > 2_000_000:
+                    continue
+                with open(p, "rb") as f:
+                    lines = decode_text(f.read())[0].splitlines()
+            except (OSError, ValueError):
+                continue
+            a = int(mt.group(2) or 1)
+            b = int(mt.group(3) or (mt.group(2) and a + 99) or len(lines))
+            a, b = max(1, a), min(len(lines), b, a + 799)
+            name = relp(p, self.cwd) + (f":{a}-{b}" if mt.group(2) or b < len(lines) else "")
+            if name in names:
+                continue
+            names.append(name)
+            parts.append(f"[{name}]\n" + clip("\n".join(f"{i}\t{l}" for i, l in enumerate(lines[a - 1:b], a)), 40000))
+        return (names, "[files the user attached with @]\n\n" + "\n\n".join(parts)) if names else None
+
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""
         with self._turn_lock:
@@ -314,6 +339,10 @@ class Agent:
         self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
         self.session["messages"].append({"role": "user", "content": content})
+        att = self.mentions(text)
+        if att:
+            self.session["messages"].append({"role": "user", "_aux": True, "content": att[1]})
+            self.emit({"type": "notice", "text": "attached " + ", ".join(att[0])})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
         self._trim_history(start_idx)
