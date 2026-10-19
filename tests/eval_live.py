@@ -148,6 +148,62 @@ def _(d, out):
     return ok, "ok" if ok else (o2.strip() or o)[-200:]
 
 
+@task("agents_md_rule", {
+    "AGENTS.md": "# Project rules\n- Standard library only.\n- Every public function has type hints and a one-line docstring.\n- Never use print in library code; use the `log` logger from utils.py.\n",
+    "utils.py": "import logging\n\nlog = logging.getLogger(\"app\")\n\n\ndef clamp(x: float, lo: float, hi: float) -> float:\n    \"\"\"Limit x to [lo, hi].\"\"\"\n    return max(lo, min(hi, x))\n",
+}, "Add a slugify(text) function to utils.py: lowercase, transliterate nothing, keep [a-z0-9], turn runs of anything else into one '-', strip '-' at the ends. "
+   "Log a warning when the result is empty.")
+def _(d, out):
+    import ast
+    src = (Path(d) / "utils.py").read_text()
+    fn = next((n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "slugify"), None)
+    if not fn:
+        return False, "no slugify"
+    bad = []
+    if not fn.returns or not all(a.annotation for a in fn.args.args):
+        bad.append("no type hints")
+    if not ast.get_docstring(fn):
+        bad.append("no docstring")
+    if "print(" in src:
+        bad.append("uses print")
+    rc, o = sh(f"{PY} -c \"from utils import slugify as s;print(s('  Hello, World!! 2026 '), s('--a__b--'), repr(s('!!!')))\"", d)
+    if o.strip().splitlines()[-1:] != ["hello-world-2026 a-b ''"]:
+        bad.append("wrong output: " + o.strip()[-80:])
+    return not bad, ", ".join(bad) or "follows AGENTS.md"
+
+
+@task("hidden_tests", {}, "Create lru.py with a class LRUCache(capacity, ttl=None): get(key, default=None), put(key, value), __len__, __contains__. "
+   "Least-recently-used entries are evicted past capacity; get and put both count as use. With ttl (seconds), entries older than ttl are misses "
+   "and do not count in len. Standard library only.")
+def _(d, out):
+    test = (
+        "import time\nfrom lru import LRUCache\n"
+        "c = LRUCache(2)\nc.put('a', 1); c.put('b', 2); c.get('a'); c.put('c', 3)\n"
+        "assert 'b' not in c and c.get('a') == 1 and c.get('c') == 3 and len(c) == 2, 'eviction'\n"
+        "c.put('a', 9); c.put('d', 4)\nassert c.get('a') == 9 and 'c' not in c, 'put refreshes'\n"
+        "assert c.get('zz', 'dflt') == 'dflt'\n"
+        "t = LRUCache(5, ttl=0.3)\nt.put('x', 1)\nassert t.get('x') == 1\ntime.sleep(0.45)\n"
+        "assert t.get('x') is None and 'x' not in t and len(t) == 0, 'ttl'\nprint('HIDDEN-OK')\n")
+    Path(d, "_hidden.py").write_text(test)
+    rc, o = sh(f"{PY} _hidden.py", d)
+    return "HIDDEN-OK" in o, "ok" if "HIDDEN-OK" in o else o.strip()[-200:]
+
+
+@task("cross_file_bug", {
+    "billing/__init__.py": "",
+    "billing/money.py": "TAX = 0.25\n\n\ndef with_tax(amount):\n    return round(amount * (1 + TAX), 2)\n",
+    "billing/lines.py": "from billing.money import with_tax\n\n\ndef line_total(qty, price):\n    return with_tax(qty * price)\n",
+    "billing/invoice.py": "from billing.lines import line_total\nfrom billing.money import with_tax\n\n\ndef invoice_total(lines):\n    return with_tax(sum(line_total(q, p) for q, p in lines))\n",
+    "main.py": "from billing.invoice import invoice_total\n\nprint(invoice_total([(2, 10.0), (1, 20.0)]))\n",
+}, "Customers say invoice totals are too high: 2×10 + 1×20 with 25% tax should be 50.0 but main.py prints something else. "
+   "Find the cause and fix it. line_total is also used elsewhere to show per-line prices with tax, so keep that behaviour.")
+def _(d, out):
+    rc, o = sh(f"{PY} main.py", d)
+    rc2, o2 = sh(f"{PY} -c \"from billing.lines import line_total;print(line_total(2, 10.0))\"", d)
+    ok = o.strip() == "50.0" and o2.strip() == "25.0"
+    return ok, f"invoice {o.strip()} · line {o2.strip()}"
+
+
 def run_one(name, home, agent, timeout):
     files, prompt, check = T[name]
     d = tempfile.mkdtemp(prefix=f"eval-{name}-")
