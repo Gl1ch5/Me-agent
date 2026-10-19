@@ -1957,6 +1957,8 @@ class ToolBox:
             return a.get("url", "")
         if name == "task":
             return f"{a.get('agent') or 'code'}: {a.get('prompt', '')[:80]}"
+        if name == "todo" and not a.get("items"):  # marking steps by number
+            return " · ".join(f"{k} {a[k]}".replace("[", "").replace("]", "") for k in ("done", "doing") if a.get(k) not in (None, [], ""))
         if name == "todo":
             return f"{sum(1 for i in a.get('items') or [] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a.get('items') or [])} done"
         if name == "mcp":
@@ -3593,12 +3595,13 @@ class Agent:
                 elif n == doing:
                     i["s"] = "doing"
                 elif i["s"] == "doing" and doing:
-                    i["s"] = "todo"
+                    i["s"] = "done" if n < doing else "todo"  # moving on to a later step finishes the one in progress
         self.session["todo"] = items[:50]
         self.emit({"type": "todo", "items": self.session["todo"]})
         n = sum(1 for i in items if i["s"] == "done")
+        now = next((i["t"] for i in items if i["s"] == "doing"), None)
         nxt = next((i["t"] for i in items if i["s"] != "done"), None)
-        return True, (f"todo: {n}/{len(items)} done" + (f"; next: {nxt} — mark each step done right after finishing it" if nxt
+        return True, (f"todo: {n}/{len(items)} done" + (f"; {'now' if now else 'next'}: {now or nxt} — mark each step done right after finishing it" if nxt
                                                           else "; all done — verify, then report")), None
 
     def goal(self, objective, max_rounds=None):

@@ -726,6 +726,11 @@ def test_todo_marks_by_number_and_reminds():
     assert [i["s"] for i in ag.session["todo"]][:2] == ["done", "done"] and ag.session["todo"][4]["s"] == "doing", ag.session["todo"]
     ok, out, _ = ag._todo({"items": [{"x": "", "": ""}]})
     assert not ok and "no steps" in out and len(ag.session["todo"]) == 5
+    ag._todo({"items": ["write", "test", "docs"]})  # what DeepSeek does: only moves "doing" forward
+    ag._todo({"doing": 1})
+    ok, out, _ = ag._todo({"doing": 2})
+    assert [i["s"] for i in ag.session["todo"]] == ["done", "doing", "todo"] and "now: test" in out, (ag.session["todo"], out)
+    assert ag.tools.preview("todo", {"done": [1, 2], "doing": 3}) == "done 1, 2 · doing 3"
 
 
 def test_syntax_warning_after_edit(tmp=Path(tempfile.mkdtemp())):
