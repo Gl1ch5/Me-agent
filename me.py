@@ -4014,7 +4014,8 @@ def run_headless(store, prompt, yolo, resume=None, model=None):
                 gap[0] = True
             sys.stderr.write(f"\n· {e['name']} {e['label'][:100]}\n")
         elif t == "tool_end" and not e["ok"]:
-            sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
+            o = e["output"].strip()
+            sys.stderr.write(f"  ✗ {o if len(o) <= 300 else o[:120] + ' … ' + o[-180:]}\n")  # the error and exit code sit at the end
         elif t == "verify" and buf:
             buf.append("\n\n")
         elif t in ("error", "notice"):
