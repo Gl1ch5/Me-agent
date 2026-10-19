@@ -16,7 +16,7 @@ import shlex, shutil, signal, subprocess, sys, tempfile, textwrap, threading, ti
 import urllib.error, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -5414,7 +5414,10 @@ RU = {
     "◎ goal: {}": "◎ цель: {}", "✓ goal done": "✓ цель достигнута", "✗ goal blocked": "✗ цель заблокирована", "interrupted": "прервано",
     "me · session {} · ↑{} ↓{}  (resume: /sessions)": "me · сессия {} · ↑{} ↓{}  (вернуться: /sessions)",
     "{} step": "{} шаг", "{} steps": "шагов: {}", "context {}": "контекст {}", "sent ↑{}": "отправлено ↑{}", "sent ↑{} ({}% cached)": "отправлено ↑{} ({}% из кэша)",
-    "unlinked": "отвязано", "Permissions": "Разрешения", "{} limit {}": "лимит ({}) {}", "✗ plugin {}: {}": "✗ плагин {}: {}",
+    "full access — tools run without asking": "полный доступ — инструменты без вопросов", "ask — commands and writes outside the project ask": "ask — команды и запись вне проекта спрашивают",
+    "workspace-write (ask for commands)": "правки в проекте (команды спрашивают)", "read-only": "только чтение", "ask": "спрашивать", "full access": "полный доступ", "permissions: {}": "разрешения: {}",
+    "dark · built-in": "тёмная · встроенная", "light · built-in": "светлая · встроенная", "dark": "тёмная", "light": "светлая",
+    "marketplace": "маркетплейс", "{} · custom": "{} · своя", "unlinked": "отвязано", "Permissions": "Разрешения", "{} limit {}": "лимит ({}) {}", "✗ plugin {}: {}": "✗ плагин {}: {}",
     "✓ task done": "✓ задача готова", "me: task finished": "me: задача готова",
 }
 
@@ -5465,8 +5468,16 @@ def T(s):
         m = rx.match(s)
         if m:
             parts = tpl.split("{}")
-            return "".join(p + (m.group(i + 1) if i < len(parts) - 1 else "") for i, p in enumerate(parts))
+            return "".join(p + (T(m.group(i + 1)) if i < len(parts) - 1 else "") for i, p in enumerate(parts))
+    m = _MARK.match(s)  # "● ask", "[x] verify …", "✓ done": a marker in front of a known line
+    if m and m.group(2) != s:
+        rest = T(m.group(2))
+        if rest != m.group(2):
+            return m.group(1) + rest
     return s
+
+
+_MARK = re.compile(r"^((?:[●○✓✗◆◇▸•☁↻◌]|\[[x ]\])?\s+|[●○✓✗◆◇▸•☁↻◌]\s*|\[[x ]\]\s*)(.+)$", re.S)
 
 
 # ───────────────────────────── TUI ─────────────────────────────
@@ -6747,7 +6758,8 @@ class TUICommands:
         else:
             items = [(n, t.get("label", n), ("dark" if t.get("dark", True) else "light") + (" · built-in" if n in BUILTIN_THEMES else ""))
                      for n, t in ts.items()] + [("+market", "+ get more themes", "marketplace")]
-            m = {"kind": "pick", "title": "Theme (↑↓ previews)", "items": items, "sel": next((i for i, x in enumerate(items) if x[0] == cur), 0),
+            items = [(v, T(lab), T(det)) for v, lab, det in items]
+            m = {"kind": "pick", "title": T("Theme (↑↓ previews)"), "items": items, "sel": next((i for i, x in enumerate(items) if x[0] == cur), 0),
                  "filter": "", "hint": "", "preview": lambda v: v in ts and self.retheme(v)}
             name = self._modal(m)
             if name == "+market":
@@ -6899,7 +6911,7 @@ class TUICommands:
         keep = {}
         while True:
             b = behavior(st)
-            items = [(k, f"{'[x]' if b[k] else '[ ]'} {BEHAVIOR[k][1]}", k) for k in BEHAVIOR]
+            items = [(k, ('[x] ' if b[k] else '[ ] ') + T(BEHAVIOR[k][1]), k) for k in BEHAVIOR]
             v = self.pick("Behavior — enter toggles, esc closes", items, current=keep.get("v"), keep=keep)
             if v is None:
                 return
@@ -6974,6 +6986,14 @@ class TUICommands:
                 self.s.save()
                 return self.toast(f"{k} limit {money(float(v or 0)) if float(v or 0) else 'off'}", "ok")
         days = jload(self.s.home / "usage.json", {}) or {}
+        if UI_LANG["v"] == "ru":
+            off = "выкл"
+            txt = (f"## Расходы\n- сессия: **{money(u.get('cost', 0))}** · ↑{human(u.get('in', 0))} ↓{human(u.get('out', 0))}"
+                   f" · из кэша {human(u.get('cached', 0))}\n- сегодня: **{money(day_cost(self.s.home))}** · за 7 дней: "
+                   f"{money(sum(v for k, v in sorted(days.items())[-7:]))}\n- {m.get('name', 'model')}: ${pin}/M вход · ${pout}/M выход · ${pc}/M кэш"
+                   f"{'' if any((pin, pout)) else ' (цена неизвестна — задайте в /models)'}\n- лимиты: на задачу {money(st.get('max_turn_cost') or 0) if st.get('max_turn_cost') else off}"
+                   f" · в день {money(st.get('max_day_cost') or 0) if st.get('max_day_cost') else off}  (`/cost turn 0.5`, `/cost day 5`)")
+            return self.add("assistant", text=txt).__setattr__("done", True)
         txt = (f"## Spending\n- session: **{money(u.get('cost', 0))}** · ↑{human(u.get('in', 0))} ↓{human(u.get('out', 0))}"
                f" · cached {human(u.get('cached', 0))}\n- today: **{money(day_cost(self.s.home))}** · last 7 days: "
                f"{money(sum(v for k, v in sorted(days.items())[-7:]))}\n- {m.get('name', 'model')}: ${pin}/M in · ${pout}/M out · ${pc}/M cached"

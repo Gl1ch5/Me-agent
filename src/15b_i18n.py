@@ -144,7 +144,10 @@ RU = {
     "◎ goal: {}": "◎ цель: {}", "✓ goal done": "✓ цель достигнута", "✗ goal blocked": "✗ цель заблокирована", "interrupted": "прервано",
     "me · session {} · ↑{} ↓{}  (resume: /sessions)": "me · сессия {} · ↑{} ↓{}  (вернуться: /sessions)",
     "{} step": "{} шаг", "{} steps": "шагов: {}", "context {}": "контекст {}", "sent ↑{}": "отправлено ↑{}", "sent ↑{} ({}% cached)": "отправлено ↑{} ({}% из кэша)",
-    "unlinked": "отвязано", "Permissions": "Разрешения", "{} limit {}": "лимит ({}) {}", "✗ plugin {}: {}": "✗ плагин {}: {}",
+    "full access — tools run without asking": "полный доступ — инструменты без вопросов", "ask — commands and writes outside the project ask": "ask — команды и запись вне проекта спрашивают",
+    "workspace-write (ask for commands)": "правки в проекте (команды спрашивают)", "read-only": "только чтение", "ask": "спрашивать", "full access": "полный доступ", "permissions: {}": "разрешения: {}",
+    "dark · built-in": "тёмная · встроенная", "light · built-in": "светлая · встроенная", "dark": "тёмная", "light": "светлая",
+    "marketplace": "маркетплейс", "{} · custom": "{} · своя", "unlinked": "отвязано", "Permissions": "Разрешения", "{} limit {}": "лимит ({}) {}", "✗ plugin {}: {}": "✗ плагин {}: {}",
     "✓ task done": "✓ задача готова", "me: task finished": "me: задача готова",
 }
 
@@ -195,5 +198,13 @@ def T(s):
         m = rx.match(s)
         if m:
             parts = tpl.split("{}")
-            return "".join(p + (m.group(i + 1) if i < len(parts) - 1 else "") for i, p in enumerate(parts))
+            return "".join(p + (T(m.group(i + 1)) if i < len(parts) - 1 else "") for i, p in enumerate(parts))
+    m = _MARK.match(s)  # "● ask", "[x] verify …", "✓ done": a marker in front of a known line
+    if m and m.group(2) != s:
+        rest = T(m.group(2))
+        if rest != m.group(2):
+            return m.group(1) + rest
     return s
+
+
+_MARK = re.compile(r"^((?:[●○✓✗◆◇▸•☁↻◌]|\[[x ]\])?\s+|[●○✓✗◆◇▸•☁↻◌]\s*|\[[x ]\]\s*)(.+)$", re.S)
