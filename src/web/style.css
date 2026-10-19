@@ -48,6 +48,7 @@ header .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:e
 .tool{border:1px solid var(--line);border-radius:10px;margin:8px 0;overflow:hidden;background:var(--bg)}
 .tool .h{display:flex;align-items:center;gap:8px;padding:8px 12px;font:12.5px var(--mono);cursor:pointer}
 .tool .h b{font-weight:600}.tool .h .lab{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.tool .h .lab.link{cursor:pointer;flex:0 1 auto;margin-right:auto}.tool .h .lab.link:hover{color:var(--a);text-decoration:underline}
 .tool .h .t{color:var(--faint)}
 .tool .body{border-top:1px solid var(--line);font:12px/1.55 var(--mono);padding:8px 12px;max-height:320px;overflow:auto;white-space:pre-wrap;color:var(--dim)}
 .tool.closed .body,.tool .body:empty{display:none}

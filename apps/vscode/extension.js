@@ -115,9 +115,10 @@ async function chatHtml(webview) {
 <style>html,body,iframe{margin:0;padding:0;border:0;width:100%;height:100%;overflow:hidden;background:#0b0c10}</style></head>
 <body><iframe id="f" src="${uri.toString(true)}" allow="clipboard-read; clipboard-write; microphone"></iframe>
 <script nonce="${nonce}">
-const f = document.getElementById("f"); let ready = false; const q = [];
+const f = document.getElementById("f"), host = acquireVsCodeApi(); let ready = false; const q = [];
 f.addEventListener("load", () => { ready = true; setTimeout(() => q.splice(0).forEach(m => f.contentWindow.postMessage(m, "*")), 600); });
-window.addEventListener("message", e => { if (e.source === f.contentWindow || !e.data || !e.data.me) return; ready ? f.contentWindow.postMessage(e.data.me, "*") : q.push(e.data.me); });
+window.addEventListener("message", e => { if (e.source === f.contentWindow) { if (e.data && e.data.meOut) host.postMessage(e.data.meOut); return; }
+  if (!e.data || !e.data.me) return; ready ? f.contentWindow.postMessage(e.data.me, "*") : q.push(e.data.me); });
 </script></body></html>`;
 }
 
@@ -130,6 +131,7 @@ async function attach(ctx, webview, onGone) {
   webview.html = `<body style="font:13px sans-serif;color:#9aa;padding:14px">starting the me agent…</body>`;
   try { await start(ctx); } catch (e) { webview.html = `<body style="font:13px sans-serif;color:#f88;padding:14px">me: ${String(e.message).replace(/</g, "&lt;")}</body>`; return; }
   webview.html = await chatHtml(webview);
+  webview.onDidReceiveMessage(m => m && m.type === "open" && openFile(m.path, m.line));
   views.add(webview);
   onGone(() => views.delete(webview));
 }
@@ -163,6 +165,15 @@ async function ask(ctx, text) {
   for (let i = 0; i < 40 && !views.size; i++) await new Promise(r => setTimeout(r, 250));
   if (post({type: "send", text})) return;
   try { await start(ctx); await call("/prompt", {text}); } catch (e) { vscode.window.showWarningMessage("me: " + (String(e.message).includes("still working") ? "the agent is busy — try again when it finishes" : e.message)); }
+}
+
+async function openFile(p, line) {  // a path the agent read or changed, clicked in the chat
+  const root = (vscode.workspace.workspaceFolders || [])[0];
+  const uri = path.isAbsolute(p) || !root ? vscode.Uri.file(p) : vscode.Uri.joinPath(root.uri, p);
+  try {
+    const ed = await vscode.window.showTextDocument(uri, {viewColumn: vscode.ViewColumn.One, preview: true});
+    if (line > 0) { const pos = new vscode.Position(line - 1, 0); ed.selection = new vscode.Selection(pos, pos); ed.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter); }
+  } catch (e) { vscode.window.showWarningMessage("me: cannot open " + p); }
 }
 
 function ref(uri, sel) {

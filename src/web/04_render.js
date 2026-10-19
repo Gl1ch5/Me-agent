@@ -23,7 +23,12 @@ function toolCard(name, label, args, skill, cli) {
   const color = cli ? (COLORS[cli.color] || (/^#/.test(cli.color || "") ? cli.color : COLORS.red || "#ff6b7a")) : isSkill ? (COLORS[skill?.color] || "var(--a)") : "var(--a)";
   const title = cli ? `${esc(cli.icon || "▣")} ${esc(cli.label)} · ${esc(cli.agent)}` : isSkill ? `${esc(args.name)} · ${esc(args.action)}` : esc(name);
   if (cli) label = Object.entries(args || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ");
-  return el(`<div class="tool ${cli ? "cli" : isSkill ? "skill" : ""} ${cli ? "" : "closed"}" style="--sk:${color}"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spin"></span></span><b>${title}</b><span class="lab">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class="t"></span></div><div class="st hidden"></div><div class="pbar ${cli ? "ind" : "hidden"}"><i></i></div><div class="log hidden"></div><div class="body"></div></div>`);
+  const c = el(`<div class="tool ${cli ? "cli" : isSkill ? "skill" : ""} ${cli ? "" : "closed"}" style="--sk:${color}"><div class="h" onclick="this.parentNode.classList.toggle('closed')"><span class="ic"><span class="spin"></span></span><b>${title}</b><span class="lab">${esc(isSkill ? JSON.stringify(args.args || {}) : label)}</span><span class="t"></span></div><div class="st hidden"></div><div class="pbar ${cli ? "ind" : "hidden"}"><i></i></div><div class="log hidden"></div><div class="body"></div></div>`);
+  if (EMBED && /^(read|write|edit)$/.test(name) && args && typeof args.path === "string") {  // in the IDE: the path opens the file
+    const lab = c.querySelector(".lab"); lab.classList.add("link"); lab.title = tt("open in the editor");
+    lab.onclick = ev => { ev.stopPropagation(); parent.postMessage({meOut: {type: "open", path: args.path, line: args.offset || 0}}, "*"); };
+  }
+  return c;
 }
 function diffHtml(t) { return t.split("\n").map(l => `<span class="${l[0] === "+" ? "add" : l[0] === "-" ? "del" : ""}">${esc(l)}</span>`).join("\n"); }
 function onEvent(e) {
