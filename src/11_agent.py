@@ -36,6 +36,9 @@ BEHAVIOR = {
               "steps for the user to check, and say what is untested."),
     "todo": (True, "keep a todo checklist on multi-step tasks", "", ""),
     "web": (True, "search the web for current facts and docs", "", ""),
+    "stay_in_project": (True, "stay in the project folder unless asked",
+                        "Work inside cwd; don't explore other folders (parents, siblings, home) for anything helpful. Go outside only "
+                        "when the user asks or names a path.", ""),
     "plan_first": (False, "show a plan and wait for a go before big changes",
                    "Before any change bigger than a small fix (several files, new features, refactors), give a short plan and wait for "
                    "the user's go.", ""),
