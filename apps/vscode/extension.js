@@ -45,9 +45,11 @@ async function agentPath(ctx) {
   if (fs.existsSync(installed)) return installed;
   fs.mkdirSync(ctx.globalStorageUri.fsPath, {recursive: true});
   const dest = path.join(ctx.globalStorageUri.fsPath, "me.py");
+  const url = (cfg("server") || "https://me-agent.ru").replace(/\/$/, "") + "/me.py";
   if (!fs.existsSync(dest)) {
-    await vscode.window.withProgress({location: vscode.ProgressLocation.Notification, title: "me: downloading the agent…"},
-      () => download((cfg("server") || "https://me-agent.ru").replace(/\/$/, "") + "/me.py", dest));
+    await vscode.window.withProgress({location: vscode.ProgressLocation.Notification, title: "me: downloading the agent…"}, () => download(url, dest));
+  } else if (Date.now() - fs.statSync(dest).mtimeMs > 86400000) {
+    download(url, dest).catch(() => {});  // a day old: refresh quietly, the next start picks it up
   }
   return dest;
 }
