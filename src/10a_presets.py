@@ -82,10 +82,15 @@ def cli_schema(name, spec, agent):
 
 
 def presets(store):
-    out = {k: dict(v, name=k) for k, v in BUILTIN_PRESETS.items()}
     d = store.home / "agents"
+    got = cached(("presets", str(d)), dir_sig(d, "*.md"), lambda: _load_presets(d))
+    return {k: dict(v) for k, v in got.items()}
+
+
+def _load_presets(d):
+    out = {k: dict(v, name=k) for k, v in BUILTIN_PRESETS.items()}
     for p in sorted(d.glob("*.md")) if d.exists() else []:
-        text = p.read_text("utf-8", "replace")
+        text = p.read_text("utf-8", "replace").replace("\r\n", "\n")
         m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
         meta, body = {}, text
         if m:

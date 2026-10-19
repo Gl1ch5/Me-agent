@@ -22,10 +22,11 @@ class TUICommands:
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
         txt += ("\n\n## Keys\n- `enter` send · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
                 "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model)"
-                "\n- `tab` accept suggestion · `ctrl+v` paste"
+                "\n- `tab` accept suggestion · `ctrl+v` / `alt+v` paste text or an image · drag an image file in to attach it"
+                "\n- `alt+c` copy the last answer · `/copy` answer, code block or the whole chat"
                 "\n\n## Mouse\n- drag to select text: it is copied when you let go (double click = word, triple = line)"
-                "\n- right click: copy the selection, or paste (Windows) · `/copy` last answer, `/copy code` its last code block"
-                "\n- mouse off in `/config` gives the terminal's own selection back")
+                "\n- right click: copy the selection, or paste · click a tool card to open it"
+                "\n- `shift`+drag: the terminal's own selection · `/config` → mouse off gives it back everywhere")
         self.add("assistant", text=txt).done = True
 
     def cmd_exit(self, arg):
@@ -140,7 +141,7 @@ class TUICommands:
     cmd_clear = cmd_new
 
     def cmd_copy(self, arg):
-        """/copy · /copy 2 (the answer before last) · /copy code (last code block of the last answer)."""
+        """/copy (picker when the answer has code) · /copy 2 (the answer before last) · /copy code · /copy all (whole chat)."""
         answers = [m["content"] for m in self.agent.session["messages"] if m["role"] == "assistant" and isinstance(m.get("content"), str)
                    and m["content"].strip()] or [b.text for b in self.blocks if b.kind == "assistant" and b.text.strip()]
         if not answers:
@@ -148,14 +149,30 @@ class TUICommands:
         words = arg.split()
         n = next((int(w) for w in words if w.isdigit()), 1)
         text = answers[-min(max(1, n), len(answers))]
-        what = "answer"
-        if "code" in words:
-            blocks = re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
-            if not blocks:
+        codes = re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
+        v = "code" if "code" in words else "all" if "all" in words else "last" if words else None
+        if v is None:
+            items = [("last", "last answer", f"{len(text)} chars")]
+            items += [(f"code{i}", f"code block {i + 1}", c.strip().split("\n")[0][:50]) for i, c in enumerate(codes)]
+            items += [("all", "whole conversation", f"{len(self.agent.session['messages'])} messages")]
+            v = "last" if not codes else self.pick("Copy", items)
+            if not v:
+                return
+        if v == "all":
+            parts = []
+            for m in self.agent.session["messages"]:
+                c = m.get("content")
+                if m["role"] == "user" and isinstance(c, str) and not m.get("_aux"):
+                    parts.append("> " + c.replace("\n", "\n> "))
+                elif m["role"] == "assistant" and isinstance(c, str) and c.strip():
+                    parts.append(c.strip())
+            return self.copy_text("\n\n".join(parts), "conversation")
+        if v == "code" or v.startswith("code"):
+            if not codes:
                 return self.toast("no code block in that answer", "warn")
-            text, what = blocks[-1].rstrip("\n"), "code block"
-        how = clip_copy(text.strip("\n"), self.term.write)
-        self.toast(f"copied {what} · {len(text)} chars" if how else "copy failed: no clipboard available", "ok" if how else "err")
+            i = int(v[4:]) if v[4:].isdigit() and int(v[4:]) < len(codes) else len(codes) - 1
+            return self.copy_text(codes[i].rstrip("\n"), f"code block {i + 1}")
+        self.copy_text(text.strip("\n"), "last answer" if n == 1 else f"answer #{n} from the end")
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
@@ -622,7 +639,7 @@ class TUICommands:
         if not ss:
             return self.toast("no sessions yet")
         sid = self.pick("Resume session", [(s["id"], s.get("title") or "(untitled)",
-                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {len(s.get('messages', []))} msgs · "
+                                            time.strftime("%d %b %H:%M", time.localtime(s.get("updated", 0))) + f" · {s.get('n', 0)} msgs · "
                                             + s.get("cwd", "")) for s in ss])
         if not sid or self.agent.busy:
             return

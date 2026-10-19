@@ -9,6 +9,12 @@ VERSION in src/00_head.py. Domain me-agent.ru: when `dig +short me-agent.ru @8.8
 me-agent.ru + www, set ME_PUBLIC_URL=https://me-agent.ru in the systemd unit (and server/deploy), SERVER default in src/00_head.py,
 Android meServer in apps/android/gradle.properties.
 
+Testing: `python3 tests/test_core.py` (any OS), `python3 tests/test_tui.py` (pty + pyte end-to-end TUI: keys, mouse selection, paste,
+images), cloud suites via a local server (see tests/test_cloud.py docstring). CI runs test_core on Windows/macOS/Linux × Python 3.8/3.11/3.13.
+Releases: run `release.yml` (workflow_dispatch) — builds me-desktop.exe, me-android.apk, me-agent.vsix, me IDE (Windows/Linux, VSCodium-based)
+and publishes them under the version in src/00_head.py; the site links `/download/<windows|android|vsix|ide-windows|ide-linux>` follow the newest.
+Pushing tags from cloud sessions is blocked by the proxy: dispatch the workflow instead.
+
 Rules: keep the core agent a single built file with stdlib only; startup prompt+tools under ~2000 tokens (measure with tests/measure_tokens.py; clear tool descriptions beat a tiny prompt);
 every UI must work at 360px and 1280px and in every built-in theme (me-dark, me-light, mono, mono-light, graphite); test with
 playwright screenshots before deploying; never break sync compatibility of existing docs.
@@ -40,5 +46,14 @@ playwright screenshots before deploying; never break sync compatibility of exist
 14. **Marketplace.** Ratings, versions, auto-update of installed skills/plugins/themes/agents.
 15. **Optional MCP bridge.** Connect any MCP server but load it lazily like a skill (one line idle, schemas on demand).
 16. **Polish.** Status line compact on narrow terminals (Termux); "record" = ask the user what they meant (voice recording already exists).
+
+## Status after 0.6.1 (2026-10-14)
+Done: Python 3.8–3.11 startup fix; tools use the session's folder; provider retries + instant Esc + mid-stream errors; history trimming and honest
+token stats; clipboard everywhere in the TUI (select-to-copy, ctrl+v/alt+v/right-click image paste, dragged images); Windows line endings and
+cross-drive paths; desktop exe crash on print + native folder picker; Android file chooser + Termux phone mode; VS Code extension + me IDE;
+Codex-style project sidebar in the web/desktop app; site apps section.
+Next: (a) Codex app — file tree + file viewer panel, per-turn diff panel with per-file revert, several agents running in parallel (one Agent
+per project in WebSession), git status/commit panel; (b) live smoke test against a real model (Gemini Flash) via a test key in the env, not
+the production DB; (c) Windows-native TUI test (ConPTY) in CI; (d) desktop: auto-update of me.py inside the exe; (e) Android: share-to-me intent.
 
 Known open items: voice (Groq) and the Telegram bot were never tested with real keys; Windows/Android apps built but not run.

@@ -19,7 +19,7 @@ RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524,
 RETRY_RX = re.compile(r"overload|rate.?limit|try again|temporar|capacity|unavailable|timeout|timed out", re.I)
 OVERFLOW_RX = re.compile(r"context.{0,24}(length|window|limit|size)|maximum context|too many (input )?tokens|prompt is too long|"
                          r"reduce the length|input is too long|exceeds? the (model|context|maximum)|context_length_exceeded", re.I)
-RETRIES = 4  # waits 2, 4, 8, 16 s (or what the server's Retry-After asks, up to a minute)
+RETRIES, RETRY_BASE = 4, 2.0  # waits 2, 4, 8, 16 s (or what the server's Retry-After asks, up to a minute)
 NET_ERRORS = (urllib.error.URLError, ConnectionError, TimeoutError, OSError, http.client.HTTPException)
 
 
@@ -46,6 +46,8 @@ class Provider:
         r.add_header("Content-Type", "application/json")
         r.add_header("Accept", "text/event-stream")
         r.add_header("User-Agent", f"me/{VERSION}")
+        for k, v in (self.p.get("headers") or {}).items():  # e.g. OpenRouter's HTTP-Referer, a proxy's own auth header
+            r.add_header(k, str(v))
         if self.p.get("api_key"):
             r.add_header("Authorization", "Bearer " + self.p["api_key"])
         try:
@@ -63,40 +65,39 @@ class Provider:
 
     @staticmethod
     def _sse(resp, cancel):
-        done = threading.Event()
-
-        def watch():  # Esc must not wait for the next byte of a stalled stream: shut the socket down
-            while not done.wait(0.1):
-                if cancel.is_set():
-                    try:
-                        import socket
-                        resp.fp.raw._sock.shutdown(socket.SHUT_RDWR)
-                    except Exception:
-                        pass
-                    try:
-                        resp.close()
-                    except Exception:
-                        pass
-                    return
-        threading.Thread(target=watch, daemon=True).start()
-        try:
-            ctype = resp.headers.get("Content-Type", "") if getattr(resp, "headers", None) else ""
-            if "json" in ctype and "event-stream" not in ctype:  # a server that ignored stream=true: one plain JSON reply
+        """Parsed SSE events. Lines are read by a helper thread, so Esc stops at once on every OS even while a model thinks
+        silently for minutes (a blocked readline() cannot be interrupted reliably on Windows)."""
+        ctype = resp.headers.get("Content-Type", "") if getattr(resp, "headers", None) else ""
+        if "json" in ctype and "event-stream" not in ctype:  # a server that ignored stream=true: one plain JSON reply
+            try:
                 yield json.loads(resp.read())
-                return
+            finally:
+                resp.close()
+            return
+        q = queue.Queue(maxsize=1000)
+
+        def reader():
+            try:
+                for chunk in iter(resp.readline, b""):
+                    q.put(chunk)
+                q.put(None)
+            except Exception as e:
+                q.put(e)
+        threading.Thread(target=reader, daemon=True, name="me-sse").start()
+        try:
             while True:
+                try:
+                    chunk = q.get(timeout=0.1)
+                except queue.Empty:
+                    if cancel.is_set():
+                        raise Cancelled()
+                    continue
                 if cancel.is_set():
                     raise Cancelled()
-                try:
-                    chunk = resp.readline()
-                except Exception:
-                    if cancel.is_set():
-                        raise Cancelled()
-                    raise
-                if not chunk:
-                    if cancel.is_set():
-                        raise Cancelled()
+                if chunk is None:
                     break
+                if isinstance(chunk, Exception):
+                    raise chunk
                 line = chunk.strip()
                 if line.startswith(b"data:"):
                     data = line[5:].strip()
@@ -106,12 +107,15 @@ class Provider:
                         yield json.loads(data)
                     except ValueError:
                         pass
+                elif line.startswith(b"{") and b'"error"' in line:  # a plain JSON error body instead of a stream
+                    try:
+                        err = json.loads(line).get("error")
+                    except ValueError:
+                        err = line.decode("utf-8", "replace")
+                    msg = str(err.get("message") if isinstance(err, dict) else err)[:800]
+                    raise ProviderError(msg, None, None, bool(RETRY_RX.search(msg)))
         finally:
-            done.set()
-            try:
-                resp.close()
-            except Exception:
-                pass
+            threading.Thread(target=resp.close, daemon=True).start()  # closing may block on some platforms: never in the UI path
 
     def cache_mode(self):
         """How to ask for prompt caching: 'anthropic' (cache_control marker), 'openai' (prompt_cache_key), or ''. model.cache overrides."""
@@ -158,7 +162,7 @@ class Provider:
                     raise ProviderError(f"network error: {e}")
                 err, delay = e, None
             attempt += 1
-            delay = delay if delay is not None else min(30, 2 ** attempt)
+            delay = delay if delay is not None else min(30, RETRY_BASE * 2 ** (attempt - 1))
             emit({"type": "retry", "attempt": attempt, "of": RETRIES, "delay": delay, "error": str(err)[:300], "discard": shown[0]})
             if cancel.wait(delay):
                 raise Cancelled()

@@ -16,6 +16,18 @@ class TUIInput:
             return self.modal_key(k)
         if PLUGINS.emit("key", self, k):
             return
+        if k in ("ctrl-v", "alt-v"):
+            return self.paste_clipboard()
+        if k == "alt-c":
+            return self.copy_text(next((b.text for b in reversed(self.blocks) if b.kind == "assistant"), ""), "last answer")
+        if isinstance(k, tuple) and k[0] == "paste":
+            imgs = image_paths(k[1])
+            if imgs:  # a file dragged into the terminal: attach it instead of pasting its path
+                for p in imgs:
+                    self.attach_image(p)
+                return self.update_sugg()
+            if not k[1].strip():  # some terminals paste nothing when the clipboard holds only an image
+                return self.paste_clipboard(text_too=False)
         if k == "ctrl-c":
             if self.agent.busy:
                 self.agent.cancel.set()
@@ -93,8 +105,6 @@ class TUIInput:
         elif k == "ctrl-l":
             self.term.write(CSI + "2J")
             self._prev_rows = None
-        elif k == "ctrl-v":  # the terminal did not paste by itself: read the clipboard
-            self.paste_clipboard()
         elif k == "ctrl-o":
             for b in reversed(self.blocks):
                 if b.kind in ("tool", "skill", "reason") and b.done:
@@ -163,7 +173,7 @@ class TUIInput:
         if kind == "press" and btn == 2:
             if self.sel_range():
                 self.copy_selection()
-            elif WIN:  # the console's own right-click paste is off while we own the mouse
+            else:  # the terminal's own right-click menu / paste is off while we own the mouse
                 self.paste_clipboard()
             return
         if btn != 0 or not lines:
@@ -212,32 +222,10 @@ class TUIInput:
 
     def copy_selection(self):
         r = self.sel_range()
-        if not r:
-            return
-        text = selection_text(self._tx[0], r[0], r[1])
-        if not text.strip():
-            return
-        how = clip_copy(text, self.term.write)
-        self.toast(f"copied {len(text)} chars" + (" (via terminal)" if how == "osc52" else "") if how else "copy failed: no clipboard",
-                   "ok" if how else "err")
-
-    def paste_clipboard(self):
-        def run():
-            t = clip_paste()
-            with self.lock:
-                if t:
-                    t = t.replace("\r\n", "\n").replace("\r", "\n")
-                    if self.modal and self.modal["kind"] == "input":
-                        m = self.modal
-                        t = t if m["multiline"] else t.replace("\n", " ")
-                        m["text"], m["cur"] = m["text"][:m["cur"]] + t + m["text"][m["cur"]:], m["cur"] + len(t)
-                    elif not self.modal:
-                        self.insert(t)
-                        self.update_sugg()
-                else:
-                    self.toast("clipboard is empty or not available", "warn")
-                self.redraw()
-        threading.Thread(target=run, daemon=True).start()
+        if r:
+            text = selection_text(self._tx[0], r[0], r[1])
+            if text.strip():
+                self.copy_text(text)
 
     def insert(self, s, replace_last=False):
         if replace_last:
@@ -384,12 +372,54 @@ class TUIInput:
             return
         self.dispatch(text)
 
+    # ─── clipboard, images, mouse selection ───
+    def copy_text(self, text, what="selection"):
+        if not text:
+            return self.toast("nothing to copy")
+        how = clip_copy(text, self.term)
+        self.toast(f"copied {what} · {len(text)} chars" + (" (via terminal)" if how == "osc52" else "") if how else
+                   "copy failed: no clipboard here", "ok" if how else "err")
+
+    def attach_image(self, path):
+        with self.lock:
+            self.attached.append(path)
+            self.insert(f"[image #{len(self.attached)}] ")
+        m = self.s.model() or {}
+        self.toast(f"image attached: {os.path.basename(path)}" + ("" if m.get("vision", True) else " — this model has vision off (/models)"),
+                   "ok" if m.get("vision", True) else "warn")
+
+    def paste_clipboard(self, text_too=True):
+        """ctrl+v / alt+v / right click: clipboard text is pasted (into a dialog too); with no text, an image is attached."""
+        def run():
+            txt = clip_paste() if text_too else None
+            if txt:
+                txt = txt.replace("\r\n", "\n").replace("\r", "\n")
+                with self.lock:
+                    m = self.modal
+                    if m and m["kind"] == "input":
+                        t = txt if m["multiline"] else txt.replace("\n", " ")
+                        m["text"], m["cur"] = m["text"][:m["cur"]] + t + m["text"][m["cur"]:], m["cur"] + len(t)
+                    elif not m:
+                        self.handle_key(("paste", txt))  # same path as a terminal paste: big pastes fold into a marker
+                self.redraw()
+                return
+            img = clip_image(self.s.home / "pastes")
+            if img:
+                return self.attach_image(img)
+            self.toast("clipboard is empty" + ("" if WIN or sys.platform == "darwin" else " (Linux needs wl-clipboard or xclip)"), "warn")
+            self.redraw()
+        threading.Thread(target=run, daemon=True).start()
+
     def dispatch(self, text):
         images = []
         for ref in re.findall(r"@(\S+)", text):
-            p = Path(ref)
+            p = Path(os.path.join(self.agent.cwd, os.path.expanduser(ref)))
             if p.suffix.lower() in IMAGE_EXT and p.exists():
                 images.append(read_any(p)[1])
+        for i, path in enumerate(self.attached, 1):
+            if f"[image #{i}]" in text and os.path.isfile(path):
+                images.append(read_any(path)[1])
+        self.attached = []
         self.add("user", text=text)
         self.ensure_ws()
         if not self.s.model():

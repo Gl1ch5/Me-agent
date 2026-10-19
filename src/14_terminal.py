@@ -39,6 +39,16 @@ def swidth(s):
     return sum(cw(c) for c in s)
 
 
+def cells(s, lo, hi):
+    """The part of s that sits in display columns [lo, hi)."""
+    out, w = [], 0
+    for c in s:
+        if lo <= w < hi:
+            out.append(c)
+        w += cw(c)
+    return "".join(out)
+
+
 class Line:
     """A display line: list of (text, style) segments.
     For copying: `pre` leading cells are decoration (gutter, bullet indent, box border), `end` is where the content stops
@@ -206,157 +216,6 @@ def word_at(line, col):
     return cells[i0][0], cells[i1][0] + max(1, cw(cells[i1][1])) - 1
 
 
-# ─── clipboard ───
-# Native first (a bare OSC 52 write cannot be verified and the Windows console ignores it), OSC 52 for SSH/headless.
-
-def _run_clip(cmd, data=None, timeout=5):
-    try:
-        r = subprocess.run(cmd, input=data, stdout=subprocess.PIPE if data is None else subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=timeout, **NO_WINDOW)
-        return r.stdout if r.returncode == 0 and data is None else (b"" if r.returncode == 0 else None)
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def _win_clip_api():
-    import ctypes
-    u, k = ctypes.windll.user32, ctypes.windll.kernel32
-    vp = ctypes.c_void_p
-    k.GlobalAlloc.restype, k.GlobalAlloc.argtypes = vp, [ctypes.c_uint, ctypes.c_size_t]  # 64-bit handles must not be truncated
-    k.GlobalLock.restype, k.GlobalLock.argtypes = vp, [vp]
-    k.GlobalUnlock.argtypes = k.GlobalFree.argtypes = [vp]
-    u.SetClipboardData.restype, u.SetClipboardData.argtypes = vp, [ctypes.c_uint, vp]
-    u.GetClipboardData.restype, u.GetClipboardData.argtypes = vp, [ctypes.c_uint]
-    u.OpenClipboard.argtypes = [vp]
-    for _ in range(20):  # another app may hold the clipboard for a moment
-        if u.OpenClipboard(None):
-            return ctypes, u, k
-        time.sleep(0.025)
-    return None
-
-
-def _win_clip_set(text):
-    api = _win_clip_api()
-    if not api:
-        return False
-    ctypes, u, k = api
-    try:
-        data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-16-le") + b"\0\0"
-        u.EmptyClipboard()
-        h = k.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-        if not h:
-            return False
-        p = k.GlobalLock(h)
-        ctypes.memmove(p, data, len(data))
-        k.GlobalUnlock(h)
-        if not u.SetClipboardData(13, h):  # CF_UNICODETEXT; on success the system owns the memory
-            k.GlobalFree(h)
-            return False
-        return True
-    finally:
-        u.CloseClipboard()
-
-
-def _win_clip_get():
-    api = _win_clip_api()
-    if not api:
-        return None
-    ctypes, u, k = api
-    try:
-        h = u.GetClipboardData(13)
-        if not h:
-            return None
-        p = k.GlobalLock(h)
-        try:
-            return ctypes.wstring_at(p).replace("\r\n", "\n") if p else None
-        finally:
-            k.GlobalUnlock(h)
-    finally:
-        u.CloseClipboard()
-
-
-def _is_wsl():
-    try:
-        return "microsoft" in Path("/proc/version").read_text().lower()
-    except OSError:
-        return False
-
-
-def clip_copy(text, osc=None):
-    """Put text on the system clipboard. `osc(seq)` writes to the terminal (OSC 52 fallback).
-    Returns how it was copied ('native', 'osc52') or None."""
-    env = os.environ
-    remote = bool(env.get("SSH_CONNECTION") or env.get("SSH_TTY"))
-    ok = False
-    if WIN:
-        try:
-            ok = _win_clip_set(text)
-        except Exception:
-            ok = False
-    elif not remote:
-        data = text.encode("utf-8")
-        cmds = []
-        if sys.platform == "darwin":
-            cmds.append(["pbcopy"])
-        if env.get("TERMUX_VERSION"):
-            cmds.append(["termux-clipboard-set"])
-        if env.get("WAYLAND_DISPLAY"):
-            cmds.append(["wl-copy"])
-        if env.get("DISPLAY"):
-            cmds += [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]]
-        for c in cmds:
-            if shutil.which(c[0]) and _run_clip(c, data) is not None:
-                ok = True
-                break
-        if not ok and _is_wsl() and not env.get("WT_SESSION") and shutil.which("powershell.exe"):
-            # clip.exe and PowerShell stdin decode pipes in the console code page: hand the text over in a UTF-8 file
-            fd, tmp = tempfile.mkstemp(suffix=".txt")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    f.write(data)
-                wp = (_run_clip(["wslpath", "-w", tmp]) or b"").decode().strip()
-                if wp:
-                    ps = f"Set-Clipboard -Value ([IO.File]::ReadAllText('{wp}', [Text.Encoding]::UTF8))"
-                    ok = _run_clip(["powershell.exe", "-NoProfile", "-Command", ps], b"", timeout=10) is not None
-            finally:
-                os.unlink(tmp)
-    if ok and not remote:
-        return "native"
-    if osc:
-        b64 = base64.b64encode(text.encode("utf-8")).decode()
-        if len(b64) <= 100_000:
-            osc(f"{ESC}]52;c;{b64}\a")
-            return "osc52"
-    return "native" if ok else None
-
-
-def clip_paste():
-    """Text on the system clipboard, or None."""
-    env = os.environ
-    if WIN:
-        try:
-            return _win_clip_get()
-        except Exception:
-            return None
-    cmds = []
-    if sys.platform == "darwin":
-        cmds.append(["pbpaste"])
-    if env.get("TERMUX_VERSION"):
-        cmds.append(["termux-clipboard-get"])
-    if env.get("WAYLAND_DISPLAY"):
-        cmds.append(["wl-paste", "--no-newline"])
-    if env.get("DISPLAY"):
-        cmds += [["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]]
-    if _is_wsl():
-        cmds.append(["powershell.exe", "-NoProfile", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"])
-    for c in cmds:
-        if shutil.which(c[0]):
-            out = _run_clip(c)
-            if out is not None:
-                return out.decode("utf-8", "replace").replace("\r\n", "\n")
-    return None
-
-
 # ─── Windows console input ───
 # Raw INPUT_RECORDs (no VT input mode), translated here the way crossterm does it: key events by virtual-key code,
 # characters from UnicodeChar, mouse from MOUSE_EVENT records. Nothing is split into escape sequences, so no key can be
@@ -433,9 +292,9 @@ def win_keys(recs, st):
             out.extend([name] * n)
             continue
         c = chr(ch)
-        if alt and not ctrl and c.lower() in ("b", "f"):  # (AltGr = right alt + left ctrl still types its character)
+        if alt and not ctrl and c.lower() in ("b", "f", "v", "c"):  # (AltGr = right alt + left ctrl still types its character)
             flush()
-            out.extend(["ctrl-left" if c.lower() == "b" else "ctrl-right"] * n)
+            out.extend([{"b": "ctrl-left", "f": "ctrl-right", "v": "alt-v", "c": "alt-c"}[c.lower()]] * n)
         elif ch < 32 or ch == 127:
             flush()
             out.extend([{10: "newline", 13: "enter", 8: "backspace", 9: "tab", 27: "esc", 127: "ctrl-w"}.get(ch) or "ctrl-" + chr(ch + 96)] * n)
@@ -453,7 +312,9 @@ def win_paste_burst(keys):
         return keys
     simple = {"enter": "\n", "newline": "\n", "tab": "\t"}
     if not all((isinstance(k, tuple) and k[0] in ("char", "paste")) or k in simple for k in keys):
-        return keys
+        # mixed with other keys: at least never send on a pasted line break
+        return ["newline" if k == "enter" and any(isinstance(x, tuple) and x[0] == "char" for x in keys[i + 1:]) else k
+                for i, k in enumerate(keys)]
     return [("paste", "".join(k[1] if isinstance(k, tuple) else simple[k] for k in keys))]
 
 
@@ -630,7 +491,7 @@ class Term:
                     keys += more
             except Exception:
                 return
-            for k in keys:
+            for k in win_paste_burst(keys):
                 self.q.put(k)
 
 
@@ -689,6 +550,10 @@ def parse_keys(buf, final=False):
                 keys.append("ctrl-left")
             elif nxt == "f":
                 keys.append("ctrl-right")
+            elif nxt in "vV":
+                keys.append("alt-v")
+            elif nxt in "cC":
+                keys.append("alt-c")
             else:
                 keys.append("esc")
                 i += 1

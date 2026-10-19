@@ -92,7 +92,7 @@ class WebSession:
 
     def state(self):
         ses = self.agent.session
-        return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": os.getcwd(), "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
+        return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": self.agent.cwd, "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
                 "config": {"model": self.s.config.get("model"), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
                            "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
@@ -100,7 +100,8 @@ class WebSession:
                 "day_cost": day_cost(self.s.home), "preview": "",
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
-                "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd")} for x in self.s.sessions()[:100]]}
+                "sessions": [{"id": x["id"], "title": x.get("title"), "updated": x.get("updated"), "cwd": x.get("cwd"), "n": x.get("n", 0)}
+                             for x in self.s.sessions()[:300]]}
 
     def handle(self, method, path, body):
         a = self.agent
@@ -119,19 +120,40 @@ class WebSession:
                 raise ValueError("still working")
             self.push({"type": "user", "text": ("/goal " if path == "/goal" else "") + body["text"]})
             if not a.session.get("ws") and self.cloud.online:
-                a.session["ws"] = self.ws.for_dir(os.getcwd())
+                a.session["ws"] = self.ws.for_dir(a.cwd)
             if path == "/goal":
                 threading.Thread(target=a.goal, args=(body["text"],), daemon=True).start()
             else:
                 threading.Thread(target=a.run, args=(body["text"], body.get("images") or ()), daemon=True).start()
             return {"ok": True}
+        if path in ("/files", "/file"):  # project browser: list a folder / read a file, never outside the session's project
+            root = os.path.realpath(a.cwd)
+            p = os.path.realpath(os.path.join(root, body.get("path") or ""))
+            if p != root and not p.startswith(root.rstrip(os.sep) + os.sep):
+                raise ValueError("outside the project")
+            if path == "/files":
+                items = []
+                for e in sorted(os.scandir(p), key=lambda e: (not e.is_dir(), e.name.lower())):
+                    if e.name in SKIP_DIRS or e.name.startswith(".") and e.name not in (".github", ".env.example"):
+                        continue
+                    try:
+                        items.append({"name": e.name, "dir": e.is_dir(), "size": 0 if e.is_dir() else e.stat().st_size})
+                    except OSError:
+                        continue
+                return {"path": relp(p, root).replace("\\", "/").lstrip("."), "items": items[:1000]}
+            if os.path.getsize(p) > 2_000_000:
+                return {"path": body.get("path"), "text": "", "note": "file over 2 MB"}
+            data = Path(p).read_bytes()
+            if b"\0" in data[:8192]:
+                return {"path": body.get("path"), "text": "", "note": f"binary file, {len(data)} bytes"}
+            return {"path": body.get("path"), "text": data.decode("utf-8", "replace")}
         if path == "/undo":
             r = a.undo()
             if not r["ok"]:
                 raise ValueError(r["text"])
             return r
         if path == "/upload":  # attachments from the browser land in the project folder
-            d = Path(os.getcwd()) / "uploads"
+            d = Path(a.cwd) / "uploads"
             d.mkdir(exist_ok=True)
             name = re.sub(r"[^\w.-]+", "_", body["name"])[:80] or "file"
             (d / name).write_bytes(base64.b64decode(body["b64"]))
@@ -144,13 +166,18 @@ class WebSession:
         if path == "/cancel":
             a.cancel.set()
             return {"ok": True}
-        if path == "/new":
+        if path == "/new":  # a new chat, in the given project folder or the current one
             if a.busy:
-                raise ValueError("busy — stop the current turn first")
-            a.session = new_session()
+                raise ValueError("still working")
+            d = os.path.abspath(os.path.expanduser(body.get("cwd") or a.cwd))
+            if not os.path.isdir(d):
+                raise ValueError(f"no such folder: {d}")
+            a.session = new_session(d)
             a.ctx_used, a.snap = 0, {}
             return {"ok": True}
         if path == "/load":
+            if a.busy:
+                raise ValueError("still working — wait or stop it first")
             a.load(body["id"])
             wid = a.session.get("ws")
             local = self.ws.local_path(wid) if wid else None
@@ -190,8 +217,9 @@ class WebSession:
             d = os.path.abspath(os.path.expanduser(body["path"]))
             if not os.path.isdir(d):
                 raise ValueError(f"no such folder: {d}")
-            os.chdir(d)
-            a.session = new_session(d)
+            if a.busy:
+                raise ValueError("still working")
+            a.session = new_session(d)  # tools follow the session's folder; no process-wide chdir needed
             a.ctx_used = 0
             return self.state()
         if path == "/model":

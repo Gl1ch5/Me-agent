@@ -56,6 +56,13 @@ LOOP_NUDGE = ("[you made the same call three times and got the same result — i
               "or stop and tell the user what blocks you]")
 THINK_NUDGE = "[your reasoning used up the output token limit before you answered — think less and act or answer now]"
 CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue exactly where it stopped, without repeating]"
+DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
+
+
+def tc_args(tc):
+    return parse_args(tc["function"]["arguments"])
+
+
 VERIFY_NUDGE = ("[self-check] You changed files but ran nothing since. Before finishing, verify: run the tests, build, lint, "
                 "or the code itself, and fix any failure. If nothing can be run, say so and why.")
 GOAL_PROMPT = """GOAL: {objective}
@@ -133,6 +140,14 @@ class Agent:
     def preset(self):
         return preset(self.s, self.session.get("agent") or self.s.config.get("agent"))
 
+    @property
+    def cwd(self):
+        return self.session.get("cwd") or os.getcwd()
+
+    def abspath(self, path):
+        """A tool path as the model meant it: relative to the session's project folder, ~ expanded."""
+        return os.path.abspath(os.path.join(self.cwd, os.path.expanduser(str(path or ""))))
+
     def context_files(self):
         """Project instructions: CONTEXT_FILES in cwd, plus AGENTS.md / CLAUDE.md of parent folders up to the repo root
         (a monorepo's root rules apply in its subfolders). Parents come first; names are relative to cwd."""
@@ -186,7 +201,8 @@ class Agent:
         self.session["messages"].append({"role": "user", "content": content})
         if not self.session["title"]:
             self.session["title"] = text.strip().split("\n")[0][:60]
-        t0, tin, tout, cost = time.time(), 0, 0, 0.0
+        self._trim_history(start_idx)
+        t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
         wrote, ran, nudged = False, False, False
         squeezed, cutoffs, empties, seen = False, 0, 0, []
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
@@ -197,18 +213,26 @@ class Agent:
                 limit = self.compact_threshold(m)
                 if limit and self.ctx_used > limit:
                     self.compact(reason="auto", model=m)
+                schemas = self.tool_schemas()
+                self._tool_names = {t["name"] for t in schemas}
+                system = self.system_prompt()
                 try:
-                    msg, usage = prov.stream(self.system_prompt(), self.session["messages"], self.tool_schemas(), self.emit, self.cancel,
-                                             cache_key=self.session["id"])
+                    msg, usage = prov.stream(system, self.session["messages"], schemas, self.emit, self.cancel, cache_key=self.session["id"])
                 except ProviderError as e:
                     # the history outgrew the model: summarize the older part once and try again
                     if e.overflow and not squeezed and self.compact(reason="context full", model=m, keep_frac=0.15):
                         squeezed = True
                         continue
                     raise
+                if not usage["in"]:  # provider sent no usage (some proxies drop stream_options): estimate, ~4 chars per token
+                    usage = dict(usage, est=True, **{"in": len(system + json.dumps(self.session["messages"], ensure_ascii=False)
+                                                                    + json.dumps(schemas)) // 4,
+                                                     "out": usage["out"] or len(json.dumps(msg, ensure_ascii=False)) // 4})
                 c = usage_cost(m, usage)
                 tin += usage["in"]
                 tout += usage["out"]
+                tcached += min(usage.get("cached", 0), usage["in"])
+                steps += 1
                 cost += c
                 self.ctx_used = usage["in"] + usage["out"] or self.ctx_used
                 self.session["ctx"] = self.ctx_used
@@ -218,7 +242,7 @@ class Agent:
                 u["cached"] = u.get("cached", 0) + usage.get("cached", 0)
                 u["cost"] = round(u.get("cost", 0) + c, 6)
                 today = add_day_cost(self.s.home, c) if c and self.persist else day_cost(self.s.home)
-                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": usage.get("cached", 0),
+                self.emit({"type": "usage", "ctx": self.ctx_used, "in": tin, "out": tout, "cached": tcached, "steps": steps, "est": bool(usage.get("est")),
                            "cost": cost, "session_cost": u["cost"], "day_cost": today})
                 cut = msg.get("_finish") == "length"
                 if not msg.get("content") and not msg.get("tool_calls"):  # nothing to keep: an empty assistant message breaks the history
@@ -239,7 +263,7 @@ class Agent:
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
                         continue
-                    if wrote and not ran and not nudged and "bash" in {t["name"] for t in self.tool_schemas()} and not st.get("no_verify"):
+                    if wrote and not ran and not nudged and "bash" in self._tool_names and not st.get("no_verify"):
                         nudged = True  # self-check before "done": changes were made but nothing was run since
                         self.emit({"type": "verify"})
                         self.session["messages"].append({"role": "user", "_aux": True, "content": VERIFY_NUDGE})
@@ -250,8 +274,8 @@ class Agent:
                 imgs = []
                 for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
-                    if ok and name in ("write", "edit"):
-                        wrote, ran = True, False
+                    if ok and name in ("write", "edit") and not re.search(DOC_EXT, str((tc_args(tc) or {}).get("path", "")), re.I):
+                        wrote, ran = True, False  # docs/config prose needs no test run: nudging there only burned a model call
                     elif name == "bash" or name == "task":
                         ran = ran or wrote
                     if img:
@@ -292,8 +316,23 @@ class Agent:
                 self.s.save()  # new skills/themes/agents written to the home folder reach every device
             if self.persist:
                 self.s.save_session(self.session)
-            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "ctx": self.ctx_used, "cost": cost,
+            self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "cached": tcached, "steps": steps,
+                       "ctx": self.ctx_used, "cost": cost,
                        "session_cost": self.session["usage"].get("cost", 0)})
+
+    TRIM_AT, TRIM_KEEP = 4000, 1500
+
+    def _trim_history(self, upto):
+        """Before a new user turn: shrink bulky tool results and drop image payloads of earlier turns.
+        Every step re-sends the whole history, so a 40 KB file read once was paid for again on every later step. The model can
+        re-read anything it still needs. Only messages before `upto` change, once, so the cached prompt prefix stays stable after."""
+        for m in self.session["messages"][:upto]:
+            c = m.get("content")
+            if m["role"] == "tool" and isinstance(c, str) and len(c) > self.TRIM_AT and not c.startswith("[trimmed"):
+                k = self.TRIM_KEEP
+                m["content"] = f"[trimmed old output: {len(c)} chars; read again if needed]\n{c[:k]}\n…\n{c[-k // 3:]}"
+            elif isinstance(c, list) and any(x.get("type") == "image_url" for x in c):
+                m["content"] = [x if x.get("type") != "image_url" else {"type": "text", "text": "[image shown earlier]"} for x in c]
 
     def _limits(self, cost, st):
         mt, md = float(st.get("max_turn_cost") or 0), float(st.get("max_day_cost") or 0)
@@ -312,7 +351,7 @@ class Agent:
                 args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
             ui = args if isinstance(args, dict) else {}
             tid = tc["id"]
-            ev = {"type": "tool_start", "id": tid, "name": name, "args": ui, "label": self.tools.preview(name, ui)}
+            ev = {"type": "tool_start", "id": tid, "name": name, "args": ui, "label": self.tools.preview(name, ui, self.cwd)}
             cli = (self.preset().get("cli") or {}).get(name)
             if cli:
                 pr = self.preset()
@@ -365,10 +404,9 @@ class Agent:
             return False, "error: arguments were not valid JSON — send a JSON object", None
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
-        if name not in {t["name"] for t in self.tool_schemas()}:
+        if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
             return False, f"error: tool {name} is not available in the {pr['name']} agent", None
-        if name in ("write", "edit") and not may_write(pr, os.path.relpath(os.path.abspath(os.path.join(self.session["cwd"], args.get("path", ""))),
-                                                                           self.session["cwd"])):
+        if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
@@ -382,7 +420,7 @@ class Agent:
         cli = (pr.get("cli") or {}).get(name)
         if cli:
             return self._cli(cli, args, temit)
-        need = self.tools.needs_confirm(name, args, self.session.get("cwd"))
+        need = self.tools.needs_confirm(name, dict(args, path=self.abspath(args["path"])) if isinstance(args.get("path"), str) else args, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need:
@@ -395,9 +433,9 @@ class Agent:
                 self.s.save()
         args = self.remap(args)
         if name in ("write", "edit"):
-            self._snapshot(args.get("path", ""))
+            self._snapshot(self.abspath(args.get("path", "")))
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.session.get("cwd"))
+            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
         except Cancelled:
             raise
         except Exception as e:
@@ -408,7 +446,7 @@ class Agent:
         cmd, err = render_cli(spec, args)
         if err:
             return False, err, None
-        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.session.get("cwd"))
+        need = self.tools.needs_confirm("bash", {"cmd": cmd}, self.cwd)
         if isinstance(need, str):
             return False, need, None
         if need and not self.confirm("bash", {"cmd": cmd}):
@@ -425,7 +463,7 @@ class Agent:
                 temit({"t": "status", "text": l.strip()[:160]})
                 temit({"t": "progress", "v": None, "label": f"{n[0]} lines", "n": n[0]})
         ok, out = run_shell(cmd, int(args.get("timeout") or 300), self.cancel, shell_env(self.s.config.get("secrets")), on_line=line,
-                            cwd=self.session.get("cwd"), pref=self.s.config["settings"].get("shell"))
+                            cwd=self.cwd, pref=self.s.config["settings"].get("shell"))
         return ok, out or "(no output)", None
 
     def _memory(self, a):
@@ -525,7 +563,7 @@ class Agent:
 
     # ─── checkpoints / undo ───
     def _snapshot(self, path):
-        p = os.path.abspath(os.path.join(self.session.get("cwd") or ".", os.path.expanduser(path)))
+        p = self.abspath(path)
         if p not in self.snap:
             try:
                 self.snap[p] = snapshot_file(p)
@@ -540,7 +578,7 @@ class Agent:
         # history was compacted during this turn: message indexes moved, so undo restores files but keeps the history
         msgs = start_idx if gen == getattr(self, "_turn_gen", gen) else -1
         Checkpoints(self.s, self.session["id"]).push({"msgs": msgs, "gen": gen, "files": files, "t": time.time()})
-        diffs = [{"path": os.path.relpath(p, self.session.get("cwd") or "."), "diff": file_diff(p, old), "new": old is None}
+        diffs = [{"path": relp(p, self.cwd), "diff": file_diff(p, old), "new": old is None}
                  for p, old in files.items()]
         self.emit({"type": "turn_diff", "files": [d for d in diffs if d["diff"]]})
 
@@ -555,7 +593,7 @@ class Agent:
         if cp.get("gen", 0) == self.session.get("compactions", 0) and 0 <= cp["msgs"] <= len(self.session["messages"]):
             self.session["messages"] = self.session["messages"][:cp["msgs"]]
         self.s.save_session(self.session)
-        names = [os.path.relpath(p, self.session.get("cwd") or ".") for p in cp["files"]]
+        names = [relp(p, self.cwd) for p in cp["files"]]
         ev = {"type": "undone", "files": names, "text": f"restored {len(names)} file{'s' if len(names) != 1 else ''}: " + ", ".join(names[:8])}
         self.emit(ev)
         return dict(ev, ok=True)

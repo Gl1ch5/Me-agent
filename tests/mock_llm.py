@@ -13,6 +13,7 @@ def sse(h, obj):
 LAST = {}  # last request body, for tests
 HISTORY = []  # every request body
 COUNT = {}
+HITS = {}  # scenario -> requests seen
 
 
 class H(BaseHTTPRequestHandler):
@@ -85,6 +86,29 @@ class H(BaseHTTPRequestHandler):
         LAST.update(req)
         HISTORY.append(req)
         if self._special(req):
+            return
+        first = (req.get("messages") or [{}])[-1].get("content") if "messages" in req else ""
+        first = first if isinstance(first, str) else ""
+        if first.startswith("flaky"):  # rate-limited once, then fine
+            HITS["flaky"] = HITS.get("flaky", 0) + 1
+            if HITS["flaky"] == 1:
+                self.send_response(429)
+                self.send_header("Retry-After", "0")
+                self.end_headers()
+                self.wfile.write(b'{"error":{"message":"slow down"}}')
+                return
+        if first.startswith("streamerr"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            sse(self, {"error": {"message": "upstream overloaded", "code": 502}})
+            return
+        if first.startswith("silent"):  # a model that thinks for a long time without sending a byte
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.flush()
+            time.sleep(8)
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

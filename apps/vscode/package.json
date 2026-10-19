@@ -1,0 +1,40 @@
+{
+  "name": "me-agent",
+  "displayName": "me — coding agent",
+  "description": "The me agent inside VS Code: chat, edits with diff review and undo, goals, skills — runs locally in your workspace folder, synced with your me account.",
+  "version": "0.1.0",
+  "publisher": "me-agent",
+  "license": "MIT",
+  "engines": {"vscode": "^1.80.0"},
+  "categories": ["AI", "Programming Languages", "Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      {"command": "me.open", "title": "me: Open agent", "icon": "$(comment-discussion)"},
+      {"command": "me.askSelection", "title": "me: Ask about selection"},
+      {"command": "me.fixFile", "title": "me: Fix problems in this file"},
+      {"command": "me.restart", "title": "me: Restart agent"},
+      {"command": "me.terminal", "title": "me: Open agent in terminal (TUI)"}
+    ],
+    "keybindings": [
+      {"command": "me.open", "key": "ctrl+alt+m", "mac": "cmd+alt+m"},
+      {"command": "me.askSelection", "key": "ctrl+alt+k", "mac": "cmd+alt+k", "when": "editorHasSelection"}
+    ],
+    "menus": {
+      "editor/context": [
+        {"command": "me.askSelection", "when": "editorHasSelection", "group": "me@1"},
+        {"command": "me.fixFile", "group": "me@2"}
+      ],
+      "editor/title": [{"command": "me.open", "group": "navigation"}]
+    },
+    "configuration": {
+      "title": "me",
+      "properties": {
+        "me.python": {"type": "string", "default": "", "description": "Python 3.8+ to run the agent (empty = python3 / py / python on PATH)."},
+        "me.agentPath": {"type": "string", "default": "", "description": "Path to me.py (empty = the copy installed by the me installer, else downloaded from the server)."},
+        "me.server": {"type": "string", "default": "https://me-agent.ru", "description": "me cloud server (for downloading me.py and sync)."}
+      }
+    }
+  }
+}

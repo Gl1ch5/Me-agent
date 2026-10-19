@@ -4,12 +4,12 @@ class ToolBox:
     def __init__(self, store, skills):
         self.s, self.skills = store, skills
 
-    def preview(self, name, a):
+    def preview(self, name, a, cwd=None):
         """Short human label for UI."""
         if name in ("read", "write", "edit"):
             p = str(a.get("path", ""))
             try:
-                rel = os.path.relpath(p)
+                rel = relp(p, cwd)
                 return rel if not rel.startswith("..") else p
             except ValueError:
                 return p
@@ -98,7 +98,7 @@ class ToolBox:
         if name == "grep":
             return self._grep(a["pattern"], str(at(a.get("path") or ".")), a.get("glob"), cwd)
         if name == "skill":
-            return self._skill(a, emit, cancel, ask)
+            return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
             return self._notify(a)
         if name == "mcp":
@@ -195,7 +195,7 @@ class ToolBox:
                 continue
         return True, "\n".join(out) or "no matches", None
 
-    def _skill(self, a, emit, cancel, ask):
+    def _skill(self, a, emit, cancel, ask, cwd=None):
         sks = self.skills.enabled()
         sk = sks.get(a.get("name"))
         if not sk:
@@ -206,7 +206,7 @@ class ToolBox:
             return True, (sk["body"] or sk["description"]) + (f"\n\nActions (skill name={sk['name']}, action=…, args={{…}}):\n{acts}" if acts else ""), None
         if act not in sk["actions"]:
             return False, f"no action '{act}' in {sk['name']}. actions: {', '.join(sk['actions'])}", None
-        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask)
+        ok, out = self.skills.run(sk, act, a.get("args") or {}, emit, cancel, ask, cwd)
         return ok, clip(out, 30000), None
 
 

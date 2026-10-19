@@ -28,7 +28,8 @@ class TUIRender:
             out.append(Line().add("  ").add("◆ " + ", ".join(ctxf) + " loaded into this session", rgb(TH["ok"])) if ctxf else
                        Line().add("  ").add("◇ no AGENTS.md — run /init so I remember this project", rgb(TH["warn"])))
             out.append(Line().add("  ").add("/ ", rgb(TH["accent"])).add("commands   ", dim).add("@ ", rgb(TH["accent"])).add("files   ", dim)
-                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("shift+enter ", rgb(TH["accent"])).add("newline   ", dim).add("drag ", rgb(TH["accent"])).add("copy", dim))
+                       .add("esc ", rgb(TH["accent"])).add("interrupt   ", dim).add("shift+enter ", rgb(TH["accent"])).add("newline   ", dim)
+                       .add("alt+v ", rgb(TH["accent"])).add("paste image   ", dim).add("drag ", rgb(TH["accent"])).add("copy", dim))
             out.append(Line())
             return out
         if b.kind == "user":
@@ -440,7 +441,8 @@ class TUIRender:
                 if full or prev[i] != r:
                     out.append(f"{CSI}{i + 1};1H" + r)
             self._prev_rows, self._prev_wh, self._prev_modal = rows, (W, H), bool(self.modal)
-            out.insert(0, CSI + "?2026h" + CSI + "?25l")  # synchronized update (where supported) + hide the cursor while painting
+            changed = bool(out)
+            out.insert(0, CSI + "?2026h" + CSI + "?25l")  # synchronized update (Windows Terminal, kitty…); hide the cursor while painting
             # modal overlay
             if self.modal:
                 out.append(self._draw_modal(W, H, bgc))
@@ -454,7 +456,10 @@ class TUIRender:
             else:
                 out.append(f"{CSI}?25l")
             out.append(CSI + "?2026l")
-            self.term.write("".join(out))
+            frame = "".join(out)
+            if changed or self.modal or frame != getattr(self, "_prev_frame_tail", None):
+                self.term.write(frame)  # an unchanged frame writes nothing: cursor hide/show every tick flickered in cmd.exe
+            self._prev_frame_tail = frame if not changed else None
             self.dirty = False
 
     def _draw_modal(self, W, H, bgc):

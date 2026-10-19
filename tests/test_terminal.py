@@ -132,10 +132,12 @@ def test_copy_command():
     t.agent.session["messages"] = [{"role": "assistant", "content": "first"},
                                    {"role": "assistant", "content": "use:\n```py\nprint(1)\n```\ndone"}]
     t.toast = lambda *a, **k: None
-    t.cmd_copy("")
+    t.cmd_copy("last")  # (no argument opens a picker when the answer has code blocks)
     t.cmd_copy("code")
     t.cmd_copy("2")
-    assert copied == ["use:\n```py\nprint(1)\n```\ndone", "print(1)", "first"], copied
+    t.cmd_copy("all")
+    assert copied[:3] == ["use:\n```py\nprint(1)\n```\ndone", "print(1)", "first"], copied
+    assert copied[3].startswith("first\n\nuse:"), copied[3]
 
 
 def test_modal_ignores_mouse():

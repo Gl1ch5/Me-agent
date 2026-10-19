@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 os.environ["ME_HOME"] = tempfile.mkdtemp()
 import me  # noqa: E402
+me.RETRY_BASE = 0.01  # retries back off in milliseconds here
 import mock_llm  # noqa: E402
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), mock_llm.H)
@@ -70,7 +71,7 @@ def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
 
 def test_skill():
     s = make()
-    (s.home / "skills" / "demo.py").write_text(me.SKILL_TEMPLATE.replace("NAME", "demo"))
+    (s.home / "skills" / "demo.py").write_text(me.SKILL_TEMPLATE.replace("NAME", "demo"), "utf-8")
     sk = me.parse_skill(s.home / "skills" / "demo.py")
     assert sk["name"] == "demo" and "hello" in sk["actions"] and sk["actions"]["danger"]["confirm"]
     assert "demo:" in me.Agent(s, print).system_prompt()
@@ -267,7 +268,7 @@ def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
 def test_self_extend_agent(tmp=Path(tempfile.mkdtemp())):
     s = make()
     (s.home / "agents").mkdir(exist_ok=True)
-    (s.home / "agents" / "me.md").write_text((Path(__file__).resolve().parent.parent / "server" / "market" / "agent-me.md").read_text("utf-8"))
+    (s.home / "agents" / "me.md").write_text((Path(__file__).resolve().parent.parent / "server" / "market" / "agent-me.md").read_text("utf-8"), "utf-8")
     s.config["agent"] = "me"
     ag = me.Agent(s, print)
     sp = ag.system_prompt()
@@ -436,7 +437,7 @@ def test_only_code_builtin_and_cli_tools(tmp=Path(tempfile.mkdtemp())):
     ag, ev = run(s, "tool:ops_hello " + json.dumps({"who": "a b; echo hacked"}))
     start = [e for e in ev if e["type"] == "tool_start"][0]
     assert start["cli"]["agent"] == "ops" and start["cli"]["color"] == "red", start
-    assert ends(ev)[0]["ok"] and ends(ev)[0]["output"].strip() == "hello a b; echo hacked", ends(ev)
+    assert ends(ev)[0]["ok"] and ends(ev)[0]["output"].strip().replace('"', "") == "hello a b; echo hacked", ends(ev)  # one argument, nothing injected (cmd echo keeps quotes)
     assert any(e["type"] == "tool_event" and e.get("t") == "status" for e in ev)
     ag, ev = run(s, "tool:ops_plain {}")
     assert ends(ev)[0]["output"].strip() == "plain-out"
@@ -627,6 +628,58 @@ def test_long_output_saved(tmp=Path(tempfile.mkdtemp())):
     ok, out, _ = tb.run("bash", {"cmd": "seq 1 20000"}, print, threading.Event(), cwd=str(tmp))
     path = out.rsplit("full output: ", 1)[1].rstrip("]")
     assert ok and len(out) < 32000 and Path(path).read_text().splitlines()[-1] == "20000", out[-200:]
+def test_provider_retry_error_cancel():
+    s = make()
+    ag, ev = run(s, "flaky hello")  # 429 once → retried, answered
+    assert any(e["type"] == "text" for e in ev) and not any(e["type"] == "error" for e in ev), ev
+    ag, ev = run(s, "streamerr")
+    assert any(e["type"] == "error" and "upstream overloaded" in e["text"] for e in ev)
+    ev = []
+    ag = me.Agent(s, ev.append)
+    threading.Timer(0.6, ag.cancel.set).start()
+    t0 = time.time()
+    ag.run("silent please")
+    assert time.time() - t0 < 4, "Esc must stop a silent model at once"
+    assert any(e["type"] == "error" and e["text"] == "interrupted" for e in ev)
+
+
+def test_paths_follow_session_cwd(tmp=Path(tempfile.mkdtemp())):
+    # the web app runs many projects in one process: relative paths and commands must use the session's folder, not os.getcwd()
+    s = make()
+    (tmp / "a.txt").write_text("alpha\n")
+    ag = me.Agent(s, lambda e: None)
+    ag.session = me.new_session(str(tmp))
+    ag.run("tool:read " + json.dumps({"path": "a.txt"}))
+    assert "alpha" in ag.session["messages"][-2]["content"]
+    ag.run("tool:write " + json.dumps({"path": "sub/b.txt", "content": "beta"}))
+    assert (tmp / "sub" / "b.txt").read_text() == "beta"
+    ag.run("tool:bash " + json.dumps({"cmd": "dir" if os.name == "nt" else "ls"}))
+    assert "a.txt" in ag.session["messages"][-2]["content"]
+    ag.run("tool:grep " + json.dumps({"pattern": "alpha"}))
+    assert "a.txt" in ag.session["messages"][-2]["content"]
+    ag.run("tool:ls " + json.dumps({"pattern": "**/*.txt"}))
+    out = ag.session["messages"][-2]["content"]
+    assert "a.txt" in out and os.path.join("sub", "b.txt") in out
+    assert me.Agent(s, print).undo()["ok"] is False  # other session: nothing to undo
+    assert ag.undo()["ok"] and not (tmp / "sub" / "b.txt").exists()
+
+
+def test_history_trim_and_usage(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    big = tmp / "big.txt"
+    big.write_text("\n".join(f"line {i} " + "x" * 60 for i in range(800)))
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.session = me.new_session(str(tmp))
+    ag.run("tool:read " + json.dumps({"path": "big.txt"}))
+    tool = [m for m in ag.session["messages"] if m["role"] == "tool"][0]
+    assert len(tool["content"]) > 40000  # the current turn sees everything
+    end = [e for e in ev if e["type"] == "turn_end"][0]
+    assert end["steps"] == 2 and end["cached"] > 0
+    ag.run("hi")
+    assert tool["content"].startswith("[trimmed old output") and len(tool["content"]) < 3000  # later turns don't pay for it again
+    ag.run("tool:write " + json.dumps({"path": "notes.md", "content": "x"}))
+    assert not any(e["type"] == "verify" for e in ev[-20:])  # a doc edit needs no test-run round
 
 
 if __name__ == "__main__":
@@ -636,6 +689,8 @@ if __name__ == "__main__":
             try:
                 v()
                 print("ok  ", k)
+            except ModuleNotFoundError as e:  # optional test deps (Pillow) missing: skip, don't fail
+                print("skip", k, e)
             except Exception as e:
                 fails += 1
                 import traceback

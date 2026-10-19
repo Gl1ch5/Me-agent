@@ -32,6 +32,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.files_cache = None
         self.notice = ("", 0)
         self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
+        self.attached = []  # image files attached to the message being typed ([image #n] in the input)
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -189,8 +190,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     b.data.setdefault("output", "interrupted")
                     b.touch()
                 self.tools_live.clear()
-                self.add("stats", text=f"{dur(e['time'])}  ·  ↑ {human(e['in'])}  ↓ {human(e['out'])}  ·  {human(e['in'] + e['out'])} tokens"
-                                       + (f"  ·  {money(e['cost'])}" if e.get("cost") else ""))
+                self.add("stats", text=turn_stats(e))
                 self.cur_text = self.cur_reason = None
                 self.sync_ws()
             self.redraw()
@@ -264,6 +264,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         elif self.cloud.online:
             n = self.cloud.sync()
             if n > 0:
+                self.retheme()
                 self.toast(f"☁ {n} items synced from cloud", "ok")
             elif n < 0:
                 self.toast(f"☁ sync failed: {self.cloud.last_error[:60]}", "err")
@@ -362,6 +363,17 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 sys.exit(subprocess.call(args))
             os.execv(*(args[0], args))
 
+
+
+def turn_stats(e):
+    """One honest line per turn: every step re-sends the context, so ↑ is the sum over steps; cached input is billed at a fraction."""
+    steps = e.get("steps") or 1
+    cached = e.get("cached", 0)
+    parts = [dur(e["time"]), f"{steps} step{'s' if steps != 1 else ''}", f"context {human(e.get('ctx', 0))}",
+             f"sent ↑{human(e['in'])}" + (f" ({int(100 * cached / e['in'])}% cached)" if cached and e["in"] else ""), f"↓{human(e['out'])}"]
+    if e.get("cost"):
+        parts.append(money(e["cost"]))
+    return "  ·  ".join(parts)
 
 
 def fuzzy(q, s):

@@ -50,7 +50,7 @@ class Cloud:
         r = self.req("POST", "/api/register" if register else "/api/login", body, token=False)
         self.s.auth = {"server": self.server, "token": r["token"], "user": r["username"]}
         self.s.save_auth()
-        jsave(self.state_path, {"cursor": 0, "hashes": {}})
+        jsave(self.state_path, {"cursor": 0, "hashes": {}, "stats": {}})
 
     def logout(self):
         try:
@@ -96,29 +96,39 @@ class Cloud:
             self.status = "syncing"
             st = jload(self.state_path, {"cursor": 0, "hashes": {}})
             hashes = st.get("hashes", {})
+            stats = st.get("stats", {})  # key -> [mtime_ns, size] when its hash was taken: unchanged files are not read again
             local = self._local()
             push = []
             for key, p in local.items():
                 try:
+                    pst = p.stat()
+                    sig = [pst.st_mtime_ns, pst.st_size]
+                    if key in hashes and stats.get(key) == sig:
+                        continue
                     content = p.read_text("utf-8")
                 except Exception:
                     continue
                 h = hashlib.sha1(content.encode()).hexdigest()
                 if hashes.get(key) != h:
-                    push.append({"key": key, "content": content, "ts": p.stat().st_mtime, "deleted": False})
+                    push.append({"key": key, "content": content, "ts": pst.st_mtime, "deleted": False, "sig": sig})
+                else:
+                    stats[key] = sig
             for key in list(hashes):
                 if key not in local:
                     push.append({"key": key, "content": "", "ts": time.time(), "deleted": True})
             try:
-                r = self.req("POST", "/api/sync", {"cursor": st.get("cursor", 0), "push": push}, timeout=60)
+                r = self.req("POST", "/api/sync", {"cursor": st.get("cursor", 0), "push": [{k: v for k, v in d.items() if k != "sig"} for d in push]},
+                             timeout=60)
             except CloudError as e:
                 self.status, self.last_error = "error", str(e)
                 return -1
             for d in push:
                 if d["deleted"]:
                     hashes.pop(d["key"], None)
+                    stats.pop(d["key"], None)
                 else:
                     hashes[d["key"]] = hashlib.sha1(d["content"].encode()).hexdigest()
+                    stats[d["key"]] = d["sig"]
             changed = 0
             for d in r.get("docs", []):
                 p = self._path(d["key"])
@@ -129,6 +139,7 @@ class Cloud:
                         p.unlink()
                         changed += 1
                     hashes.pop(d["key"], None)
+                    stats.pop(d["key"], None)
                     continue
                 h = hashlib.sha1(d["content"].encode()).hexdigest()
                 if hashes.get(d["key"]) == h and p.exists():
@@ -136,8 +147,10 @@ class Cloud:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(d["content"], "utf-8")
                 hashes[d["key"]] = h
+                pst = p.stat()
+                stats[d["key"]] = [pst.st_mtime_ns, pst.st_size]
                 changed += 1
-            jsave(self.state_path, {"cursor": r.get("cursor", 0), "hashes": hashes})
+            jsave(self.state_path, {"cursor": r.get("cursor", 0), "hashes": hashes, "stats": stats})
             if changed and (self.s.cfg_path.exists()):
                 cfg = jload(self.s.cfg_path)
                 if cfg:
@@ -206,6 +219,9 @@ def _ignore_rules(root):
     return rules
 
 
+_WS_HASH = {}  # abs path -> ((mtime_ns, size), sha1)
+
+
 def ws_scan(root):
     """Code-sized files of a project → {relpath: (sha1, mtime)}. Heavy/binary/ignored files are skipped."""
     root = Path(root)
@@ -224,7 +240,11 @@ def ws_scan(root):
                 st = p.stat()
                 if st.st_size > WS_MAX_FILE or not p.is_file():
                     continue
-                out[rel] = (hashlib.sha1(p.read_bytes()).hexdigest(), st.st_mtime)
+                key, sig = str(p), (st.st_mtime_ns, st.st_size)
+                hit = _WS_HASH.get(key)
+                if not hit or hit[0] != sig:  # hash only files that changed since the last scan
+                    hit = _WS_HASH[key] = (sig, hashlib.sha1(p.read_bytes()).hexdigest())
+                out[rel] = (hit[1], st.st_mtime)
             except OSError:
                 continue
             if len(out) > 5000:

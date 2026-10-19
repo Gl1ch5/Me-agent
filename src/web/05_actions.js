@@ -53,6 +53,10 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSide(
 let touchX = null;  // swipe left on the drawer to close it
 side.addEventListener("touchstart", e => touchX = e.touches[0].clientX, {passive: true});
 side.addEventListener("touchend", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });
+async function newChatIn(cwd) {  // a new chat inside a given project folder (sidebar "+")
+  closeSide(); polling++;
+  try { await api(base + "/new", {cwd}); await apply(await api(base + "/state")); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
+}
 async function newChat() { closeSide(); await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
 async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
@@ -99,7 +103,8 @@ inp.addEventListener("keydown", e => { if (e.code === "Space" && !inp.value && e
 inp.addEventListener("keyup", e => { if (e.code === "Space") recStop(); });
 $("wsPill").onclick = async () => {
   if (MODE === "cloud") return location.href = "/account#workspaces";
-  const p = prompt(t("Project folder for the local agent"), state.cwd || "");
+  const native = window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder;  // desktop app: real folder dialog
+  const p = native ? await window.pywebview.api.pick_folder(state.cwd || "") : prompt(t("Project folder for the local agent"), state.cwd || "");
   if (!p) return;
   try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };

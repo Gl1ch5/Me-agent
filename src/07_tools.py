@@ -241,7 +241,8 @@ def _popen(cmd, cwd, env, pref, **kw):
         kw.setdefault("creationflags", NO_WINDOW["creationflags"])
     else:
         kw["start_new_session"] = True
-    return subprocess.Popen(argv if argv else cmd, shell=argv is None, stdin=subprocess.DEVNULL, env=env, cwd=cwd or None, **kw)
+    cwd = cwd if cwd and os.path.isdir(cwd) else None  # a session folder that no longer exists: run where we are
+    return subprocess.Popen(argv if argv else cmd, shell=argv is None, stdin=subprocess.DEVNULL, env=env, cwd=cwd, **kw)
 
 
 def run_shell(cmd, timeout, cancel, env=None, on_line=None, cwd=None, pref=None):

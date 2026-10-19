@@ -37,8 +37,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: {name: android, path: me-android.apk}
 
+  ide:
+    uses: ./.github/workflows/ide.yml
+
   release:
-    needs: [windows, android]
+    needs: [windows, android, ide]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,3 +58,6 @@ jobs:
             me.py
             dist/me-desktop.exe
             dist/me-android.apk
+            dist/me-agent.vsix
+            dist/me-ide-linux-x64.tar.gz
+            dist/me-ide-windows-x64.zip

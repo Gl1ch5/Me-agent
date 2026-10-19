@@ -735,6 +735,20 @@ def raw_skill(name: str):
     return PlainTextResponse(r["content"])
 
 
+DOWNLOADS = {"windows": "me-desktop.exe", "android": "me-android.apk", "vsix": "me-agent.vsix",
+             "ide-windows": "me-ide-windows-x64.zip", "ide-linux": "me-ide-linux-x64.tar.gz", "me.py": "me.py"}
+
+
+@app.api_route("/download/{what}", methods=["GET", "HEAD"])
+def download(what: str):
+    """Stable links for the site: the newest release's file on GitHub."""
+    from fastapi.responses import RedirectResponse
+    f = DOWNLOADS.get(what)
+    if not f:
+        raise HTTPException(404, "unknown app")
+    return RedirectResponse(f"https://github.com/Gl1ch5/Me-agent/releases/latest/download/{f}", status_code=302)
+
+
 @app.get("/healthz")
 def health():
     return Response("ok")

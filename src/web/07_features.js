@@ -79,3 +79,27 @@ async function enablePush() {
 }
 
 setLang(LANG);
+
+// ─── project files (local agent): browse folders, read files ───
+async function openFiles(dir) {
+  if (MODE !== "local") return location.href = "/account#workspaces";
+  let r; try { r = await api(base + "/files", {path: dir}); } catch (e) { return alert(e.message); }
+  const up = dir ? dir.split("/").slice(0, -1).join("/") : null;
+  const size = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  $("pbody").innerHTML = `<div class="fhead"><b>${esc((state.cwd || "").split(/[\\/]/).pop())}</b><span class="d">/${esc(dir)}</span></div>`
+    + (up !== null ? `<button data-d="${esc(up)}"><span>↰</span>..</button>` : "")
+    + r.items.map(i => i.dir ? `<button data-d="${esc((dir ? dir + "/" : "") + i.name)}"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>${esc(i.name)}</button>`
+      : `<button data-f="${esc((dir ? dir + "/" : "") + i.name)}"><svg viewBox="0 0 24 24"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/></svg>${esc(i.name)}<span class="d">${size(i.size)}</span></button>`).join("")
+    + (r.items.length ? "" : `<p class="dim" style="padding:12px">${esc(t("empty folder"))}</p>`);
+  $("pbody").querySelectorAll("[data-d]").forEach(b => b.onclick = () => openFiles(b.dataset.d));
+  $("pbody").querySelectorAll("[data-f]").forEach(b => b.onclick = () => viewFile(b.dataset.f));
+  $("popup").classList.remove("hidden");
+}
+async function viewFile(path) {
+  let r; try { r = await api(base + "/file", {path}); } catch (e) { return alert(e.message); }
+  const dir = path.split("/").slice(0, -1).join("/");
+  $("pbody").innerHTML = `<div class="fhead"><button class="ib" id="fback" title="${esc(t("back"))}">↰</button><b>${esc(path)}</b><button class="ib" id="fask" title="${esc(t("ask about this file"))}"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg></button></div>`
+    + (r.note ? `<p class="dim" style="padding:12px">${esc(r.note)}</p>` : `<pre class="fview">${r.text.split("\n").slice(0, 5000).map((l, i) => `<i>${i + 1}</i>${esc(l)}`).join("\n")}</pre>`);
+  $("fback").onclick = () => openFiles(dir);
+  $("fask").onclick = () => { $("popup").classList.add("hidden"); inp.value = (inp.value ? inp.value + " " : "") + "@" + path + " "; grow(); inp.focus(); };
+}

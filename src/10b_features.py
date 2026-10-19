@@ -38,7 +38,7 @@ def repo_map(root, sub="", home=HOME, limit=12000):
     fresh, lines = {}, []
     base = os.path.join(root, sub) if sub else root
     for f in sorted(walk_files(base, 5000)):
-        rel = os.path.relpath(f, root)
+        rel = os.path.relpath(f, root).replace("\\", "/")
         if os.path.splitext(f)[1].lower() not in MAP_EXT:
             continue
         try:
