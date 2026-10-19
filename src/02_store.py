@@ -8,7 +8,7 @@ DEFAULT_CONFIG = {
     "agent": "",  # active agent preset ("" = default)
     "prompt": "",  # user's extra system prompt
     "secrets": {},  # env vars for skills
-    "settings": {"yolo": False, "mouse": os.name != "nt", "disabled_skills": [], "disabled_plugins": []},
+    "settings": {"yolo": False, "mouse": True, "disabled_skills": [], "disabled_plugins": []},
     "search": {"deepseek_key": "", "model": "deepseek-v4-flash"},
     "voice": {"groq_key": "", "model": "whisper-large-v3", "language": ""},
 }
@@ -25,6 +25,9 @@ class Store:
             self.config.setdefault(k, json.loads(json.dumps(v)))
         for k, v in DEFAULT_CONFIG["settings"].items():
             self.config["settings"].setdefault(k, v)
+        st = self.config["settings"]
+        if st.get("mouse_rev", 0) < 2:  # 0.7: the mouse now selects + copies text on every platform (Windows had it off)
+            st["mouse"], st["mouse_rev"] = True, 2
         self.auth = jload(self.home / "auth.json", {}) or {}
         self.on_change = None
 
@@ -62,9 +65,12 @@ class Store:
     def save_session(self, s):
         s["updated"] = time.time()
         msgs = []
-        for m in s["messages"]:  # drop image payloads from disk/sync
+        last = max((i for i, m in enumerate(s["messages"]) if m.get("role") == "user" and not m.get("_aux")), default=-1)
+        for i, m in enumerate(s["messages"]):  # drop image payloads from disk/sync
             if isinstance(m.get("content"), list):
                 m = dict(m, content=[c if c.get("type") != "image_url" else {"type": "text", "text": "[image]"} for c in m["content"]])
+            if i < last and m.get("role") == "assistant" and any(k in m for k in ("reasoning_content", "reasoning_details", "reasoning_items")):
+                m = {k: v for k, v in m.items() if k not in ("reasoning_content", "reasoning_details", "reasoning_items")}  # past turns: never resent
             msgs.append(m)
         jsave(self.session_path(s["id"]), dict(s, messages=msgs))
         if self.on_change:

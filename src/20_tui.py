@@ -31,6 +31,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
         self.update_avail = None
         self.files_cache = None
         self.notice = ("", 0)
+        self.sel = None  # mouse selection in the transcript: {"a": (line, cell), "b": (line, cell), "drag": bool}
         store.on_change = self._schedule_sync
         self._sync_timer = None
 
@@ -126,12 +127,22 @@ class TUI(TUIRender, TUIInput, TUICommands):
                         b.events.append(e.get("text", ""))
                     b.touch()
             elif t == "tool_end":
+                self.term.reassert()  # the command may have changed the console's modes (Windows)
                 b = self.tools_live.pop(e["id"], None)
                 if b:
                     b.done, b.ok, b.elapsed = True, e["ok"], e["time"]
                     b.data["output"] = e["output"]
                     b.collapsed = True
                     b.touch()
+            elif t == "retry":
+                if e.get("discard"):  # the failed attempt's partial answer is not part of the reply
+                    for b in (self.cur_text, self.cur_reason):
+                        if b is not None and b in self.blocks:
+                            self.blocks.remove(b)
+                    self.cur_text = self.cur_reason = None
+                why = (e.get("error") or "").split("\n")[0][:140]
+                self.add("info", text=f"↻ {why} — retrying" + (f" in {e['delay']:.0f}s" if e.get("delay") else "")
+                         + (f" ({e['attempt']}/{e['of']})" if e.get("of", 1) > 1 else ""), color="warn")
             elif t == "compacting":
                 self.add("info", text=f"◌ compacting history ({e['reason']})…", color="accent")
             elif t == "compacted":
@@ -282,7 +293,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
 
     def run(self):
         self.restart = False
-        self.term.start(self.s.config["settings"].get("mouse", not WIN))
+        self.term.start(self.s.config["settings"].get("mouse", True))
         if not WIN:
             signal.signal(signal.SIGWINCH, lambda *a: self.redraw())
         self.welcome()

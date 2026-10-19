@@ -9,7 +9,7 @@ VERSION in src/00_head.py. Domain me-agent.ru: when `dig +short me-agent.ru @8.8
 me-agent.ru + www, set ME_PUBLIC_URL=https://me-agent.ru in the systemd unit (and server/deploy), SERVER default in src/00_head.py,
 Android meServer in apps/android/gradle.properties.
 
-Rules: keep the core agent a single built file with stdlib only; startup prompt+tools under ~1000 tokens (measure with tiktoken);
+Rules: keep the core agent a single built file with stdlib only; startup prompt+tools under ~2000 tokens (measure with tests/measure_tokens.py; clear tool descriptions beat a tiny prompt);
 every UI must work at 360px and 1280px and in every built-in theme (me-dark, me-light, mono, mono-light, graphite); test with
 playwright screenshots before deploying; never break sync compatibility of existing docs.
 

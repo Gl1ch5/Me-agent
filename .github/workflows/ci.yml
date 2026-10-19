@@ -10,3 +10,12 @@ jobs:
       - run: python build.py --check
       - run: python tests/test_core.py
       - run: python -c "import ast,sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]" server/*.py server/market/*.py
+      - run: python tests/test_terminal.py
+  oldest-python:  # me.py promises Python 3.8+: a newer-only syntax once made it fail to start on 3.8–3.11
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.8"}
+      - run: python -m py_compile me.py
+      - run: python tests/test_terminal.py

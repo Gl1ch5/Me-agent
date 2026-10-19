@@ -4,7 +4,15 @@
 class TUIInput:
     # ─── input handling ───
     def handle_key(self, k):
+        if isinstance(k, tuple) and k[0] == "mouse":
+            if not self.modal:
+                self.mouse(*k[1:])
+            return
+        if k not in ("wheel-up", "wheel-down"):
+            self.sel = None  # typing ends a mouse selection
         if self.modal:
+            if k in ("wheel-up", "wheel-down") and self.modal["kind"] in ("pick", "confirm"):
+                k = "up" if k == "wheel-up" else "down"
             return self.modal_key(k)
         if PLUGINS.emit("key", self, k):
             return
@@ -85,6 +93,8 @@ class TUIInput:
         elif k == "ctrl-l":
             self.term.write(CSI + "2J")
             self._prev_rows = None
+        elif k == "ctrl-v":  # the terminal did not paste by itself: read the clipboard
+            self.paste_clipboard()
         elif k == "ctrl-o":
             for b in reversed(self.blocks):
                 if b.kind in ("tool", "skill", "reason") and b.done:
@@ -133,6 +143,101 @@ class TUIInput:
             elif k[0] == "paste":
                 self.insert(k[1].replace("\r\n", "\n").replace("\r", "\n"))
         self.update_sugg()
+
+    # ─── mouse: drag selects transcript text and copies it, click toggles a tool card, right click pastes (Windows) ───
+    def sel_range(self):
+        sel = getattr(self, "sel", None)
+        if not sel or sel["a"] == sel["b"] and not sel.get("word"):
+            return None
+        return tuple(sorted([sel["a"], sel["b"]]))
+
+    def mouse(self, kind, btn, x, y):
+        tx = getattr(self, "_tx", None)
+        if not tx:
+            return
+        lines, owners, top, avail, maxscroll = tx
+
+        def point(row, col):
+            return max(0, min(len(lines) - 1, top + min(max(row, 1), avail) - 1)), max(0, col - 1)
+
+        if kind == "press" and btn == 2:
+            if self.sel_range():
+                self.copy_selection()
+            elif WIN:  # the console's own right-click paste is off while we own the mouse
+                self.paste_clipboard()
+            return
+        if btn != 0 or not lines:
+            return
+        if kind == "press":
+            if y > avail:
+                self.sel = None
+                return
+            p, now = point(y, x), time.time()
+            last = getattr(self, "_click", None)
+            n = last[2] + 1 if last and now - last[0] < 0.45 and last[1][0] == p[0] and abs(last[1][1] - p[1]) <= 1 else 1
+            self._click = (now, p, n)
+            if n == 2:
+                a, b = word_at(lines[p[0]], p[1])
+                self.sel = {"a": (p[0], a), "b": (p[0], b), "word": True}
+                self.copy_selection()
+            elif n >= 3:  # the whole logical line, across soft wraps
+                i0, i1 = p[0], p[0]
+                while i0 > 0 and lines[i0].soft is not None:
+                    i0 -= 1
+                while i1 + 1 < len(lines) and lines[i1 + 1].soft is not None:
+                    i1 += 1
+                self.sel = {"a": (i0, 0), "b": (i1, 1 << 20), "word": True}
+                self.copy_selection()
+            else:
+                self.sel = {"a": p, "b": p, "drag": True}
+        elif kind == "drag" and getattr(self, "sel", None) and self.sel.get("drag"):
+            if y <= 1 and self.scroll < maxscroll:  # dragging past the edge scrolls
+                self.scroll += 1
+            elif y >= avail and self.scroll > 0:
+                self.scroll -= 1
+            self.sel["b"] = point(y, x)
+        elif kind == "release" and getattr(self, "sel", None) and self.sel.get("drag"):
+            self.sel["drag"] = False
+            if self.sel["a"] != self.sel["b"]:
+                self.copy_selection()
+                return
+            self.sel = None
+            i = point(y, x)[0]
+            b = owners[i] if 0 <= top + y - 1 < len(owners) else None
+            if b and b.kind in ("tool", "skill", "reason") and b.done:  # click a card to open / close it
+                b.collapsed = not b.collapsed
+                if b.kind == "reason":
+                    self.s.config["settings"]["show_thinking"] = not b.collapsed
+                b.touch()
+
+    def copy_selection(self):
+        r = self.sel_range()
+        if not r:
+            return
+        text = selection_text(self._tx[0], r[0], r[1])
+        if not text.strip():
+            return
+        how = clip_copy(text, self.term.write)
+        self.toast(f"copied {len(text)} chars" + (" (via terminal)" if how == "osc52" else "") if how else "copy failed: no clipboard",
+                   "ok" if how else "err")
+
+    def paste_clipboard(self):
+        def run():
+            t = clip_paste()
+            with self.lock:
+                if t:
+                    t = t.replace("\r\n", "\n").replace("\r", "\n")
+                    if self.modal and self.modal["kind"] == "input":
+                        m = self.modal
+                        t = t if m["multiline"] else t.replace("\n", " ")
+                        m["text"], m["cur"] = m["text"][:m["cur"]] + t + m["text"][m["cur"]:], m["cur"] + len(t)
+                    elif not self.modal:
+                        self.insert(t)
+                        self.update_sugg()
+                else:
+                    self.toast("clipboard is empty or not available", "warn")
+                self.redraw()
+        threading.Thread(target=run, daemon=True).start()
 
     def insert(self, s, replace_last=False):
         if replace_last:

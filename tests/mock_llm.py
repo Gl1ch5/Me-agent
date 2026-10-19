@@ -11,6 +11,8 @@ def sse(h, obj):
 
 
 LAST = {}  # last request body, for tests
+HISTORY = []  # every request body
+COUNT = {}
 
 
 class H(BaseHTTPRequestHandler):
@@ -25,10 +27,65 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
 
+    def _fail(self, code, msg, headers=()):
+        body = json.dumps({"error": {"message": msg}}).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        for k, v in headers:
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _special(self, req):
+        """Failure scripts keyed by the first user words: flaky: (429 once), dropmid: (error chunk mid-stream once),
+        overflow: (context error until history is summarized), cut: (output limit hit inside a tool call), empty: (one empty reply)."""
+        msgs = req.get("messages") or []
+        if msgs and str(msgs[0].get("content", ""))[:30].startswith("Summarize this coding session"):
+            self._start()
+            sse(self, {"choices": [{"delta": {"content": "- user wanted things; done some"}, "finish_reason": "stop"}]})
+            self.wfile.write(b"data: [DONE]\n\n")
+            return True
+        users = [m for m in msgs if m["role"] == "user" and isinstance(m.get("content"), str)]
+        first = next((m["content"] for m in users if m["content"].split(":")[0] in ("flaky", "dropmid", "overflow", "cut", "empty")), "")
+        kind = first.split(":")[0]
+        if not kind:
+            return False
+        n = COUNT[first] = COUNT.get(first, 0) + 1
+        if kind == "flaky" and n == 1:
+            self._fail(429, "Rate limit reached, please try again", [("Retry-After", "0")])
+            return True
+        if kind == "overflow" and not any("[Summary" in str(m.get("content")) for m in msgs):
+            self._fail(400, "This model's maximum context length is 1000 tokens. Please reduce the length of the messages.")
+            return True
+        if msgs[-1]["role"] != "user":
+            return False
+        self._start()
+        if kind == "dropmid" and n == 1:
+            sse(self, {"choices": [{"delta": {"content": "partial "}}]})
+            sse(self, {"error": {"message": "upstream overloaded", "code": 502}})
+        elif kind == "cut" and n == 1:
+            sse(self, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "function": {"name": "write", "arguments": '{"path": "big.txt", "content": "abc'}}]},
+                                    "finish_reason": "length"}]})
+        elif kind == "empty" and n == 1:
+            sse(self, {"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        else:
+            sse(self, {"choices": [{"delta": {"content": f"{kind} ok"}, "finish_reason": "stop"}]})
+        self.wfile.write(b"data: [DONE]\n\n")
+        return True
+
+    def _start(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         LAST.clear()
         LAST.update(req)
+        HISTORY.append(req)
+        if self._special(req):
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()

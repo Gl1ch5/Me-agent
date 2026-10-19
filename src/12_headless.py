@@ -13,6 +13,8 @@ def run_headless(store, prompt, yolo):
             sys.stderr.write(f"  ✗ {e['output'][:200]}\n")
         elif t == "error":
             sys.stderr.write(f"\nerror: {e['text']}\n")
+        elif t == "retry":
+            sys.stderr.write(f"\n↻ {e['error'][:160]} — retrying in {e['delay']:.0f}s\n")
         elif t == "turn_end":
             sys.stderr.write(f"\n· {dur(e['time'])} · ↑{human(e['in'])} ↓{human(e['out'])}\n")
 
@@ -110,7 +112,11 @@ def run_rpc(store):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"], "title": ag.session.get("title", "")})
         elif t == "new":
+            if ag.busy:
+                emit({"type": "error", "text": "busy — stop the current turn first"})
+                continue
             ag.session = new_session()
+            ag.ctx_used, ag.snap = 0, {}
             if os.environ.get("ME_WS_ID"):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"]})

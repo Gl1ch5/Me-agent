@@ -135,15 +135,18 @@ class Skills:
             mark = deps / (".ok-" + hashlib.sha1(sk["requires"].encode()).hexdigest()[:8])
             if not mark.exists():
                 emit({"t": "status", "text": f"pip install {sk['requires']}"})
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps)] + sk["requires"].replace(",", " ").split(),
-                               capture_output=True)
+                r = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--target", str(deps)] + sk["requires"].replace(",", " ").split(),
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace", **NO_WINDOW)
+                if r.returncode:  # remember success only: a failed install is retried next time, and the reason is shown now
+                    return False, f"could not install {sk['requires']}: {(r.stderr or r.stdout).strip()[-1200:]}"
                 deps.mkdir(exist_ok=True)
                 mark.touch()
         env = dict(os.environ)
         env.update({k: str(v) for k, v in self.s.config.get("secrets", {}).items()})
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen([sys.executable, "-c", SKILL_RUNNER, sk["path"], action, json.dumps(args)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", bufsize=1)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                cwd=os.getcwd(), **NO_WINDOW)
         result = None
 
         def watch():

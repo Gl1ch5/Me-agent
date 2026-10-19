@@ -55,7 +55,7 @@ Found a security problem? Open a GitHub issue marked `security`, or reach the ma
 
 Every agent makes you rebuild your setup on each machine. **me** keeps your models, API keys, prompt, skills, plugins, themes, agents, chats **and project files** in your account. Open a terminal, a browser tab, the phone app or Telegram, and you continue exactly where you left off, live.
 
-It is also **tiny on purpose**: the system prompt and tools take about 1k tokens at start (many agents spend 10–20k before you say hello). Skills, plugins and MCP servers cost almost nothing until the model needs them.
+It is also **tiny on purpose**: the system prompt and tools take about 2k tokens at start (many agents spend 10–20k before you say hello). Skills, plugins and MCP servers cost almost nothing until the model needs them.
 
 ## A tour
 
@@ -119,7 +119,7 @@ Terminal, web app and site share one palette. Pick one with `/theme` (live previ
 
 | | |
 |---|---|
-| **One file, no dependencies** | `me.py` is stdlib-only Python 3.8+. About 1k tokens of system prompt and tools at start. |
+| **One file, no dependencies** | `me.py` is stdlib-only Python 3.8+. About 2k tokens of system prompt and tools at start. |
 | **Any model** | Any OpenAI-compatible API: chat/completions or responses, streaming, reasoning effort (none → xhigh), custom model names and context sizes, model list sync from a provider. |
 | **Agent modes** | `code` · `design` (writes DESIGN.md first, tokens and components, checked at 360 and 1280 px) · `plan` (writes PLAN.md, no code changes) · `review` (read-only, real bugs only) · `debug` (reproduce, root cause, prove) · `docs` · `research`. The marketplace adds devops, tester, security, mobile, and you can write your own as a `.md` file. |
 | **Goals** | `/goal "…"` works autonomously until the goal is done **and verified**, or reports exactly why it is blocked. Exits 0 or 2 in headless mode, so it works in CI. |

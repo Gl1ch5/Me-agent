@@ -63,19 +63,19 @@ def render_md(text, width, indent=2):
         if raw.strip().startswith("```"):
             if not in_code:
                 in_code, lang = True, raw.strip()[3:].strip().lower()
-                out.append(Line().add(" " * indent).add(f" {lang or 'code'} ".ljust(width - indent), rgb(TH["dim"]) + rgb(TH["code_bg"], True)))
+                bar = Line().add(" " * indent).add(f" {lang or 'code'} ".ljust(width - indent), rgb(TH["dim"]) + rgb(TH["code_bg"], True))
             else:
                 in_code = False
-                out.append(Line().add(" " * indent).add(" " * (width - indent), rgb(TH["code_bg"], True)))
+                bar = Line().add(" " * indent).add(" " * (width - indent), rgb(TH["code_bg"], True))
+            bar.pre = width  # the code block's title / bottom bar is not copied
+            out.append(bar)
             continue
         if in_code:
             segs = hl_code(raw.replace("\t", "    "), lang)
             ls = wrap_segs(segs, width, first_prefix=[(" " * indent, ""), (" ", rgb(TH["code_bg"], True))],
                            prefix=[(" " * indent, ""), (" ", rgb(TH["code_bg"], True))])
             for l in ls:
-                pad = width - l.width()
-                if pad > 0:
-                    l.add(" " * pad, rgb(TH["code_bg"], True))
+                l.pad(width, rgb(TH["code_bg"], True))
             out.extend(ls)
             continue
         s = raw.rstrip()
@@ -90,10 +90,13 @@ def render_md(text, width, indent=2):
             ind = indent + len(m.group(1))
             bullet = "•" if m.group(2) in "-*+" else m.group(2)
             pre = [(" " * ind, ""), (bullet + " ", rgb(TH["accent"]))]
-            out.extend(wrap_segs(inline_md(m.group(3), base), width, first_prefix=pre, prefix=[(" " * (ind + swidth(bullet) + 1), "")]))
+            out.extend(wrap_segs(inline_md(m.group(3), base), width, first_prefix=pre, prefix=[(" " * (ind + swidth(bullet) + 1), "")],
+                                 keep=len(m.group(1)) + swidth(bullet) + 1))  # copying keeps the bullet and nesting
             continue
         if re.match(r"^\s*(---+|\*\*\*+)\s*$", s):
-            out.append(Line().add(" " * indent).add("─" * (width - indent * 2), rgb(TH["faint"])))
+            hr = Line().add(" " * indent).add("─" * (width - indent * 2), rgb(TH["faint"]))
+            hr.pre = width
+            out.append(hr)
             continue
         if s.startswith(">"):
             out.extend(wrap_segs(inline_md(s.lstrip("> "), rgb(TH["dim"]) + CSI + "3m"), width,

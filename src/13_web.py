@@ -145,8 +145,10 @@ class WebSession:
             a.cancel.set()
             return {"ok": True}
         if path == "/new":
+            if a.busy:
+                raise ValueError("busy — stop the current turn first")
             a.session = new_session()
-            a.ctx_used = 0
+            a.ctx_used, a.snap = 0, {}
             return {"ok": True}
         if path == "/load":
             a.load(body["id"])

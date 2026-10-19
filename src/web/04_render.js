@@ -89,6 +89,10 @@ function onEvent(e) {
     n.onclick = () => { api(base + "/confirm", {id: e.id, ok: false}); c.remove(); };
     return;
   }
+  if (t === "retry") {  // the provider failed mid-answer: drop what was shown of that attempt
+    if (e.discard) { cur.text?.remove(); cur.think?.remove(); cur.text = null; cur.think = null; cur.thinkDone = false; }
+    el(`<div class="info warn">↻ ${esc(String(e.error || "").split("\n")[0].slice(0, 140))}</div>`); return;
+  }
   if (t === "compacting") { el(`<div class="info">${tt("compacting history…")}</div>`); return; }
   if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">${tt("compacted {a} → {b} messages · ~{c} tokens", {a: e.before, b: e.after, c: human(e.ctx)})}</div>`); return; }
   if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
@@ -103,6 +107,7 @@ function onEvent(e) {
   if (t === "verify") { el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
   if (t === "undone") { el(`<div class="info warn">↶ ${esc(e.text)}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
+  if (t === "loaded" && e.session && state.worker) state.worker.session = e.session;  // later reloads must read this session
   if (t === "loaded" && e.title) $("title").textContent = e.title;
   if (t === "reload") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }
   if (t === "exit") { busy = false; setBusy(); restartSandbox(); }
@@ -115,7 +120,8 @@ function renderHistory(s) {
   const outs = {};
   s.messages.forEach(m => { if (m.role === "tool") outs[m.tool_call_id] = m.content; });
   s.messages.forEach(m => {
-    if (m.role === "user" && txt(m.content) !== "(images from read)") userMsg(txt(m.content));
+    if (m.role === "user" && m._aux) { if (/^\[message from the user/.test(txt(m.content))) userMsg(txt(m.content).split("\n").slice(1).join("\n")); }
+    else if (m.role === "user" && txt(m.content) !== "(images from read)") userMsg(txt(m.content));
     else if (m.role === "assistant") {
       if (m.content) el(`<div class="msg md">${md(m.content)}</div>`);
       (m.tool_calls || []).forEach(tc => {

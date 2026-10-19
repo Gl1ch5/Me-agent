@@ -38,6 +38,8 @@ def main():
             c.sync()
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
+        if WIN and (os.environ.get("TERM_PROGRAM") == "mintty" or os.environ.get("MSYSTEM")):
+            return print("me: Git Bash's window (mintty) is not a Windows console. Run `winpty me`, or open me in Windows Terminal / cmd.exe.")
         return print("me: not a terminal. use: me -p \"task\"")
     tui = TUI(store)
     PLUGINS.tui = tui

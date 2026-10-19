@@ -459,6 +459,176 @@ def test_memory(tmp=Path(tempfile.mkdtemp())):
     assert not ends(ev)[0]["ok"]
 
 
+def test_retry_rate_limit_and_midstream_error():
+    ag, ev = run(make(), "flaky: hello")
+    assert [e for e in ev if e["type"] == "retry"] and ag.session["messages"][-1]["content"] == "flaky ok", ev
+    ag, ev = run(make(), "dropmid: hello")
+    r = [e for e in ev if e["type"] == "retry"]
+    assert r and r[0]["discard"] and ag.session["messages"][-1]["content"] == "dropmid ok"  # the partial "partial " is not kept
+
+
+def test_overflow_compacts_and_retries():
+    s = make()
+    ev = []
+    ag = me.Agent(s, ev.append)
+    for i in range(4):
+        ag.session["messages"] += [{"role": "user", "content": f"old question {i} " + "x" * 400}, {"role": "assistant", "content": "old answer " + "y" * 400}]
+    ag.run("overflow: go")
+    assert any(e["type"] == "compacted" for e in ev), [e["type"] for e in ev]
+    msgs = ag.session["messages"]
+    assert msgs[0]["content"].startswith("[Summary") and msgs[-1]["content"] == "overflow ok", msgs
+
+
+def test_output_limit_cut_tool_call(tmp=Path(tempfile.mkdtemp())):
+    ag, ev = run(make(), "cut: write a big file")
+    out = ends(ev)[0]["output"]
+    assert "output token limit" in out and not ends(ev)[0]["ok"], out
+
+
+def test_empty_reply_is_retried():
+    ag, ev = run(make(), "empty: hi")
+    assert ag.session["messages"][-1]["content"] == "empty ok"
+    assert all(m.get("content") or m.get("tool_calls") for m in ag.session["messages"] if m["role"] == "assistant")
+
+
+def test_reasoning_goes_back_to_the_same_model(tmp=Path(tempfile.mkdtemp())):
+    (tmp / "r.txt").write_text("x")
+    s = make()
+    ag, ev = run(s, "tool:read " + json.dumps({"path": str(tmp / "r.txt")}))
+    sent = [m for m in mock_llm.LAST["messages"] if m["role"] == "assistant"]
+    assert sent and sent[-1].get("reasoning_content") == "thinking about it", sent
+    assert not any(k.startswith("_") for m in mock_llm.LAST["messages"] for k in m)
+    # another model never receives it
+    prov = me.Provider({"id": "other"}, {})
+    assert "reasoning_content" not in prov.wire(ag.session["messages"])[2]
+    # on disk, finished turns drop it
+    ag.session["messages"].append({"role": "user", "content": "next"})
+    s.save_session(ag.session)
+    saved = json.loads(s.session_path(ag.session["id"]).read_text())
+    assert not any("reasoning_content" in m for m in saved["messages"])
+
+
+def test_edit_keeps_line_endings_and_encoding(tmp=Path(tempfile.mkdtemp())):
+    s = make()
+    f = tmp / "crlf.txt"
+    f.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+    run(s, "tool:edit " + json.dumps({"path": str(f), "old": "two\nthree", "new": "2\n3"}))
+    assert f.read_bytes() == b"one\r\n2\r\n3\r\n", f.read_bytes()
+    g = tmp / "ru.txt"
+    g.write_bytes("привет\nмир\n".encode("cp1251"))
+    ag, ev = run(s, "tool:edit " + json.dumps({"path": str(g), "old": "мир", "new": "свет"}))
+    assert g.read_bytes() == "привет\nсвет\n".encode("cp1251"), (g.read_bytes(), ends(ev))
+    h = tmp / "bom.txt"
+    h.write_bytes(b"\xef\xbb\xbfa = 1\n")
+    run(s, "tool:edit " + json.dumps({"path": str(h), "old_string": "a = 1", "new_string": "a = 2"}))  # other agents' key names
+    assert h.read_bytes() == b"\xef\xbb\xbfa = 2\n"
+    w = tmp / "w.txt"
+    w.write_bytes(b"a\r\nb\r\n")
+    run(s, "tool:write " + json.dumps({"path": str(w), "content": "c\nd\n"}))
+    assert w.read_bytes() == b"c\r\nd\r\n"
+
+
+def test_edit_fuzzy_matches():
+    t = "def f():\n    s = \"it’s\"  \n    return s\n"
+    new, msg = me.apply_edits(t, {"old": 's = "it\'s"\n    return s', "new": 's = "ok"\n    return s'})
+    assert new == 'def f():\n    s = "ok"\n    return s\n', (new, msg)
+    # whole lines under-indented by the model
+    new, msg = me.apply_edits("if x:\n        a()\n        b()\n", {"old": "    a()\n    b()", "new": "    a()\n    c()"})
+    assert new == "if x:\n        a()\n        c()\n", (new, msg)
+    # wrong indentation in old: the new lines are shifted to fit the file
+    new, msg = me.apply_edits("class A:\n    def g(self):\n        return 1\n", {"old": "def g(self):\n    return 1", "new": "def g(self):\n    return 2"})
+    assert new == "class A:\n    def g(self):\n        return 2\n" and "indentation" in msg, (new, msg)
+    assert me.apply_edits("a\n", {"old": "a", "new": "a"})[0] is None
+    assert me.apply_edits("a = 1\n", {"edits": json.dumps([{"oldText": "a = 1", "newText": "a = 3"}])})[0] == "a = 3\n"
+
+
+def test_read_cap_and_numbering(tmp=Path(tempfile.mkdtemp())):
+    f = tmp / "big.txt"
+    f.write_text("\n".join("line %d %s" % (i, "z" * 100) for i in range(3000)) + "\n")
+    out, _ = me.read_any(f)
+    assert len(out) < 60000 and "use offset=" in out, out[-200:]
+    n = int(out.rsplit("offset=", 1)[1].split(")")[0])
+    more, _ = me.read_any(f, n, 5)
+    assert more.startswith(f"{n}│line {n - 1} ") and "more lines" in more, more[:80]
+    (tmp / "t.txt").write_text("a\nb\n")
+    assert me.read_any(tmp / "t.txt")[0] == "1│a\n2│b"
+    assert "did you mean: t.txt" in me.read_any(tmp / "t.tx")[0]
+
+
+def test_ls_and_grep(tmp=Path(tempfile.mkdtemp())):
+    (tmp / "src" / "deep").mkdir(parents=True)
+    (tmp / "node_modules" / "x").mkdir(parents=True)
+    (tmp / "src" / "a.ts").write_text("const x = 1\n-flag here\n")
+    (tmp / "src" / "deep" / "b.tsx").write_text("export const y = 2\n")
+    (tmp / "node_modules" / "x" / "c.ts").write_text("no\n")
+    tb = me.ToolBox(make(), None)
+    ok, out, _ = tb.run("ls", {"pattern": "**/*.{ts,tsx}"}, print, threading.Event(), cwd=str(tmp))
+    assert sorted(out.split("\n")) == ["src/a.ts", "src/deep/b.tsx"], out
+    ok, out, _ = tb.run("ls", {"pattern": "src"}, print, threading.Event(), cwd=str(tmp))
+    assert out.split("\n") == ["deep/", "a.ts"], out
+    ok, out, _ = tb.run("grep", {"pattern": "-flag"}, print, threading.Event(), cwd=str(tmp))
+    assert ok and "src/a.ts:2:-flag here" in out, out
+    ok, out, _ = tb.run("grep", {"pattern": "(unclosed"}, print, threading.Event(), cwd=str(tmp))
+    assert not ok and "error" in out, out
+
+
+def test_bash_timeout_background_and_cwd(tmp=Path(tempfile.mkdtemp())):
+    tb = me.ToolBox(make(), None)
+    ok, out, _ = tb.run("bash", {"cmd": "pwd"}, print, threading.Event(), cwd=str(tmp))
+    assert ok and str(tmp) in out, out
+    ok, out, _ = tb.run("bash", {"cmd": "sleep 5", "timeout": 1}, print, threading.Event(), cwd=str(tmp))
+    assert not ok and "timed out" in out, out
+    ok, out, _ = tb.run("bash", {"cmd": "printf '\\033[31mred\\033[0m 10%%\\r100%%\\n'; exit 3"}, print, threading.Event(), cwd=str(tmp))
+    assert not ok and "\x1b" not in out and out.startswith("100%") and "10%" not in out and "[exit 3]" in out, repr(out)
+    ok, out, _ = tb.run("bash", {"cmd": "echo started; sleep 30", "background": True}, print, threading.Event(), cwd=str(tmp))
+    assert ok and "pid" in out and "started" in out, out
+    me.stop_background()
+    assert all(p.poll() is not None for p in me.BACKGROUND) or not me.BACKGROUND
+
+
+def test_compact_inside_one_long_turn():
+    s = make()
+    s.config["models"][0]["context"] = 4000
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.session["messages"] = [{"role": "user", "content": "one big task"}]
+    for i in range(12):  # a single turn: many tool steps, no new user message
+        ag.session["messages"] += [{"role": "assistant", "content": None, "tool_calls": [{"id": f"c{i}", "type": "function",
+                                    "function": {"name": "read", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": f"c{i}", "content": "z" * 600}]
+    assert ag.compact(reason="auto")
+    msgs = ag.session["messages"]
+    assert msgs[0]["content"].startswith("[Summary") and "one big task" in msgs[0]["content"]
+    assert msgs[1]["role"] == "assistant" and msgs[1].get("tool_calls")  # starts at a step, tool results follow their call
+    ids = {tc["id"] for m in msgs if m["role"] == "assistant" for tc in m.get("tool_calls") or []}
+    assert all(m["tool_call_id"] in ids for m in msgs if m["role"] == "tool")
+
+
+def test_tool_arg_repair():
+    assert me.parse_args('```json\n{"a": 1}\n```') == {"a": 1}
+    assert me.parse_args('{"a": 1} trailing') == {"a": 1}
+    assert me.parse_args('"{\\"a\\": 2}"') == {"a": 2}
+    assert me.parse_args('{"a": ') is None
+
+
+def test_parent_agents_md(tmp=Path(tempfile.mkdtemp())):
+    (tmp / ".git").mkdir()
+    (tmp / "AGENTS.md").write_text("root rules: use tabs")
+    (tmp / "pkg").mkdir()
+    (tmp / "pkg" / "AGENTS.md").write_text("pkg rules")
+    ag = me.Agent(make(), print)
+    ag.session["cwd"] = str(tmp / "pkg")
+    assert ag.context_files() == ["../AGENTS.md", "AGENTS.md"], ag.context_files()
+    sp = ag.system_prompt()
+    assert "root rules: use tabs" in sp and "pkg rules" in sp
+
+
+def test_long_output_saved(tmp=Path(tempfile.mkdtemp())):
+    tb = me.ToolBox(make(), None)
+    ok, out, _ = tb.run("bash", {"cmd": "seq 1 20000"}, print, threading.Event(), cwd=str(tmp))
+    path = out.rsplit("full output: ", 1)[1].rstrip("]")
+    assert ok and len(out) < 32000 and Path(path).read_text().splitlines()[-1] == "20000", out[-200:]
+
+
 if __name__ == "__main__":
     fails = 0
     for k, v in list(globals().items()):

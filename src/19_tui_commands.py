@@ -20,9 +20,12 @@ class TUICommands:
 
     def cmd_help(self, arg):
         txt = "## Commands\n" + "\n".join(f"- `/{c}` {d}" for c, d in COMMANDS)
-        txt += ("\n\n## Keys\n- `enter` send · `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
-                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool\n- `@path` attach file (images go to the model)"
-                "\n- `tab` accept suggestion")
+        txt += ("\n\n## Keys\n- `enter` send · `shift+enter` / `alt+enter` / `ctrl+j` / `\\`+enter newline\n- `esc` interrupt · `ctrl+c` clear/quit"
+                "\n- `↑↓` history · `pgup/pgdn` / wheel scroll · `ctrl+o` expand last tool (or click it)\n- `@path` attach file (images go to the model)"
+                "\n- `tab` accept suggestion · `ctrl+v` paste"
+                "\n\n## Mouse\n- drag to select text: it is copied when you let go (double click = word, triple = line)"
+                "\n- right click: copy the selection, or paste (Windows) · `/copy` last answer, `/copy code` its last code block"
+                "\n- mouse off in `/config` gives the terminal's own selection back")
         self.add("assistant", text=txt).done = True
 
     def cmd_exit(self, arg):
@@ -121,27 +124,38 @@ class TUICommands:
         return x["name"]
 
     def cmd_new(self, arg):
-        if self.agent.busy:
-            return self.toast("busy", "warn")
-        self.agent.session = new_session()
-        self.agent.ctx_used = 0
-        self.info("─── new session ───")
-
-    def cmd_clear(self, arg):
-        if self.agent.busy:
-            return self.toast("busy", "warn")
+        """A fresh session on a clean screen: nothing of the old conversation stays visible or in the model's context."""
+        if self.agent.busy or self.launching:
+            return self.toast("busy — esc to stop the current turn first", "warn")
         with self.lock:
-            self.blocks = []
-        self.agent.session = new_session()
-        self.agent.ctx_used = 0
-        self.welcome()
+            self.agent.session = new_session()
+            self.agent.ctx_used, self.agent.snap = 0, {}
+            self.blocks, self.tools_live, self.cur_text, self.cur_reason = [], {}, None, None
+            self.scroll, self.sel, self.turn_tokens = 0, None, (0, 0)
+            self._prev_rows = None
+            self.term.write(CSI + "2J")
+            self.welcome()
+        self.toast("new session", "ok")
+
+    cmd_clear = cmd_new
 
     def cmd_copy(self, arg):
-        for b in reversed(self.blocks):
-            if b.kind == "assistant":
-                self.term.write(f"{ESC}]52;c;{base64.b64encode(b.text.encode()).decode()}\a")
-                return self.toast("copied last answer to clipboard", "ok")
-        self.toast("nothing to copy")
+        """/copy · /copy 2 (the answer before last) · /copy code (last code block of the last answer)."""
+        answers = [m["content"] for m in self.agent.session["messages"] if m["role"] == "assistant" and isinstance(m.get("content"), str)
+                   and m["content"].strip()] or [b.text for b in self.blocks if b.kind == "assistant" and b.text.strip()]
+        if not answers:
+            return self.toast("nothing to copy")
+        words = arg.split()
+        n = next((int(w) for w in words if w.isdigit()), 1)
+        text = answers[-min(max(1, n), len(answers))]
+        what = "answer"
+        if "code" in words:
+            blocks = re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
+            if not blocks:
+                return self.toast("no code block in that answer", "warn")
+            text, what = blocks[-1].rstrip("\n"), "code block"
+        how = clip_copy(text.strip("\n"), self.term.write)
+        self.toast(f"copied {what} · {len(text)} chars" if how else "copy failed: no clipboard available", "ok" if how else "err")
 
     def cmd_yolo(self, arg):
         st = self.s.config["settings"]
@@ -585,6 +599,10 @@ class TUICommands:
                 c = m.get("content")
                 if isinstance(c, list):
                     c = " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+                if m["role"] == "user" and m.get("_aux"):  # the agent's own nudges are not something the user typed
+                    if isinstance(c, str) and c.startswith("[message from the user"):
+                        self.add("user", text=c.split("\n", 1)[-1])
+                    continue
                 if m["role"] == "user" and c and c != "(images from read)":
                     self.add("user", text=c)
                 elif m["role"] == "assistant":
@@ -717,13 +735,14 @@ class TUICommands:
         st = self.s.config["settings"]
         while True:
             items = [("yolo", f"auto-approve tools   {'on' if st.get('yolo') else 'off'}", ""),
-                     ("mouse", f"mouse wheel scroll   {'on' if st.get('mouse', not WIN) else 'off'}", "off = native text selection"),
+                     ("mouse", f"mouse                {'on' if st.get('mouse', True) else 'off'}",
+                      "on: wheel scroll, drag to select+copy · off: the terminal's own selection"),
                      ("show_thinking", f"show thinking        {'on' if st.get('show_thinking') else 'off'}", ""),
                      ("home", "data dir", str(self.s.home))]
             v = self.pick("Settings", items)
             if v is None or v == "home":
                 return
-            st[v] = not st.get(v, v == "mouse" and not WIN)
+            st[v] = not st.get(v, v == "mouse")
             if v == "mouse":
                 self.term.set_mouse(st[v])
             self.s.save()
@@ -742,7 +761,7 @@ class TUICommands:
             self.update_avail = None  # the banner was stale: nothing newer on the server
             return self.toast(f"already on latest v{VERSION}", "ok")
         target = Path(os.path.abspath(__file__))
-        target.write_text(src, "utf-8")
+        target.write_bytes(src.encode("utf-8"))  # byte-exact (write_text would turn every line end into CRLF on Windows)
         self.info(f"✓ updated to v{v.group(1)} — restarting…", "ok")
         time.sleep(0.6)
         self.restart = True

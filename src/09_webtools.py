@@ -29,9 +29,13 @@ def web_fetch(url):
     elif enc == "deflate":
         data = zlib.decompress(data)
     if "pdf" in ct:
-        tmp = Path(tempfile.mkstemp(suffix=".pdf")[1])
-        tmp.write_bytes(data)
-        return True, clip(_pdf_text(tmp), 40000), None
+        fd, tmp = tempfile.mkstemp(suffix=".pdf")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return True, clip(_pdf_text(tmp), 40000), None
+        finally:
+            os.unlink(tmp)
     text = data.decode("utf-8", "replace")
     if "html" in ct or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
         text = html_text(text)
