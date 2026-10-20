@@ -169,6 +169,22 @@ class TgCommands:
         w.send({"type": "compact"})
         self.send(chat, "compacting history…")
 
+    @staticmethod
+    def recap(doc, n=6):
+        """The last few requests and answers of a session, so a chat that opens it sees where it stands."""
+        lines = []
+        for m in doc.get("messages") or []:
+            c = m.get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if isinstance(x, dict))
+            if m.get("role") not in ("user", "assistant") or not isinstance(c, str) or not c.strip() or m.get("_aux") or m.get("_hint"):
+                continue
+            c = " ".join(c.split())
+            lines.append(("› " if m["role"] == "user" else "◂ ") + (c[:250] + "…" if len(c) > 250 else c))
+        if not lines:
+            return ""
+        return f"«{(doc.get('title') or 'session')[:60]}» — earlier:\n" + "\n".join(lines[-n:]) + "\n\n"
+
     def _session_doc(self, uid, sid):
         r = self.db.execute("SELECT content FROM docs WHERE user_id=? AND key=? AND deleted=0", (uid, "session/" + sid)).fetchone() if sid else None
         try:
@@ -430,12 +446,12 @@ class TgCommands:
             if self.topics and chat > 0:  # topics: open the session's topic (one per session)
                 t = self.topic_of(chat, val) or self.new_topic(chat, doc.get("title") or "session", val, doc.get("ws"))
                 if t:
-                    return self.send(chat, "resumed — continue here", thread=t)
+                    return self.send(chat, self.recap(doc) + "resumed — continue here", thread=t)
             st["session"] = val
             st.pop("worker", None)
             if doc.get("ws"):
                 st["ws"] = doc["ws"]
-            self.send(chat, "resumed — continue writing")
+            self.send(chat, self.recap(doc) + "resumed — continue writing")
         elif kind == "n":  # /new: the project was picked
             self.tl.thread = q["message"].get("message_thread_id") if q["message"].get("is_topic_message") else 0
             st = self.st(chat)

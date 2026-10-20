@@ -524,9 +524,15 @@ def test_session_tools():
         assert b.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "s:s9"
         b.handle(msg(4, "/rename new site"))
         assert b._session_doc(1, "s9")["title"] == "new site"
+        b.mirror(1, "✓ landing\n\nall set", session="s9")  # a session from the web: a button opens it here, with what came before
+        assert b.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "s:s9"
+        b.handle({"callback_query": {"id": "q", "data": "s:s9", "from": {"id": 4}, "message": {"chat": {"id": 4}, "message_id": 1}}})
+        assert b.state[(4, 0)]["session"] == "s9" and "› build a landing page" in b.calls[-1][1].get("text", ""), b.calls[-1]
+        b.mirror(1, "› more", session="s9")  # already open here: no button
+        assert "reply_markup" not in b.calls[-1][1]
     finally:
         del sys.modules["app"]
-    print("ok   /export sends the chat as Markdown, /search finds sessions, /rename renames")
+    print("ok   /export sends the chat as Markdown, /search finds sessions, /rename renames, mirrored sessions open with a recap")
 
 
 def test_page_screenshot_after_publish():

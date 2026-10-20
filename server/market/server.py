@@ -9,9 +9,9 @@ Gives the agent a `server` tool and you a `/server` command and `me server …` 
 
 Setup:
 1. On the server, run the daemon (stdlib Python 3, nothing to install):
-     python3 server.py serve --password SECRET            (port 8765; add --install to make it a systemd service)
+     python3 server.py serve --password SECRET            (port 8722; add --install to make it a systemd service)
    An existing Claude MCP endpoint (https://host/mcp/<secret>) works too — no daemon needed.
-2. Here: /server set https://host:8765 SECRET (or the "server" card in the web account settings).
+2. Here: /server set https://host:8722 SECRET (or the "server" card in the web account settings).
 
 CLI: me server status · me server run "df -h" · me server root "systemctl restart nginx" · me server read /etc/hosts
      me server logs nginx 50 · me server bg "make build" · me server jobs · me server ping
@@ -37,6 +37,19 @@ CUT = 20000
 
 # ───────────── client ─────────────
 
+PORT = 8722
+HELP_SETUP = f"on the server run: python3 server.py serve --password PASSWORD --install  (port {PORT}, password 8+ characters)"
+
+
+def norm_url(url):
+    """'1.2.3.4' or 'host' → http://host:8722; a scheme or a path (an MCP URL) is kept as given."""
+    url = (url or "").strip().rstrip("/")
+    if url and "://" not in url:
+        host, slash, path = url.partition("/")
+        url = "http://" + host + ("" if ":" in host or slash else f":{PORT}") + slash + path
+    return url
+
+
 def settings(store=None):
     c = dict((store.config.get("server") or {}) if store else {})
     if not store:
@@ -45,7 +58,7 @@ def settings(store=None):
             c = cfg.get("server") or {}
         except (OSError, ValueError):
             pass
-    return {"url": os.environ.get("ME_SERVER_URL") or c.get("url", ""), "password": os.environ.get("ME_SERVER_PASSWORD") or c.get("password", "")}
+    return {"url": norm_url(os.environ.get("ME_SERVER_URL") or c.get("url", "")), "password": os.environ.get("ME_SERVER_PASSWORD") or c.get("password", "")}
 
 
 def _post(url, body, password, sid=None):
@@ -103,8 +116,16 @@ class Client:
         try:
             _, body = _post(self.url + "/call", {"tool": tool, "args": args}, self.password)
         except urllib.error.HTTPError as e:
-            return False, f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
-        r = json.loads(body)
+            body = e.read().decode("utf-8", "replace")
+            if e.code == 401:
+                return False, "wrong password (the one given to serve --password)"
+            if '"result"' not in body:  # something else answers on this port
+                return False, f"HTTP {e.code}: no me server daemon at {self.url}; {HELP_SETUP}"
+            return False, f"HTTP {e.code}: {body[:300]}"
+        try:
+            r = json.loads(body)
+        except ValueError:
+            return False, f"no me server daemon at {self.url}; {HELP_SETUP}"
         return r.get("ok", False), r.get("result")
 
 
@@ -132,6 +153,8 @@ def call(conf, action, args):
         return False, f"unknown action {action!r}; one of: " + ", ".join(ACTIONS)
     try:
         ok, v = Client(conf["url"], conf["password"]).call(action, args)
+    except (urllib.error.URLError, OSError) as e:
+        return False, f"{conf['url']}: cannot connect ({getattr(e, 'reason', e)}); {HELP_SETUP}"
     except Exception as e:
         return False, f"{conf['url']}: {type(e).__name__}: {e}"
     return ok, show(v)[:CUT]
@@ -397,9 +420,15 @@ TOOLS = {
 }
 
 
-def handle(password, auth, body):
+FAILS = {}  # ip -> recent failed logins: a wrong password costs a growing delay, so guessing is slow
+
+
+def handle(password, auth, body, ip=""):
     if not password or not hmac.compare_digest(auth.encode(), ("Bearer " + password).encode()):
+        n = FAILS[ip] = FAILS.get(ip, 0) + 1
+        time.sleep(min(30, 0.5 * n) if ip else 0)
         return 401, {"ok": False, "result": "bad password"}
+    FAILS.pop(ip, None)
     fn = TOOLS.get(body.get("tool"))
     if not fn:
         return 404, {"ok": False, "result": f"unknown tool {body.get('tool')!r}"}
@@ -416,7 +445,7 @@ def serve(argv):
     ap = argparse.ArgumentParser(prog="server.py serve")
     ap.add_argument("--password", default=os.environ.get("ME_SERVER_PASSWORD", ""))
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--install", action="store_true", help="install and start a systemd service with these settings")
     o = ap.parse_args(argv)
     if len(o.password) < 8:
@@ -454,7 +483,7 @@ def serve(argv):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
             except ValueError:
                 return self._send(400, {"ok": False, "result": "bad json"})
-            self._send(*handle(o.password, self.headers.get("Authorization", ""), body))
+            self._send(*handle(o.password, self.headers.get("Authorization", ""), body, self.client_address[0]))
 
         def log_message(self, fmt, *a):
             sys.stderr.write(f"{time.strftime('%T')} {self.address_string()} {fmt % a}\n")
