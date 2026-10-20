@@ -9,6 +9,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
+import acctlog as tr
+
 HERE = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("ME_DB", str(HERE / "me.db"))
 CLIENT = Path(os.environ.get("ME_CLIENT", HERE.parent / "me.py"))
@@ -156,7 +158,49 @@ def user(authorization: str = Header("")):
     now = time.time()
     conn.execute("UPDATE tokens SET used=? WHERE hash=?", (now, h))
     conn.execute("UPDATE users SET seen=? WHERE id=?", (now, r["id"]))
+    if tr.on(r["id"], r["username"]):
+        traced[h] = r["id"]
     return dict(r, token_hash=h)
+
+
+traced = {}  # token hash -> uid of a traced account (ME_TRACE), so the request log knows whose request it was
+QUIET = re.compile(r"/api/clientlog|/api/changes|/events|/api/cloud$|/api/sessions$|/api/version")  # polls: logged only when they fail
+
+
+@app.middleware("http")
+async def trace_requests(req: Request, call_next):
+    if not tr.WANT:
+        return await call_next(req)
+    t0 = time.time()
+    try:
+        resp = await call_next(req)
+    except Exception as e:
+        uid = _traced_uid(req)
+        if uid:
+            tr.error(uid, "http_crash", e, method=req.method, path=req.url.path)
+        raise
+    uid = _traced_uid(req)
+    if uid and (resp.status_code >= 400 or not QUIET.search(req.url.path)):
+        tr.log(uid, "http", method=req.method, path=req.url.path, status=resp.status_code, ms=int((time.time() - t0) * 1000))
+    return resp
+
+
+def _traced_uid(req):
+    tok = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    return tok and traced.get(hashlib.sha256(tok.encode()).hexdigest())
+
+
+class ClientLog(BaseModel):
+    msg: str = ""
+    where: str = ""
+    stack: str = ""
+
+
+@app.post("/api/clientlog")
+def client_log(c: ClientLog, u=Depends(user)):
+    """Errors from the web app (window.onerror, failed API calls) of a traced account."""
+    tr.log(u["id"], "web_error", msg=tr.cut(c.msg, 400), where=tr.cut(c.where, 200), stack=tr.cut(c.stack, 1200))
+    return {}
 
 
 class Creds(BaseModel):

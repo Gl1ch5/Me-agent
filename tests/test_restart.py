@@ -17,7 +17,7 @@ os.environ["ME_SERVER"] = SERVER
 import me  # noqa: E402
 
 tmp = tempfile.mkdtemp()
-env = dict(os.environ, ME_DB=f"{tmp}/t.db", ME_DATA=f"{tmp}/data", ME_SANDBOX="0", ME_INTERNAL_URL=SERVER, ME_SITES_DOMAIN="sites.test")
+env = dict(os.environ, ME_DB=f"{tmp}/t.db", ME_DATA=f"{tmp}/data", ME_SANDBOX="0", ME_INTERNAL_URL=SERVER, ME_SITES_DOMAIN="sites.test", ME_TRACE="1")
 
 
 def start():

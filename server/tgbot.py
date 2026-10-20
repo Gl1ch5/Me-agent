@@ -15,6 +15,7 @@ Newer Bot API features, each with a fallback for chats or bots that lack it:
 import base64, secrets, threading, time
 from pathlib import Path
 
+import acctlog
 from tg_api import TgApi
 from tg_commands import COMMANDS, TgCommands
 from tg_i18n import tr
@@ -187,6 +188,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 chat = qm["chat"]["id"]
                 self._lang(chat, u["callback_query"].get("from"))
                 self.tl.thread = qm.get("message_thread_id") if qm.get("is_topic_message") else 0
+                acctlog.log(self.uid_for(chat), "tg_button", data=u["callback_query"].get("data"), thread=self.tl.thread, bot=self.key)
                 return self.on_callback(u["callback_query"])
             m = u.get("message")
             if not m:
@@ -209,6 +211,8 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
             uid = self.uid_for(chat)
             if not uid:
                 return self.send(chat, "Not linked yet. Open your account on the me site → Telegram → connect.")
+            acctlog.log(uid, "tg_msg", text=acctlog.cut(text, 300), thread=self.tl.thread, bot=self.key,
+                        media=[k for k in ("voice", "audio", "photo", "document") if m.get(k)])
             try:
                 self.ask_search_key(chat, uid)
             except Exception:
@@ -239,6 +243,10 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 return self.send(chat, "✓ answer sent")
             self.run(chat, uid, text, images=images, files=files)
         except Exception as e:
+            try:
+                acctlog.error(chat is not None and self.uid_for(chat), "tg_crash", e, update=acctlog.cut(u, 400))
+            except Exception:
+                pass
             try:
                 if chat is not None:
                     self.send(chat, f"error: {e}")

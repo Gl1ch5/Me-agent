@@ -9,6 +9,8 @@ The worker is just another "device" of the user: it syncs config/skills/sessions
 import base64, collections, hashlib, importlib.util, json, os, re, secrets, shutil, subprocess, threading, time, uuid
 from pathlib import Path
 
+import acctlog
+
 DATA = Path(os.environ.get("ME_DATA", "/var/lib/me-agent"))
 CLIENT = Path(os.environ.get("ME_CLIENT", Path(__file__).resolve().parent.parent / "me.py"))
 API = os.environ.get("ME_INTERNAL_URL", "http://127.0.0.1:8790")
@@ -156,6 +158,8 @@ class Worker:
             self._spawn(token)
             if session:
                 self.send({"type": "load", "id": session})
+        acctlog.on(self.uid, self.username)
+        acctlog.log(self.uid, "worker_reattach" if meta else "worker_start", w=self.id, ws=self.wid, session=self.session)
         threading.Thread(target=self._tail, daemon=True).start()
 
     def _spawn(self, token):
@@ -231,6 +235,10 @@ class Worker:
             self.cond.notify_all()
         if e.get("type") in ("turn_end", "loaded", "ready", "exit"):
             self._save()
+        try:
+            acctlog.event(self.uid, self.wid, self.id, e)
+        except Exception:
+            pass
         cb = self.on_event or getattr(globals().get("runner"), "on_event", None)
         if cb:
             try:
@@ -298,6 +306,7 @@ class Worker:
             return False
 
     def stop(self):
+        acctlog.log(self.uid, "worker_stop", w=self.id, ws=self.wid, busy=self.busy, age=int(time.time() - self.started))
         try:
             os.killpg(self.pid, 9)
         except OSError:
