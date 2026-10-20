@@ -10,7 +10,7 @@ INSTALL = "curl -fsSL https://me-agent.ru/i | sh"
 
 def one_file(out, stand, work, S, cfg, total):
     home = base._home(work, "full-one", stand)
-    t = base._shell(out, "me · install", home, stand, **cfg)
+    t = base._shell(out, "promo · install", home, stand, **cfg)
     t.pump(1.2)
     t.type(INSTALL, cps=9)
     t.key("enter", 0.8)
@@ -20,8 +20,8 @@ def one_file(out, stand, work, S, cfg, total):
     t.key("enter", 0.9)
     base._welcome(t)
     t.pump(0.6)
-    t.type(S["p_task"], cps=9)
-    t.pump(0.7)
+    t.type(S["p_task"], cps=11)
+    t.pump(0.4)
     t.key("enter", 0.3)
     t.wait_for("wrote index.html", timeout=90)
     t.pump(1.5)
@@ -32,7 +32,7 @@ def one_file(out, stand, work, S, cfg, total):
 def themes(out, stand, work, S, cfg, total):
     home = base._home(work, "full-themes", stand)
     base.preinstall(home, stand)
-    t = base._shell(out, "me · themes & modes", home, stand, **cfg)
+    t = base._shell(out, "promo · themes & modes", home, stand, **cfg)
     t.pump(0.8)
     t.type("me", cps=8)
     t.key("enter", 0.9)
@@ -54,13 +54,42 @@ def themes(out, stand, work, S, cfg, total):
     return t
 
 
+def marketplace(out, stand, work, S, cfg, total):
+    """/theme → "+ get more themes" → the marketplace list → pick one: the theme changes on the spot, in every colour.
+
+    The picker takes a typed filter, so the scene types "coffee" and presses Enter: whatever the list holds above it
+    (a new built-in theme, an extra one in ~/.me/themes) the selection stays right — a real install from the stand."""
+    home = base._home(work, "full-market", stand)
+    base.preinstall(home, stand)
+    t = base._shell(out, "promo · themes & modes", home, stand, **cfg)
+    t.pump(0.5)
+    t.type("me", cps=8)
+    t.key("enter", 0.8)
+    base._welcome(t)
+    t.type("/theme", cps=9)
+    t.key("enter", 0.7)
+    t.wait_for("Theme")
+    t.pump(0.4)
+    t.key("down", 0.4)  # the list previews as it moves: the whole UI repaints
+    t.key("up", 0.4)
+    t.type("market", cps=9)  # the picker filters by typed text: "+ get more themes" is the only match
+    t.key("enter", 1.0)  # → the marketplace
+    t.wait_for("Marketplace", timeout=40)
+    t.pump(1.6)  # the list itself: names, descriptions
+    t.type("coffee", cps=9)  # the promo stand has published the "coffee" theme (stand.py, from scripts/promo/theme-coffee.json)
+    t.key("enter", 2.4)  # install: the file lands in ~/.me/themes and the whole UI repaints in the new palette
+    t.pump(1.2)
+    t.finish(total)
+    return t
+
+
 def voice(out, stand, work, S, cfg, total):
     home = base._home(work, "full-voice", stand)
     (home / ".me" / "plugins").mkdir(parents=True, exist_ok=True)
     import shutil
     shutil.copy(base.ROOT / "server" / "market" / "voice.py", home / ".me" / "plugins" / "voice.py")
     base.preinstall(home, stand)
-    t = base._shell(out, "me · voice", home, stand, **cfg)
+    t = base._shell(out, "promo · voice", home, stand, **cfg)
     t.pump(0.9)
     t.type("me", cps=8)
     t.key("enter", 0.9)

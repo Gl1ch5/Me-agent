@@ -1,7 +1,8 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>me promo · animated cards</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- Animated title cards for the full promo. Open with ?card=intro|phonecard|outro&lang=ru|en&v=0|1 (v=1: 9:16).
+<!-- Animated title cards for the full promo. Open with ?card=intro|phonecard|outro|credits&lang=ru|en&v=0|1 (v=1: 9:16).
+     The credits card is the licence notice for the music and the sound effects (docs/promo/SFX-PACK.md).
      Colours are the me-dark palette. Recorded by scripts/promo/full.py with playwright (video=on). -->
 <style>
 :root{--bg:#0e0f13;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#6b6f80;--accent:#8b7cff;--accent2:#4fd1c5}
@@ -43,11 +44,13 @@ const T = {
     intro: {logo: "me", h1: ["один агент.", "<em>все</em> устройства."], sub: ["кодинг-агент в одном файле", "без зависимостей · на вашей машине и в облаке"], subEn: "a coding agent in one file · no dependencies"},
     phonecard: {h1: ["продолжи", "<em>на телефоне</em>"], sub: ["сессия на ПК — открыта на телефоне", "и ответ с телефона уже на ПК"], subEn: "PC session → open on the phone → reply lands on the PC"},
     outro: {logo: "me", h1: ["ставится", "<em>одной строкой</em>"], cmd: "curl -fsSL https://me-agent.ru/i | sh", chips: ["темы", "режимы", "голос", "маркетплейс"], sub: ["me-agent.ru", ""], subEn: "themes · modes · voice · marketplace"},
+    credits: {h1: ["<em>спасибо</em>"], sub: ["музыка: Шопен в записи Musopen (CC0)", "звуки: David McKee (ViRiX) · soundcloud.com/virix", "me-agent.ru"], subEn: "music: Chopin, Musopen recordings (CC0) · sounds: David McKee (ViRiX)", slow: true},
   },
   en: {
     intro: {logo: "me", h1: ["one agent.", "<em>every</em> device."], sub: ["a coding agent in one file", "no dependencies · on your machine and in the cloud"], subEn: "a coding agent in one file · no dependencies"},
     phonecard: {h1: ["continue", "<em>on your phone</em>"], sub: ["PC session — open on the phone", "and the reply from the phone is already on the PC"], subEn: "PC session → open on the phone → reply lands on the PC"},
     outro: {logo: "me", h1: ["install", "<em>in one line</em>"], cmd: "curl -fsSL https://me-agent.ru/i | sh", chips: ["themes", "modes", "voice", "marketplace"], sub: ["me-agent.ru", ""], subEn: "themes · modes · voice · marketplace"},
+    credits: {h1: ["<em>credits</em>"], sub: ["music: Chopin, Musopen recordings (CC0)", "sounds: David McKee (ViRiX) · soundcloud.com/virix", "me-agent.ru"], subEn: "thanks for watching", slow: true},
   },
 };
 const c = T[L][q.get("card") || "intro"];
@@ -61,6 +64,6 @@ document.getElementById("card").innerHTML = `
   ${sub}
   ${c.cmd ? `<div class="cmd"><b>$</b> ${c.cmd}</div>` : ""}
   ${c.chips ? `<div class="chips">${c.chips.map(x => `<span>${x}</span>`).join("")}</div>` : ""}
-  <p class="sub" style="font-size:${V ? 52 : 34}px;opacity:0;animation-delay:3s">${L === "en" ? c.subEn : (c.subEn || "")}</p>`;
+  ${c.slow ? "" : `<p class="sub" style="font-size:${V ? 52 : 34}px;opacity:0;animation-delay:3s">${L === "en" ? c.subEn : ""}</p>`}`;
 if (V) document.getElementById("card").style.setProperty("--gap", "40px");
 </script></body></html>

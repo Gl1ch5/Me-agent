@@ -62,6 +62,7 @@
   - Deploy: `cd /opt/me-agent && git pull --ff-only && systemctl restart me-agent`, then `curl 127.0.0.1:8790/api/version`.
   - Restarting kills cloud sandboxes; the web UI restarts them.
 - CI (`.github/workflows/ci.yml`): `build.py --check`, then `test_core` on Windows/macOS/Linux × Python 3.8/3.11/3.13.
+- Promo (`.github/workflows/promo.yml`): renders the short and the full-length videos (with the UI sound pack and the Chopin score) whenever `scripts/promo/**`, `docs/promo/**`, `server/market/**` or `src/web/**` change, or by hand from the Actions tab; the result is the `promo` artifact. It never blocks a release.
 
 ## Conventions and gotchas
 - Match the surrounding style: small functions, comments only where the why is not obvious, no new dependencies in the core.

@@ -1,0 +1,24 @@
+{
+ "name": "coffee",
+ "label": "coffee",
+ "description": "тёплые коричневые тона для поздней работы · warm browns for late-night work",
+ "dark": true,
+ "about": "warm browns for late-night work",
+ "colors": {
+  "bg": "#14100d",
+  "bg2": "#1a1511",
+  "bg3": "#221b16",
+  "line": "#2b221b",
+  "fg": "#ece2d6",
+  "dim": "#94796a",
+  "faint": "#4a3b31",
+  "accent": "#e0a05a",
+  "accent2": "#8fc98f",
+  "ok": "#8fc98f",
+  "err": "#e07a6a",
+  "warn": "#e0c05a",
+  "user": "#f0c193",
+  "code_bg": "#181310",
+  "sel": "#2f261e"
+ }
+}

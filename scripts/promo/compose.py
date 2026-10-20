@@ -40,13 +40,32 @@ def fit_concat(listfile, seconds, out, size):
     ff("-f", "concat", "-safe", "0", "-i", str(listfile), "-t", str(seconds), "-vf", _fit_vf(size, seconds), *VENC, str(out))
 
 
-def phone_split(pc_webm, phone_webm, seconds, out):
+def phone_split(pc_webm, phone_webm, seconds, out, bg=BG):
     """PC recording on the left (1280x720), the phone recording on the right (390x844 scaled to 780 px high)."""
     fg = ("[1:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=1280:720[pc];"
           "[2:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=-2:780[ph];"
           "[0:v][pc]overlay=40:180[a];[a][ph]overlay=1480:150,format=yuv420p[v]")
-    ff("-f", "lavfi", "-i", f"color=c={BG}:s=1920x1080:r=30", "-i", str(pc_webm), "-i", str(phone_webm),
+    ff("-f", "lavfi", "-i", f"color=c={bg}:s=1920x1080:r=30", "-i", str(pc_webm), "-i", str(phone_webm),
        "-filter_complex", fg, "-map", "[v]", "-t", str(seconds), *VENC, str(out))
+
+
+def concat_xfade(parts, out, xfade=0.45):
+    """Join scene clips with a crossfade (`parts` must all be the same size/fps). Audio is added later by sfx.mix,
+    so the transitions stay picture-only and quick: keyframes are re-encoded once, here."""
+    args, filt = [], []
+    for p in parts:
+        args += ["-i", str(p)]
+    last = "[0:v]"
+    for i in range(1, len(parts)):
+        filt.append(f"{last}[{i}:v]xfade=transition=fade:duration={xfade}:offset=OFF{i}[v{i}]")
+        last = f"[v{i}]"
+    # xfade's offset is the moment the fade starts: accumulate the lengths minus the fades already spent
+    off, offsets = 0.0, []
+    for d in [probe(p)["duration"] for p in parts][:-1]:
+        off += d - xfade
+        offsets.append(max(0.0, off))
+    filt = [f.replace(f"OFF{i}", f"{o:.3f}") for i, f in enumerate(filt, 1)]
+    ff(*args, "-filter_complex", ";".join(filt), "-map", last, "-vf", "format=yuv420p", *VENC, str(out))
 
 
 def concat_copy(parts, out):
@@ -61,24 +80,26 @@ def webp_preview(mp4, out):
     ff("-i", str(mp4), "-vf", "fps=12,scale=-2:480:flags=lanczos", "-loop", "0", "-q:v", "55", "-an", str(out))
 
 
-def phone_stack(pc_webm, phone_webm, seconds, out):
+def phone_stack(pc_webm, phone_webm, seconds, out, bg=BG):
     """Portrait (9:16): PC recording on top (1080 px wide), the phone recording below, centred."""
     fg = ("[1:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=1080:-2[pc];"
           "[2:v]fps=30,tpad=stop_mode=clone:stop_duration=60,scale=-2:1000[ph];"
           "[0:v][pc]overlay=0:170[a];[a][ph]overlay=(W-w)/2:800,format=yuv420p[v]")
-    ff("-f", "lavfi", "-i", f"color=c={BG}:s=1080x1920:r=30", "-i", str(pc_webm), "-i", str(phone_webm),
+    ff("-f", "lavfi", "-i", f"color=c={bg}:s=1080x1920:r=30", "-i", str(pc_webm), "-i", str(phone_webm),
        "-filter_complex", fg, "-map", "[v]", "-t", str(seconds), *VENC, str(out))
 
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-def segment(src_args, seconds, out, size, caption_file=None, portrait=False):
-    """Normalise one segment to exact length, add a 0.5 s fade in/out and (optionally) an animated lower-third caption.
+def segment(src_args, seconds, out, size, caption_file=None, portrait=False, fade=0.5):
+    """Normalise one segment to exact length, add a `fade` s fade in/out (0 = cut hard into the next scene, which
+    concat_xfade crossfades anyway) and (optionally) an animated lower-third caption.
     The caption rises 40 px and fades in over 0.6 s, and fades out over the last 0.5 s."""
     w, h = size
     vf = _fit_vf(size, seconds).replace(",format=yuv420p", "")
-    vf += f",fade=t=in:st=0:d=0.5,fade=t=out:st={seconds - 0.5:.2f}:d=0.5"
+    if fade:
+        vf += f",fade=t=in:st=0:d={fade},fade=t=out:st={seconds - fade:.2f}:d={fade}"
     if caption_file:
         fs, pad = (50, 260) if portrait else (46, 120)
         vf += (f",drawtext=fontfile={FONT}:textfile={caption_file}:fontsize={fs}:fontcolor=0xd8dae3:"
