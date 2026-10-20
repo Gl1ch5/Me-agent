@@ -61,7 +61,21 @@ class TgCommands:
         if arg:  # /new <title>: straight away, in this project
             return self.new_in(chat, uid, st, w, cur, arg)
         kb = [[{"text": ("● " if wid == cur else "📁 ") + name, "callback_data": "n:" + wid}] for wid, name in self.recent_ws(uid, cur)]
-        self.send(chat, "new session in:", reply_markup={"inline_keyboard": kb + [[{"text": "+ new project", "callback_data": "n:+"}]]})
+        kb += [[{"text": "+ new project", "callback_data": "n:+"}], [{"text": "⎇ GitHub repository…", "callback_data": "n:gh"}]]
+        self.send(chat, "new session in:", reply_markup={"inline_keyboard": kb})
+
+    def gh_pick(self, chat, uid, st):
+        """/new → GitHub: sign in first (a button to GitHub's consent page), then the latest repositories as buttons."""
+        import features
+        if not (self.config(uid).get("secrets") or {}).get("GITHUB_TOKEN"):
+            url = features.gh_login_url(uid)
+            if not url:
+                return self.send(chat, "GitHub is not connected. Add a token in the web account (cloud → GitHub).")
+            return self.send(chat, "Sign in with GitHub, then send /new again.", reply_markup={"inline_keyboard": [[{"text": "sign in with GitHub", "url": url}]]})
+        repos = features.github_repos("", {"id": uid})[:10]
+        st["repos"] = [r["repo"] for r in repos]
+        kb = [[{"text": ("🔒 " if r["private"] else "") + r["repo"], "callback_data": f"r:{i}"}] for i, r in enumerate(repos)]
+        self.send(chat, "repository:" if kb else "no repositories found", reply_markup={"inline_keyboard": kb} if kb else None)
 
     def recent_ws(self, uid, cur=None, n=5):
         """[(id, name)]: this project first, then the projects of the latest sessions, then the newest projects."""
@@ -410,6 +424,8 @@ class TgCommands:
         elif kind == "n":  # /new: the project was picked
             self.tl.thread = q["message"].get("message_thread_id") if q["message"].get("is_topic_message") else 0
             st = self.st(chat)
+            if val == "gh":
+                return self.gh_pick(chat, uid, st)
             if val == "+":
                 from cloud import ws_create
                 val = ws_create(uid, "project " + time.strftime("%d.%m %H:%M"))["id"]
@@ -418,6 +434,23 @@ class TgCommands:
             except KeyError:
                 w = None
             self.new_in(chat, uid, st, w, val)
+        elif kind == "r":  # /new → GitHub: the repository was picked; the agent works on it through branches and PRs
+            self.tl.thread = q["message"].get("message_thread_id") if q["message"].get("is_topic_message") else 0
+            st = self.st(chat)
+            repos = st.get("repos") or []
+            if not val.isdigit() or int(val) >= len(repos):
+                return self.send(chat, "send /new again")
+            import features
+            self.send(chat, f"cloning {repos[int(val)]}…")
+            try:
+                r = features.repo_ws(uid, repos[int(val)])
+            except Exception as e:
+                return self.send(chat, f"error: {getattr(e, 'detail', e)}")
+            try:
+                w = self.runner.get(uid, st.get("worker", "")) if self.runner else None
+            except KeyError:
+                w = None
+            self.new_in(chat, uid, st, w, r["ws"], r["repo"])
         elif kind == "w":
             st["ws"] = val
             st.pop("worker", None)

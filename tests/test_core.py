@@ -729,6 +729,33 @@ def test_each_chat_keeps_its_model():
     s.config["model"] = "m"
 
 
+def test_tests_off_drops_checking_steps():
+    s = make()
+    s.config["settings"]["behavior"] = {"tests": False}
+    ag = me.Agent(s, lambda e: None)
+    ag.session["messages"].append({"role": "user", "content": "сделай игру змейка"})
+    ok, out, _ = ag._todo({"items": ["> написать игру", "Тестирование", "Проверить, что всё работает", "Check the existing API code"]})
+    assert [i["t"] for i in ag.session["todo"]] == ["написать игру", "Check the existing API code"] and "Removed checking steps" in out, out
+    assert "how the user can check it" in ag.system_prompt() and "rerun to prove it" not in ag.system_prompt()
+    ag.session["messages"].append({"role": "user", "content": "now write tests for it"})
+    ag._todo({"items": ["write tests", "run them"]})
+    assert len(ag.session["todo"]) == 2  # asked for: kept
+    s.config["settings"]["behavior"] = {}
+    ag.session["messages"].append({"role": "user", "content": "сделай игру"})
+    ag._todo({"items": ["написать", "Тестирование"]})
+    assert len(ag.session["todo"]) == 2  # self-testing on: kept
+
+
+def test_github_mode_prompt():
+    os.environ.update(ME_GIT_REPO="octo/app", ME_GIT_BASE="dev")
+    try:
+        p = me.Agent(make(), lambda e: None).system_prompt()
+        assert "GitHub mode" in p and "octo/app" in p and "origin/dev" in p and "Never push to dev" in p
+    finally:
+        os.environ.pop("ME_GIT_REPO"), os.environ.pop("ME_GIT_BASE")
+    assert "GitHub mode" not in me.Agent(make(), lambda e: None).system_prompt()
+
+
 def test_todo_marks_by_number_and_reminds():
     s = make()
     ag, ev = run(s, "tool:todo " + json.dumps({"items": ["read", "fix", "test"]}))

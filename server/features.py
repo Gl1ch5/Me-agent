@@ -6,11 +6,11 @@
 - Preview: /preview/<signed token>/<path> serves a workspace's files; /preview/<token>/port/… proxies the sandbox's dev server ($PORT).
 - Telegram: every user may run their own bot (token in the account); notify() sends through it (or the global bot).
 """
-import base64, hashlib, hmac, json, os, re, secrets, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+import base64, hashlib, hmac, html, json, os, re, secrets, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import cloud
@@ -549,16 +549,22 @@ class GhToken(BaseModel):
     token: str
 
 
-def _gh_user(tok):
-    req = urllib.request.Request("https://api.github.com/user", headers={"Authorization": "Bearer " + tok, "User-Agent": "me",
-                                                                        "Accept": "application/vnd.github+json"})
+def _gh(tok, path, data=None, method=None):
+    req = urllib.request.Request("https://api.github.com" + path, data=json.dumps(data).encode() if data is not None else None, method=method,
+                                 headers={"Authorization": "Bearer " + tok, "User-Agent": "me", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read())["login"]
+        return json.loads(r.read() or b"null")
 
 
-def _set_secret(uid, key, value):
+def _gh_user(tok):
+    return _gh(tok, "/user")["login"]
+
+
+def _set_secret(uid, key, value, only_new=False):
     cfg = user_config(uid) or {}
     sec = cfg.setdefault("secrets", {})
+    if only_new and sec.get(key):
+        return
     if value:
         sec[key] = value
     else:
@@ -566,40 +572,178 @@ def _set_secret(uid, key, value):
     put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
 
 
+def _gh_token(uid):
+    tok = (user_config(uid).get("secrets") or {}).get("GITHUB_TOKEN")
+    if not tok:
+        raise HTTPException(400, "GitHub is not connected")
+    return tok
+
+
+def _gh_skill(uid):
+    """The github skill is the PR/issue/CI half of the integration: install it, or refresh a copy from before pr_checks existed."""
+    have = conn.execute("SELECT content FROM docs WHERE user_id=? AND key='skill/github.py' AND deleted=0", (uid,)).fetchone()
+    other = conn.execute("SELECT 1 FROM docs WHERE user_id=? AND key LIKE 'skill/github.%' AND key!='skill/github.py' AND deleted=0", (uid,)).fetchone()
+    if other or (have and "def pr_checks" in have[0]):
+        return
+    for r in conn.execute("SELECT content FROM market WHERE name='github'"):
+        put_doc(uid, "skill/github.py", r[0])
+
+
+def _gh_connect(uid, tok):
+    """Store the token; commits made in the sandbox are signed as the GitHub user (noreply address)."""
+    u = _gh(tok, "/user")
+    for k, v in (("GITHUB_TOKEN", tok), ("GITHUB_LOGIN", u["login"])):
+        _set_secret(uid, k, v)
+    mail = f"{u['id']}+{u['login']}@users.noreply.github.com"
+    for k, v in (("GIT_AUTHOR_NAME", u.get("name") or u["login"]), ("GIT_AUTHOR_EMAIL", mail),
+                 ("GIT_COMMITTER_NAME", u.get("name") or u["login"]), ("GIT_COMMITTER_EMAIL", mail)):
+        _set_secret(uid, k, v, only_new=True)
+    _gh_skill(uid)
+    return u["login"]
+
+
+def gh_app():
+    """OAuth app of this server (admin → GitHub sign-in, or GH_CLIENT_ID / GH_CLIENT_SECRET): sign in with GitHub in a popup."""
+    return (os.environ.get("GH_CLIENT_ID") or setting("gh_client_id"), os.environ.get("GH_CLIENT_SECRET") or setting("gh_client_secret"))
+
+
 @app.get("/api/github")
 def github_state(u=Depends(user)):
+    oauth = all(gh_app())
     tok = (user_config(u["id"]).get("secrets") or {}).get("GITHUB_TOKEN")
     if not tok:
-        return {"connected": False}
+        return {"connected": False, "oauth": oauth}
     try:
-        return {"connected": True, "login": _gh_user(tok)}
+        return {"connected": True, "login": _gh_user(tok), "oauth": oauth}
     except Exception as e:
-        return {"connected": True, "login": None, "error": str(e)[:200]}
+        return {"connected": True, "login": None, "error": str(e)[:200], "oauth": oauth}
 
 
 @app.post("/api/github")
 def github_connect(t: GhToken, u=Depends(user)):
-    tok = t.token.strip()
     try:
-        login = _gh_user(tok)
+        login = _gh_connect(u["id"], t.token.strip())
     except Exception as e:
         raise HTTPException(400, f"GitHub rejected the token: {e}")
-    _set_secret(u["id"], "GITHUB_TOKEN", tok)
-    for r in conn.execute("SELECT id, content FROM market WHERE name='github'"):  # the github skill is the PR/issue half of the integration
-        if not conn.execute("SELECT 1 FROM docs WHERE user_id=? AND key LIKE 'skill/github.%' AND deleted=0", (u["id"],)).fetchone():
-            put_doc(u["id"], "skill/github.py", r["content"])
     return {"ok": True, "login": login}
 
 
 @app.delete("/api/github")
 def github_disconnect(u=Depends(user)):
-    _set_secret(u["id"], "GITHUB_TOKEN", "")
+    for k in ("GITHUB_TOKEN", "GITHUB_LOGIN"):
+        _set_secret(u["id"], k, "")
     return {"ok": True}
+
+
+_gh_states = {}  # OAuth state -> (uid, expires)
+
+
+def gh_login_url(uid):
+    cid, sec = gh_app()
+    if not (cid and sec):
+        return None
+    now = time.time()
+    for k in [k for k, v in _gh_states.items() if v[1] < now]:
+        _gh_states.pop(k, None)
+    st = secrets.token_urlsafe(18)
+    _gh_states[st] = (uid, now + 900)
+    q = {"client_id": cid, "redirect_uri": f"{PUBLIC or 'http://127.0.0.1:8790'}/api/github/callback", "scope": "repo workflow read:user",
+         "state": st, "allow_signup": "true"}
+    return "https://github.com/login/oauth/authorize?" + urllib.parse.urlencode(q)
+
+
+@app.post("/api/github/oauth")
+def github_oauth(u=Depends(user)):
+    url = gh_login_url(u["id"])
+    if not url:
+        raise HTTPException(400, "GitHub sign-in is not set up on this server — paste a token instead")
+    return {"url": url}
+
+
+GH_DONE = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<body style="font:16px system-ui;background:#111;color:#eee;display:grid;place-items:center;height:90vh;margin:0;text-align:center">
+<div><h2>%s</h2><p>%s</p></div><script>try{opener&&opener.postMessage({github:%s},"*")}catch(e){}setTimeout(()=>close(),%d)</script>"""
+
+
+@app.get("/api/github/callback")
+def github_callback(code: str = "", state: str = ""):
+    uid, exp = _gh_states.pop(state, (None, 0))
+    if not uid or exp < time.time() or not code:
+        return HTMLResponse(GH_DONE % ("GitHub: link expired", "Start the sign-in again from me.", "false", 8000), 400)
+    cid, sec = gh_app()
+    try:
+        req = urllib.request.Request("https://github.com/login/oauth/access_token", headers={"Accept": "application/json", "User-Agent": "me"},
+                                     data=urllib.parse.urlencode({"client_id": cid, "client_secret": sec, "code": code}).encode())
+        with urllib.request.urlopen(req, timeout=20) as r:
+            tok = json.loads(r.read()).get("access_token")
+        login = _gh_connect(uid, tok)
+    except Exception as e:
+        return HTMLResponse(GH_DONE % ("GitHub: sign-in failed", html.escape(str(e))[:300], "false", 15000), 400)
+    notify_changes(uid)
+    return HTMLResponse(GH_DONE % ("GitHub connected ✓", f"Signed in as <b>{html.escape(login)}</b>. You can close this window.", "true", 1500))
+
+
+@app.get("/api/github/repos")
+def github_repos(q: str = "", u=Depends(user)):
+    rs = _gh(_gh_token(u["id"]), "/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator,organization_member")
+    q = q.lower().strip()
+    return [{"repo": r["full_name"], "private": r["private"], "branch": r["default_branch"], "desc": (r.get("description") or "")[:120],
+             "pushed": r.get("pushed_at")} for r in rs if q in r["full_name"].lower()][:50]
+
+
+class GhSession(BaseModel):
+    repo: str
+    branch: str = ""
+
+
+def repo_ws(uid, repo, branch=""):
+    """The workspace holding a clone of owner/repo: reused (fetched) when there is one, else created and cloned."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise HTTPException(400, "repo must be owner/name")
+    idx = cloud.me.jload(cloud.ws_meta_path(uid), {}) or {}
+    wid = next((k for k, m in idx.items() if (m.get("repo") or "").lower() == repo.lower()), None)
+    tok = _gh_token(uid)
+    base = branch or _gh(tok, f"/repos/{repo}")["default_branch"]
+    env = cloud.me.shell_env(user_config(uid).get("secrets"))
+    if wid and (cloud.ws_root(uid, wid) / ".git").is_dir():
+        subprocess.run(["git", "-C", str(cloud.ws_root(uid, wid)), "fetch", "--quiet", "origin"], capture_output=True, env=env, timeout=120)
+    else:
+        if not wid:
+            name = repo if repo not in (m["name"] for m in idx.values()) else f"{repo} ({secrets.token_hex(2)})"
+            wid = cloud.ws_create(uid, name)["id"]
+        _clone(uid, wid, f"https://github.com/{repo}", base)
+    idx = cloud.me.jload(cloud.ws_meta_path(uid), {}) or {}
+    idx[wid].update(repo=repo, base=base)
+    cloud.me.jsave(cloud.ws_meta_path(uid), idx)
+    _gh_skill(uid)
+    notify_changes(uid)
+    return {"ws": wid, "name": idx[wid]["name"], "repo": repo, "base": base}
+
+
+@app.post("/api/github/session")
+def github_session(g: GhSession, u=Depends(user)):
+    """New session on a GitHub repo: the agent then branches, commits, pushes and opens PRs on its own."""
+    return repo_ws(u["id"], g.repo.strip(), g.branch.strip())
 
 
 class Clone(BaseModel):
     url: str
     branch: str = ""
+
+
+def _clone(uid, wid, url, branch=""):
+    root = cloud.ws_root(uid, wid)
+    root.mkdir(parents=True, exist_ok=True)
+    name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1])
+    dest = root if not any(root.iterdir()) else root / name
+    if dest.exists() and dest != root:
+        raise HTTPException(409, f"{name}/ already exists in this workspace")
+    env = cloud.me.shell_env(user_config(uid).get("secrets"))
+    cmd = ["git", "clone", "--depth", "50", "--no-single-branch", *(["--branch", branch] if branch else []), url, str(dest)]
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+    if r.returncode:
+        raise HTTPException(400, (r.stderr or r.stdout).strip()[-600:])
+    return dest
 
 
 @app.post("/api/ws/{wid}/clone")
@@ -611,18 +755,9 @@ def ws_clone(wid: str, c: Clone, u=Depends(user)):
         url = f"https://github.com/{url}"
     if not re.fullmatch(r"https://[\w.-]+/[\w./-]+?(\.git)?", url):
         raise HTTPException(400, "give an https git URL or owner/repo")
-    root = cloud.ws_root(u["id"], wid)
-    name = re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1])
-    dest = root if not any(root.iterdir()) else root / name
-    if dest.exists() and dest != root:
-        raise HTTPException(409, f"{name}/ already exists in this workspace")
-    env = cloud.me.shell_env(user_config(u["id"]).get("secrets"))
-    cmd = ["git", "clone", "--depth", "50", *(["--branch", c.branch] if c.branch else []), url, str(dest)]
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
-    if r.returncode:
-        raise HTTPException(400, (r.stderr or r.stdout).strip()[-600:])
+    dest = _clone(u["id"], wid, url, c.branch)
     notify_changes(u["id"])
-    return {"ok": True, "path": "." if dest == root else name}
+    return {"ok": True, "path": "." if dest == cloud.ws_root(u["id"], wid) else dest.name}
 
 
 # ─── PWA: the web app installs to the home screen (same manifest/worker as `me web`) ───

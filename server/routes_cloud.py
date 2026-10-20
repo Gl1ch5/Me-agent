@@ -276,6 +276,8 @@ def user_themes(u=Depends(user)):
 
 class AdminSettings(BaseModel):
     tg_token: str | None = None
+    gh_client_id: str | None = None
+    gh_client_secret: str | None = None
 
 
 def _admin(u):
@@ -287,6 +289,7 @@ def _admin(u):
 def admin_settings(u=Depends(user)):
     _admin(u)
     return {"tg_token_set": bool(setting("tg_token")), "tg_bot": bot.username, "max_workers": cloud.MAX_WORKERS, "sandbox": bool(cloud.SANDBOX),
+            "gh_client_id": setting("gh_client_id"), "gh_secret_set": bool(setting("gh_client_secret")),
             "workers": [w.info() | {"user": w.username} for w in cloud.runner.workers.values() if w.alive]}
 
 
@@ -300,6 +303,9 @@ def admin_settings_set(a: AdminSettings, u=Depends(user)):
         except Exception as e:
             raise HTTPException(400, f"telegram: {e}")
         setting("tg_token", a.tg_token.strip())
+    for k in ("gh_client_id", "gh_client_secret"):  # GitHub OAuth app: "sign in with GitHub" for every user
+        if getattr(a, k) is not None:
+            setting(k, getattr(a, k).strip())
     return {"ok": True, "tg_bot": bot.username}
 
 

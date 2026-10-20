@@ -49,7 +49,7 @@ def ws_list(uid):
         root = ws_root(uid, wid)
         files = me.ws_scan(root) if root.exists() else {}
         size = sum((root / p).stat().st_size for p in files if (root / p).exists())
-        out.append({"id": wid, "name": m["name"], "files": len(files), "bytes": size, "created": m.get("created"),
+        out.append({"id": wid, "name": m["name"], "files": len(files), "bytes": size, "created": m.get("created"), "repo": m.get("repo"),
                     "updated": max([t for _, t in files.values()] or [m.get("created", 0)])})
     return sorted(out, key=lambda w: -w["updated"])
 
@@ -172,6 +172,9 @@ class Worker:
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONUNBUFFERED": "1", "ME_YOLO": "1", "ME_WS_LOCAL": "1",
                "ME_WS_ID": wid, "ME_SERVER": API, "TERM": "dumb", "PORT": str(self.port), "ME_RPC_IN": "/run/me.in",
                "ME_PREVIEW": f"{PUBLIC or 'http://127.0.0.1:8790'}/preview/{preview_token(uid, wid)}"}
+        meta = (me.jload(ws_meta_path(uid), {}) or {}).get(wid) or {}
+        if meta.get("repo"):  # a GitHub session: the agent branches, pushes and opens PRs on its own
+            env.update(ME_GIT_REPO=meta["repo"], ME_GIT_BASE=meta.get("base") or "main")
         inner = ["python3", "-I", "/opt/me.py" if SANDBOX else str(CLIENT), "--rpc"]
         limits = ["prlimit", "--as=4000000000", "--nproc=256", "--fsize=200000000", "--nofile=1024", "--", "nice", "-n", "10"]
         if SANDBOX:

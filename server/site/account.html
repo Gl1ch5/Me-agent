@@ -275,6 +275,8 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     <div class="card"><h2>server</h2><div class="stats" id="srv"></div></div>
     <div class="card"><h2>telegram bot</h2><p class="dim" style="margin-bottom:10px">Create a bot with @BotFather and paste its token. Users connect it from the cloud tab.</p>
       <div class="row" style="flex-wrap:nowrap"><input id="tgtok" type="password" onfocus="this.type='text'" placeholder="123456:ABC…"><button onclick="saveTg()">save</button></div><div class="err" id="tge"></div></div>
+    <div class="card"><h2>GitHub sign-in</h2><p class="dim" style="margin-bottom:10px">Create an OAuth app at <a href="https://github.com/settings/developers" target="_blank" style="color:var(--a)">github.com/settings/developers</a> with callback URL <code id="ghcb"></code>, then paste its client ID and secret. Users then connect GitHub with one click.</p>
+      <div class="row" style="flex-wrap:nowrap"><input id="ghcid" placeholder="client ID"><input id="ghcsec" type="password" onfocus="this.type='text'" placeholder="client secret"><button onclick="saveGhApp()">save</button></div><div class="err" id="ghae"></div></div>
     <div class="card"><h2>cloud sandboxes</h2><table id="aworkers"></table></div>
     <div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
   </div>
@@ -355,6 +357,8 @@ const pl = (n, a, b, c) => { n = Math.abs(n) % 100; const d = n % 10; return n >
 const RU_D = {
   "overview": "обзор", "cloud": "облако", "models & keys": "модели и ключи", "skills": "навыки", "plugins": "плагины", "marketplace": "маркетплейс", "sessions": "сессии", "workspaces": "рабочие области", "security": "безопасность", "admin": "админ",
   "work from anywhere": "работайте откуда угодно",
+  "sign in with GitHub": "войти через GitHub", "or paste a token:": "или вставьте токен:", "GitHub sign-in": "вход через GitHub", "GitHub connected": "GitHub подключён", "client ID": "client ID", "client secret": "client secret", "secret set": "секрет задан",
+  "Create an OAuth app at ": "Создайте OAuth-приложение на ", " with callback URL ": " с callback URL ", ", then paste its client ID and secret. Users then connect GitHub with one click.": ", затем вставьте его client ID и секрет. Тогда пользователи подключают GitHub одной кнопкой.",
   "Open the agent in your browser — it runs in your cloud sandbox and syncs back to every machine.": "Откройте агента в браузере — он работает в вашей облачной песочнице и синхронизируется с каждой машиной.",
   "open web app →": "открыть веб-приложение →",
   "install on a new machine": "установка на новой машине",
@@ -942,8 +946,14 @@ async function loadGh() {
   $("ghstate").innerHTML = g.connected ? `<span class="tag on">${esc(g.login || "connected")}</span>` : '<span class="tag">not connected</span>';
   $("ghbody").innerHTML = g.connected
     ? `<div class="btns" style="margin-top:0">${g.error ? `<span class="err">${esc(g.error)}</span>` : `<span>signed in as <b>${esc(g.login)}</b></span>`}<button class="ghost sm" onclick="ghOff()">disconnect</button></div>`
-    : `<div class="row" style="flex-wrap:nowrap"><input id="ghtok" type="password" onfocus="this.type='text'" placeholder="github_pat_…"><button onclick="ghOn()">connect</button></div><div class="err" id="ghe"></div>`;
+    : (g.oauth ? `<div class="btns" style="margin-top:0"><button onclick="ghOauth()">sign in with GitHub</button><span class="dim">or paste a token:</span></div>` : "")
+      + `<div class="row" style="flex-wrap:nowrap"><input id="ghtok" type="password" onfocus="this.type='text'" placeholder="github_pat_…"><button class="${g.oauth ? "ghost" : ""}" onclick="ghOn()">connect</button></div><div class="err" id="ghe"></div>`;
 }
+function ghOauth() {  // GitHub asks for access in a popup; it posts back and closes itself
+  const win = open("about:blank", "gh", "width=640,height=760");
+  api("/api/github/oauth", {}).then(r => { if (win) win.location = r.url; else location.href = r.url; }).catch(e => { win && win.close(); $("ghe").textContent = e.message; });
+}
+addEventListener("message", async e => { if (e.data && "github" in e.data && e.data.github) { toast("GitHub connected"); await loadCfg(); loadGh(); } });
 async function ghOn() { try { const r = await api("/api/github", {token: $("ghtok").value.trim()}); toast("GitHub: " + r.login); await loadCfg(); loadGh(); } catch (e) { $("ghe").textContent = e.message; } }
 async function ghOff() { await api("/api/github", undefined, "DELETE"); await loadCfg(); loadGh(); }
 
@@ -1109,11 +1119,17 @@ async function saveTg() {
   try { const r = await api("/api/admin/settings", {tg_token: $("tgtok").value}); $("tge").className = "err okmsg"; $("tge").textContent = r.tg_bot ? "bot @" + r.tg_bot + " is running" : "bot disabled"; }
   catch (e) { $("tge").className = "err"; $("tge").textContent = e.message; }
 }
+async function saveGhApp() {
+  const b = {gh_client_id: $("ghcid").value.trim()}; if ($("ghcsec").value.trim()) b.gh_client_secret = $("ghcsec").value.trim();
+  try { await api("/api/admin/settings", b); $("ghae").className = "err okmsg"; $("ghae").textContent = "saved"; $("ghcsec").value = ""; }
+  catch (e) { $("ghae").className = "err"; $("ghae").textContent = e.message; }
+}
 async function loadAdmin() {
   const [st, ss] = await Promise.all([api("/api/admin/stats"), api("/api/admin/settings")]);
   $("srv").innerHTML = [["load", st.load[0].toFixed(2) + " / " + st.cpus + " cpu"], ["memory free", st.mem_avail_mb + " / " + st.mem_total_mb + " MB"], ["disk free", st.disk_free_gb + " GB"],
     ["sandboxes", st.workers + " / " + st.max_workers], ["isolation", ss.sandbox ? "bubblewrap" : "none"]].map(([l, v]) => `<div class="stat"><b style="font-size:17px">${v}</b><span>${l}</span></div>`).join("");
   $("tgtok").placeholder = ss.tg_token_set ? `configured · @${ss.tg_bot}` : "123456:ABC…";
+  $("ghcb").textContent = location.origin + "/api/github/callback"; $("ghcid").value = ss.gh_client_id || ""; $("ghcsec").placeholder = ss.gh_secret_set ? "secret set" : "client secret";
   $("aworkers").innerHTML = ss.workers.length ? "<tr><th>user</th><th>session</th><th>workspace</th><th>state</th><th>last</th></tr>" + ss.workers.map(w =>
     `<tr><td>${esc(w.user)}</td><td>${esc(w.title || "—")}</td><td class="dim">${esc(w.ws)}</td><td>${w.busy ? '<span class="tag a">working</span>' : '<span class="tag on">idle</span>'}</td><td class="dim">${ago(w.last)}</td></tr>`).join("")
     : '<tr><td class="dim">none running</td></tr>';
