@@ -30,8 +30,9 @@
 | `src/web/` | web chat UI (same code for local `me web` and cloud `/app`; `02_transport.js` switches local vs cloud) |
 | `server/app.py` | FastAPI: auth, docs sync, marketplace (seeded from `server/market/` on start), `/me.py`, site pages |
 | `server/cloud.py`, `routes_cloud.py` | cloud sandboxes (bubblewrap, `me.py --rpc` via FIFO), `/api/cloud/*` |
-| `server/features.py`, `tgbot.py` | push, jobs/schedules, previews, notify; Telegram bot |
-| `server/market/` | marketplace items: `agent-*.md`, skills `*.md`/`*.py`, `theme-*.json`, plugins. Agents: `skills:` names skills installed with them; `cli.<tool>` commands run in the foreground and obey the self-testing switch (`CHECK_RX`) |
+| `server/features.py` | push, jobs/schedules (also `later` reminders), previews, notify, GitHub (OAuth, repo sessions, `POST /api/github/repos` creates a repo, cloning empty repos) |
+| `server/tgbot.py`, `tg_commands.py`, `tg_i18n.py` | Telegram bot: link codes, mirroring with an "open this session" button, a recap of earlier messages when a session is opened, slash commands (`/newrepo`, `/jobs`…), RU strings |
+| `server/market/` | marketplace items: `agent-*.md`, skills `*.md`/`*.py`, `theme-*.json`, plugins. Agents: `skills:` names skills installed with them; `cli.<tool>` commands run in the foreground and obey the self-testing switch (`CHECK_RX`). `server.py` is the **server** plugin: SSH via paramiko, with nothing installed on the remote host. It has one `server` tool (it asks before risky actions), `/server`, and `me server` (an interactive shell, or a single action from the CLI). Settings are `config.server` = `{host, user, port, password}` |
 | `server/site/` | landing, account (settings, models, marketplace UI), changelog |
 | `apps/studio/me_studio.py` + `studio.html` | **me studio** desktop app (pywebview, falls back to the browser): parallel tasks in git worktrees |
 | `apps/desktop`, `apps/android`, `apps/vscode` | desktop wrapper, Android WebView app, VS Code extension |
@@ -73,6 +74,9 @@
 - Cloud web: each chat runs in a sandbox worker. A new chat while the worker is busy starts a new worker (`A.newChat` in `02_transport.js`).
 - Live eval: `ME_HOME=~/.me python3 tests/eval_live.py --model NAME [--only a,b]` runs real models on 14 small repo tasks (needs API keys; copies the config, never syncs). Each task dir keeps `.eval.log`.
 - Agent nudges (`_aux` user messages): VERIFY, ACT (code pasted instead of written), todo reminder/self-check, LOOP; `looping()` in the provider stops a reply that repeats itself. `todo_parse` accepts the many item shapes models send — add a case there, don't tighten the schema.
+- Plugins register `@plugin.tool` (`confirm` may be a function of the args), `@plugin.command`, `@plugin.cli(name)` (runs as `me name …`) and `@plugin.on(event)`.
+- Each cloud sandbox gets its own API token (`runner_token`). Never revoke the other sandboxes' tokens: a running sandbox would get `invalid token` on notify, sync and later. Old tokens expire after 14 days without use.
+- Skill hints are skipped for questions (`is_question` in `06_skills.py`).
 - `later` tool (only when logged in): a reminder or cron job that continues this chat. It is a `jobs` row with `chat` = session id, and `run_job` resumes that session in the cloud. With `fresh=1` it starts a new chat in the same workspace instead.
 - `@path[:a-b]` in a message attaches the file (`Agent.mentions`). The web UI in an iframe (`?embed=vscode`) talks to the VS Code extension via `postMessage` (`meOut` up, `insert`/`send`/`new` down).
 - CLI: `me "task"`, `me -c` (continue the newest chat in this folder), `me -m NAME`, piped stdin joins a `-p` task; `-p` piped prints only the final answer to stdout.

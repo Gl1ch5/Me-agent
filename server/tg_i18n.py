@@ -54,6 +54,8 @@ RU = {
     "This link has expired or belongs to another bot. Open your account on the me site → Telegram → connect.":
         "Ссылка устарела или от другого бота. Откройте аккаунт на сайте me → Telegram → подключить.",
     "Not linked yet. Open your account on the me site → Telegram → connect.": "Чат ещё не подключён. Откройте аккаунт на сайте me → Telegram → подключить.",
+    "You're connected. Write a task — it runs in your cloud sandbox. /help for commands.":
+        "Чат подключён. Напишите задачу — она выполнится в облачной песочнице. /help — команды.",
     "You are linked. /help for commands.": "Чат подключён. Команды — /help.",
     "↶ the last turn's files are restored": "↶ файлы последнего ответа восстановлены", "nothing to retry yet": "пока нечего повторять", "behavior:": "поведение агента:", "agent mode:": "режим агента:", "reasoning effort:": "глубина рассуждений:",
     "usage: /rename <title>": "использование: /rename <название>", "usage: /search <text>": "использование: /search <текст>",

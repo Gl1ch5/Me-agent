@@ -80,7 +80,8 @@ def ws_file(wid: str, path: str, u=Depends(user)):
 
 
 def runner_token(uid):
-    conn.execute("DELETE FROM tokens WHERE user_id=? AND device='cloud sandbox'", (uid,))
+    """Each sandbox has its own token: a new one must not log out the others still running (notify, sync, later)."""
+    conn.execute("DELETE FROM tokens WHERE user_id=? AND device='cloud sandbox' AND used<?", (uid, time.time() - 14 * 86400))
     return new_token(uid, "cloud sandbox")
 
 

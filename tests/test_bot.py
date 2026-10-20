@@ -135,9 +135,15 @@ def test_link_code_survives_restart():
     b2 = bot(conn)  # a new process: the code lives in the database
     b2.handle(msg(9, f"/start {code}"))
     assert b2.uid_for(9) == 1
-    b2.handle(msg(9, f"/start {code}"))  # one-time
-    assert "expired" in b2.out[-1][1]
-    print("ok   link code works after a restart and is one-time")
+    b2.handle(msg(9, f"/start {code}"))  # one-time; the chat is linked already, so it just says so
+    assert "connected" in b2.out[-1][1] and b2.uid_for(9) == 1
+    b2.handle(msg(9, "/start"))
+    assert "connected" in b2.out[-1][1]
+    b2.handle(msg(8, "/start"))
+    assert "Not linked" in b2.out[-1][1]
+    b2.handle(msg(8, f"/start {code}"))
+    assert "expired" in b2.out[-1][1] and b2.uid_for(8) is None
+    print("ok   link code works after a restart and is one-time; /start in a linked chat just greets")
 
 
 def test_link_code_for_other_bot_rejected():
