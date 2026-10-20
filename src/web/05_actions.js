@@ -88,7 +88,7 @@ async function pickRepo(gh) {
   try { repos = await api("/api/github/repos"); } catch (e) { $("rlist").innerHTML = `<p class="phint">${esc(e.message)}</p>`; return; }
   const draw = () => {
     const q = $("rsearch").value.trim().toLowerCase(), hit = repos.filter(r => r.repo.toLowerCase().includes(q));
-    $("rlist").innerHTML = hit.slice(0, 30).map(r => `<button data-r="${esc(r.repo)}"><span>${r.private ? "🔒" : "○"}</span><b>${esc(r.repo)}</b><span class="d">${esc(r.desc || r.branch)}</span></button>`).join("")
+    $("rlist").innerHTML = hit.slice(0, 30).map(r => `<button data-r="${esc(r.repo)}"><span>${r.private ? "◆" : "○"}</span><b>${esc(r.repo)}</b><span class="d">${esc(r.desc || r.branch)}</span></button>`).join("")
       || (/^[\w.-]+\/[\w.-]+$/.test(q) ? `<button data-r="${esc(q)}"><span>○</span><b>${esc(q)}</b></button>` : `<p class="phint">${esc(t("nothing found"))}</p>`);
   };
   $("rlist").onclick = e => { const b = e.target.closest("button[data-r]"); if (b) { $("popup").classList.add("hidden"); startRepo(b.dataset.r); } };
