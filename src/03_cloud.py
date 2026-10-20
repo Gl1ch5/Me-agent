@@ -162,7 +162,7 @@ class Cloud:
         """Background thread: long-polls the server and syncs the moment anything changes elsewhere.
         Never blocks the caller; survives network errors."""
         def loop():
-            wscur = -1
+            wscur, pause = -1, 10
             while True:
                 if not self.online:
                     time.sleep(5)
@@ -171,8 +171,10 @@ class Cloud:
                 try:
                     r = self.req("GET", f"/api/changes?cursor={cur}&ws={wscur}&wait=25", timeout=40)
                 except CloudError:
-                    time.sleep(10)
+                    time.sleep(pause)  # back off: a revoked token or a server that is down is not hammered every 10 s
+                    pause = min(pause * 2, 300)
                     continue
+                pause = 10
                 if on_version and r.get("version") and r["version"] != VERSION:
                     on_version(r["version"])
                 if r.get("ws_changed") and on_ws:

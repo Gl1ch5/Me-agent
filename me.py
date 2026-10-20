@@ -16,7 +16,7 @@ import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threadi
 import urllib.error, urllib.parse, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.13.7"
+VERSION = "0.13.8"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -442,7 +442,7 @@ class Cloud:
         """Background thread: long-polls the server and syncs the moment anything changes elsewhere.
         Never blocks the caller; survives network errors."""
         def loop():
-            wscur = -1
+            wscur, pause = -1, 10
             while True:
                 if not self.online:
                     time.sleep(5)
@@ -451,8 +451,10 @@ class Cloud:
                 try:
                     r = self.req("GET", f"/api/changes?cursor={cur}&ws={wscur}&wait=25", timeout=40)
                 except CloudError:
-                    time.sleep(10)
+                    time.sleep(pause)  # back off: a revoked token or a server that is down is not hammered every 10 s
+                    pause = min(pause * 2, 300)
                     continue
+                pause = 10
                 if on_version and r.get("version") and r["version"] != VERSION:
                     on_version(r["version"])
                 if r.get("ws_changed") and on_ws:
