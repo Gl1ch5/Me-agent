@@ -451,25 +451,41 @@ def test_search_key_asked_once_and_set():
     print("ok   no search key: the bot asks once for a free Tavily key; /searchkey stores several")
 
 
-def test_new_topic_stays_in_project():
-    """A session in a new topic starts in the project the chat used, not in the default 'cloud' one."""
+def test_new_session_picks_project(tmp=None):
+    """/new offers this project and the ones of the latest sessions; a pick starts the session there, a hand-made topic keeps the chat's."""
+    import tempfile
+    import cloud
+    tmp = Path(tmp or tempfile.mkdtemp())
+    (tmp / "idx.json").write_text(json.dumps({"cloud-1": {"name": "cloud", "created": 3}, "f1-mods": {"name": "f1 mods", "created": 1},
+                                              "site-2": {"name": "site", "created": 2}}))
+    orig, cloud.ws_meta_path = cloud.ws_meta_path, lambda uid: tmp / "idx.json"
+    conn = db()
     w = FakeWorker("w1")
     w.wid, w.alive = "f1-mods", True
-    b = bot(w=w)
+    b = bot(conn, w)
     link(b, 4)
+    conn.execute("INSERT INTO docs VALUES(1,'session/a',?,5,0,0,0)", (json.dumps({"id": "a", "ws": "site-2"}),))
     starts = []
     b.runner.start = lambda uid, user, tok, wid=None, session=None: (starts.append(wid), w)[1]
     b.users = lambda uid: {"username": "u"}
-    b.worker(4, 1)
-    b.topics = True
-    b.call = lambda m, **k: {"message_thread_id": 77} if m == "createForumTopic" else {}
-    b.handle(msg(4, "/new"))
-    assert b.st(4, 77).get("ws") == "f1-mods", b.state
-    b.tl.thread = 88  # a topic made by hand in Telegram: nothing bound to it
-    b.worker(4, 1)
-    assert starts == [None, "f1-mods"], starts
-    b.tl.thread = 0
-    print("ok   /new and hand-made topics keep the chat's project")
+    try:
+        b.worker(4, 1)
+        b.handle(msg(4, "/new"))
+        kb = b.out[-1][2]["reply_markup"]["inline_keyboard"]
+        assert [r[0]["callback_data"] for r in kb] == ["n:f1-mods", "n:site-2", "n:cloud-1", "n:+"] and kb[0][0]["text"] == "● f1 mods", kb
+        b.handle({"callback_query": {"id": "q", "data": "n:site-2", "message": {"chat": {"id": 4}, "message_id": 9}}})
+        assert b.st(4, 0)["ws"] == "site-2" and "worker" not in b.st(4, 0), b.state
+        b.topics = True
+        b.call = lambda m, **k: {"message_thread_id": 77} if m == "createForumTopic" else {}
+        b.handle({"callback_query": {"id": "q", "data": "n:f1-mods", "message": {"chat": {"id": 4}, "message_id": 9}}})
+        assert b.st(4, 77).get("ws") == "f1-mods", b.state
+        b.tl.thread = 88  # a topic made by hand in Telegram: nothing bound to it
+        b.worker(4, 1)
+        assert starts == [None, "f1-mods"], starts
+    finally:
+        cloud.ws_meta_path = orig
+        b.tl.thread = 0
+    print("ok   /new offers the recent projects; a hand-made topic keeps the chat's project")
 
 
 def test_russian():

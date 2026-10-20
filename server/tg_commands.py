@@ -57,13 +57,35 @@ class TgCommands:
                   + "\n".join(f"/{c} — {tr(d, lang)}" for c, d in COMMANDS))
 
     def cmd_new(self, chat, uid, st, w, arg):
-        st.setdefault("ws", (w.wid if w else None) or self.st(chat, 0).get("ws_last"))  # a new session stays in this project
-        t = self.new_topic(chat, arg or "new chat", ws=st.get("ws"))
+        cur = st.get("ws") or (w.wid if w else None) or self.st(chat, 0).get("ws_last")
+        if arg:  # /new <title>: straight away, in this project
+            return self.new_in(chat, uid, st, w, cur, arg)
+        kb = [[{"text": ("● " if wid == cur else "📁 ") + name, "callback_data": "n:" + wid}] for wid, name in self.recent_ws(uid, cur)]
+        self.send(chat, "new session in:", reply_markup={"inline_keyboard": kb + [[{"text": "+ new project", "callback_data": "n:+"}]]})
+
+    def recent_ws(self, uid, cur=None, n=5):
+        """[(id, name)]: this project first, then the projects of the latest sessions, then the newest projects."""
+        from cloud import me as client, ws_meta_path
+        idx = client.jload(ws_meta_path(uid), {}) or {}
+        used = [cur]
+        for (content,) in self.db.execute("SELECT content FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'session/%' ORDER BY ts DESC LIMIT 300", (uid,)):
+            m = re.search(r'"ws":\s*"([^"]+)"', content)
+            if m:
+                used.append(m.group(1))
+        used += sorted(idx, key=lambda k: -idx[k].get("created", 0))
+        return [(k, idx[k]["name"]) for k in dict.fromkeys(used) if k in idx][:n]
+
+    def new_in(self, chat, uid, st, w, ws, title="new chat"):
+        """A new session in the workspace `ws`: its own topic when topics are on, else here (a sandbox on that workspace)."""
+        t = self.new_topic(chat, title, ws=ws)
         if t:  # topics: the new session gets its own topic, the old one stays as it was
             return self.send(chat, "new session — write here", thread=t)
         st.pop("session", None)
-        if w:
+        if w and w.wid == ws:
             w.send({"type": "new"})
+        else:
+            st.pop("worker", None)
+        st["ws"] = ws
         self.send(chat, "new session")
 
     def cmd_stop(self, chat, uid, st, w, arg):
@@ -385,6 +407,17 @@ class TgCommands:
             if doc.get("ws"):
                 st["ws"] = doc["ws"]
             self.send(chat, "resumed — continue writing")
+        elif kind == "n":  # /new: the project was picked
+            self.tl.thread = q["message"].get("message_thread_id") if q["message"].get("is_topic_message") else 0
+            st = self.st(chat)
+            if val == "+":
+                from cloud import ws_create
+                val = ws_create(uid, "project " + time.strftime("%d.%m %H:%M"))["id"]
+            try:
+                w = self.runner.get(uid, st.get("worker", "")) if self.runner else None
+            except KeyError:
+                w = None
+            self.new_in(chat, uid, st, w, val)
         elif kind == "w":
             st["ws"] = val
             st.pop("worker", None)
