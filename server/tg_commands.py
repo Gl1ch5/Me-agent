@@ -12,7 +12,7 @@ COMMANDS = [
     ("compact", "summarize history"), ("rename", "rename this session"), ("export", "this session as a Markdown file"),
     ("search", "find text in all sessions"), ("sites", "published sites"), ("preview", "link to the site the agent built"),
     ("memory", "global notes: /memory, /memory forget <id>"), ("jobs", "background tasks: /jobs, /jobs run <id>"),
-    ("lang", "bot language: en / ru"), ("github", "GitHub connection status"), ("perm", "where tools run (cloud = isolated sandbox)"),
+    ("searchkey", "web search keys: Tavily (free), Exa, Brave"), ("lang", "bot language: en / ru"), ("github", "GitHub connection status"), ("perm", "where tools run (cloud = isolated sandbox)"),
     ("quiet", "stop mirroring other sessions into this chat"), ("help", "all commands"),
 ]
 EFFORTS = ("none", "low", "medium", "high", "xhigh")
@@ -57,6 +57,7 @@ class TgCommands:
                   + "\n".join(f"/{c} — {tr(d, lang)}" for c, d in COMMANDS))
 
     def cmd_new(self, chat, uid, st, w, arg):
+        st.setdefault("ws", (w.wid if w else None) or self.st(chat, 0).get("ws_last"))  # a new session stays in this project
         t = self.new_topic(chat, arg or "new chat", ws=st.get("ws"))
         if t:  # topics: the new session gets its own topic, the old one stays as it was
             return self.send(chat, "new session — write here", thread=t)
@@ -317,6 +318,31 @@ class TgCommands:
         user = self.users(uid)["username"]
         self.send(chat, "\n".join(f"{PUBLIC or 'https://me-agent.ru'}/s/{user}/{n}/" for n in names),
                   reply_markup={"inline_keyboard": [[{"text": "🗑 " + n, "callback_data": "x:" + n}] for n in names]})
+
+    def cmd_searchkey(self, chat, uid, st, w, arg):
+        from cloud import me as client
+        cfg = self.config(uid)
+        try:
+            msg = client.search_key(cfg, arg)
+        except ValueError as e:
+            return self.send(chat, str(e))
+        if arg:
+            from app import put_doc
+            put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
+        self.send(chat, msg.split(" — ")[0] if any(client.search_keys(cfg, a) for a in client.SEARCH_APIS) else client.SEARCH_ASK)
+
+    def ask_search_key(self, chat, uid):
+        """Once per account in Telegram: no web search key yet → ask for a free Tavily one."""
+        from cloud import me as client
+        cfg = self.config(uid)
+        sett = cfg.get("settings") or {}
+        if not cfg or "tg" in sett.get("search_asked", []) or any(client.search_keys(cfg, a) for a in client.SEARCH_APIS):
+            return
+        sett["search_asked"] = sorted(set(sett.get("search_asked", [])) | {"tg"})
+        cfg["settings"] = sett
+        from app import put_doc
+        put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
+        self.send(chat, client.SEARCH_ASK)
 
     def cmd_lang(self, chat, uid, st, w, arg):
         self.send(chat, "bot language:", reply_markup={"inline_keyboard": [[{"text": "Русский", "callback_data": "l:ru"},

@@ -354,7 +354,7 @@ def test_topics_one_session_each():
     assert b.calls[-1][1].get("message_thread_id") == 77  # the reply goes into the new topic
     b.bind_topic(4, 78, "s5", "ws1")
     b.tl.thread = 78
-    assert b.st(4)["session"] == "s5" and b.st(4, 0) == {}  # a topic remembers its session; the main chat is separate
+    assert b.st(4)["session"] == "s5" and "session" not in b.st(4, 0)  # a topic remembers its session; the main chat is separate
     b.tl.thread = 0
     b.calls.clear()
     assert b.mirror(1, "› from web", session="s5") == 1 and b.calls[-1][1]["message_thread_id"] == 78
@@ -430,6 +430,46 @@ def test_settings_from_chat():
     finally:
         del sys.modules["app"]
     print("ok   /behavior, /agent and /effort change the account settings from the chat")
+
+
+def test_search_key_asked_once_and_set():
+    conn = db()
+    b = bot(conn)
+    link(b, 4)
+    conn.execute("INSERT INTO docs VALUES(1,'config',?,0,0,0,0)", (json.dumps({"model": "m1", "settings": {}}),))
+    sys.modules["app"] = fake_app(conn)
+    try:
+        b.handle(msg(4, "/help"))
+        asks = [t for _, t, _ in b.out if "app.tavily.com" in t]
+        assert len(asks) == 1 and b.config(1)["settings"]["search_asked"] == ["tg"], b.out
+        b.handle(msg(4, "/help"))
+        assert len([t for _, t, _ in b.out if "app.tavily.com" in t]) == 1  # once
+        b.handle(msg(4, "/searchkey tvly-k1 tvly-k2"))
+        assert b.config(1)["search"]["tavily"] == ["tvly-k1", "tvly-k2"] and b.out[-1][1] == "search keys: tavily ×2", b.out[-1]
+    finally:
+        del sys.modules["app"]
+    print("ok   no search key: the bot asks once for a free Tavily key; /searchkey stores several")
+
+
+def test_new_topic_stays_in_project():
+    """A session in a new topic starts in the project the chat used, not in the default 'cloud' one."""
+    w = FakeWorker("w1")
+    w.wid, w.alive = "f1-mods", True
+    b = bot(w=w)
+    link(b, 4)
+    starts = []
+    b.runner.start = lambda uid, user, tok, wid=None, session=None: (starts.append(wid), w)[1]
+    b.users = lambda uid: {"username": "u"}
+    b.worker(4, 1)
+    b.topics = True
+    b.call = lambda m, **k: {"message_thread_id": 77} if m == "createForumTopic" else {}
+    b.handle(msg(4, "/new"))
+    assert b.st(4, 77).get("ws") == "f1-mods", b.state
+    b.tl.thread = 88  # a topic made by hand in Telegram: nothing bound to it
+    b.worker(4, 1)
+    assert starts == [None, "f1-mods"], starts
+    b.tl.thread = 0
+    print("ok   /new and hand-made topics keep the chat's project")
 
 
 def test_russian():

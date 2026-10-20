@@ -3,7 +3,7 @@
 COMMANDS = [
     ("help", "show commands & keys"), ("agent", "switch mode: code, design, plan, review…"), ("init", "create AGENTS.md for this project"), ("model", "switch model"), ("models", "add / edit / sync models"),
     ("provider", "add / edit API providers"), ("effort", "reasoning effort: none…xhigh"), ("prompt", "edit your system prompt"), ("behavior", "switches: self-testing, todo, web, plan first, brief…"),
-    ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("new", "new session"),
+    ("skills", "list / toggle / create skills"), ("plugins", "extensions that modify me"), ("secret", "set env secrets for skills"), ("searchkey", "web search keys: Tavily (free), Exa, Brave"), ("new", "new session"),
     ("sessions", "resume a past session"), ("workspace", "sync this project folder to the cloud"), ("clear", "clear screen + new session"), ("copy", "copy last answer"), ("compact", "summarize history to free context"), ("context", "what fills the context window"), ("autocompact", "auto-compact at N% of context (off)"),
     ("goal", "work autonomously until done+verified or blocked"), ("undo", "revert the files of the last turn"), ("retry", "take back the last request and run it again"),
     ("rewind", "go back to an earlier request (history + files)"), ("fork", "continue in a copy of this chat"),

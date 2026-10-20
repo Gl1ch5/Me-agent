@@ -11,6 +11,9 @@ RU = {
     "link to the site the agent built": "ссылка на сайт из песочницы", "published sites": "опубликованные сайты",
     "agent mode: code, design, plan…": "режим агента: code, design, plan…", "switches: self-testing, todo, web, brief…": "переключатели: самопроверка, todo, веб, краткость…",
     "reasoning effort": "глубина рассуждений", "rename this session": "переименовать сессию", "this session as a Markdown file": "сессия файлом Markdown",
+    "web search keys: Tavily (free), Exa, Brave": "ключи веб-поиска: Tavily (бесплатно), Exa, Brave",
+    "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY":
+        "Веб-поиск работает намного лучше с бесплатным ключом Tavily (1000 поисков в месяц): зарегистрируйтесь на https://app.tavily.com, скопируйте ключ и отправьте /searchkey tvly-… Можно добавить несколько ключей — они расходуются по очереди. Подходят и Exa, Brave: /searchkey exa КЛЮЧ",
     "find text in all sessions": "поиск по всем сессиям", "bot language: en / ru": "язык бота: en / ru",
     "where tools run (cloud = isolated sandbox)": "где работают инструменты", "GitHub connection status": "статус GitHub",
     "stop mirroring other sessions into this chat": "не дублировать сюда другие сессии", "all commands": "все команды",
@@ -56,6 +59,7 @@ RU = {
         "Напишите задачу — она выполнится в облачной песочнице. Голосовые, фото и файлы тоже работают.",
 }
 RU_RX = [
+    (re.compile(r"^search keys: "), lambda m: "ключи поиска: "),
     (re.compile(r"<summary>(\d+) steps?</summary>"), lambda m: f"<summary>шагов: {m[1]}</summary>"),
     (re.compile(r"_working… (\d+)s_"), lambda m: f"_работаю… {m[1]} с_"),
     (re.compile(r"_done · ([\d.]+)s · ([\d,]+) tokens_"), lambda m: f"_готово · {m[1]} с · {m[2]} токенов_"),

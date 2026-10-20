@@ -209,6 +209,10 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
             uid = self.uid_for(chat)
             if not uid:
                 return self.send(chat, "Not linked yet. Open your account on the me site → Telegram → connect.")
+            try:
+                self.ask_search_key(chat, uid)
+            except Exception:
+                pass
             images, files = [], []
             if m.get("voice") or m.get("audio"):
                 f = m.get("voice") or m.get("audio")

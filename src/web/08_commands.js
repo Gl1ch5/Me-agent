@@ -31,8 +31,27 @@ function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));
   else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === (model || cfg.model)); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
+  else if (key === "searchkey") searchKey(cfg, String(v || ""));
+  else if (key === "search_asked") cfg.settings.search_asked = [...new Set([...(cfg.settings.search_asked || []), String(v)])].sort();
   else if (key.startsWith("skill:")) { const d = new Set(cfg.settings.disabled_skills || []); v ? d.delete(key.slice(6)) : d.add(key.slice(6)); cfg.settings.disabled_skills = [...d].sort(); }
   else throw new Error("unknown setting " + key);
+}
+const SEARCH_APIS = ["tavily", "exa", "brave"];
+const SEARCH_ASK = "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY";
+function searchKey(cfg, a) {  // mirror of search_key() in the agent: add keys (several rotate) or clear them
+  const s = cfg.search = cfg.search || {}, w = a.split(/\s+/).filter(Boolean);
+  if (w[0] === "clear") { SEARCH_APIS.forEach(x => { if (!w[1] || w[1] === x) delete s[x]; }); return; }
+  const api = w.length && SEARCH_APIS.includes(w[0].toLowerCase()) ? w.shift().toLowerCase()
+    : !w.length ? null : w[0].startsWith("tvly-") ? "tavily" : w[0].startsWith("BSA") ? "brave" : /^[0-9a-f-]{36}$/.test(w[0]) ? "exa" : null;
+  if (!api || !w.length) throw new Error("usage: /searchkey tvly-… · /searchkey exa|brave KEY · /searchkey clear");
+  s[api] = [...new Set([...[].concat(s[api] || []).filter(Boolean), ...w])];
+}
+const searchCounts = cfg => Object.fromEntries(SEARCH_APIS.map(a => [a, [].concat((cfg.search || {})[a] || []).filter(Boolean).length]));
+function searchStatus() { const have = Object.entries(state.config?.search || {}).filter(([, n]) => n).map(([a, n]) => `${a} ×${n}`); return have.length ? "search keys: " + have.join(", ") : ""; }
+function askSearchKey() {  // once per surface: no search key yet → ask for a free Tavily one
+  const c = state.config || {};
+  if (!c.search || searchStatus() || (c.search_asked || []).includes("web")) return;
+  say(t(SEARCH_ASK)); cfgSet("search_asked", "web").catch(() => {});
 }
 async function cfgSet(key, value) {
   if (MODE === "local") { const s = await api(base + "/config", {key, value}); state.config = s.config; return; }
@@ -50,6 +69,10 @@ const site = (pane, what) => MODE === "cloud" ? (location.href = "/account#" + p
 const lastAnswer = () => { const m = [...log.querySelectorAll(".msg.md")].pop(); return m ? m.innerText : ""; };
 
 const CMDS = {
+  searchkey: ["web search keys: Tavily (free), Exa, Brave", "[tvly-…]", async a => {
+    if (!a) return searchStatus() ? note(searchStatus(), "ok") : say(t(SEARCH_ASK));
+    await cfgSet("searchkey", a); note(searchStatus(), "ok");
+  }],
   help: ["show commands & keys", "", () => say("## " + t("Commands") + "\n" + Object.entries(CMDS).map(([n, c]) => `- \`/${n}${c[1] ? " " + c[1] : ""}\` ${t(c[0])}`).join("\n")
     + "\n\n`enter` send · `shift+enter` newline · `esc` stop · `/` commands")],
   agent: ["switch agent", "[name]", a => { const x = (state.agents || []).find(g => g.name === a); x ? setAgent(x.name) : (a ? note(t("unknown command") + ": " + a, "err") : pickAgent()); }],

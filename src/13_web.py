@@ -43,6 +43,10 @@ def apply_setting(cfg, key, value, model=None):
         if not m:
             raise ValueError("no model")
         m["effort"] = "" if value in ("none", "", None) else str(value)
+    elif key == "searchkey":
+        return search_key(cfg, str(value or ""))
+    elif key == "search_asked":  # the "add a search key" note was shown on this surface (tui / web / tg)
+        st["search_asked"] = sorted(set(st.get("search_asked", [])) | {str(value)})
     elif key.startswith("skill:"):
         dis = set(st.get("disabled_skills", []))
         (dis.discard if value else dis.add)(key[6:])
@@ -104,7 +108,9 @@ class WebSession:
         ses = self.agent.session
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": self.agent.cwd, "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
                 "config": {"model": self.agent.model_name(), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
-                           "autocompact": self.s.config["settings"].get("autocompact", 80)},
+                           "autocompact": self.s.config["settings"].get("autocompact", 80),
+                           "search": {a: len(search_keys(self.s.config, a)) for a in SEARCH_APIS},
+                           "search_asked": self.s.config["settings"].get("search_asked", [])},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
                 "running": self.hub.running() if self.hub else ([ses.get("id")] if self.agent.busy else []),
@@ -222,9 +228,9 @@ class WebSession:
             dis = set(self.s.config["settings"].get("disabled_skills", []))
             return {"skills": [{"name": n, "description": k.get("description", ""), "on": n not in dis} for n, k in Skills(self.s).all().items()]}
         if path == "/config":
-            apply_setting(self.s.config, body["key"], body.get("value"), a.model_name())
+            msg = apply_setting(self.s.config, body["key"], body.get("value"), a.model_name())
             self.s.save()
-            return self.state()
+            return dict(self.state(), msg=msg or "")
         if path == "/themes":
             return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
         if path == "/theme":
