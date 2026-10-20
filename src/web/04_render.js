@@ -35,6 +35,8 @@ function diffHtml(t) { return t.split("\n").map(l => `<span class="${l[0] === "+
 function onEvent(e) {
   const t = e.type;
   if (t === "user") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }
+  if (t === "queued") { const b = [...log.querySelectorAll(".msg.user")].pop(); if (b && !b.querySelector(".qtag")) b.querySelector(".bub").insertAdjacentHTML("beforeend", `<span class="qtag">${tt("queued")}</span>`); return; }
+  if (t === "queued_sent") { log.querySelectorAll(".qtag").forEach(x => x.remove()); return; }
   if (t === "suggest") { if (!busy) setHint(e.text); return; }
   if (t === "turn_start") { setHint(""); if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }
   if (t === "reasoning") {
@@ -205,8 +207,9 @@ function setRunning(ids) {
 }
 setInterval(() => { if (base && !document.hidden) A.running().then(setRunning).catch(() => {}); }, 5000);
 function setBusy() {
-  $("sendIcon").innerHTML = busy ? I.stop : I.up;
-  $("send").disabled = !busy && !$("input").value.trim() && !atts.length;
+  const typed = $("input").value.trim() || atts.length;  // while working: text in the box → the button queues it, else it stops
+  $("sendIcon").innerHTML = busy && !typed ? I.stop : I.up;
+  $("send").disabled = !busy && !typed;
   if (busy && (!workEl || workEl.parentNode !== log)) {
     workEl = document.createElement("div"); workEl.className = "working";
     workEl.innerHTML = '<span class="spin"></span><span class="shimmer" data-t="working…">'+t('working…')+'</span><span class="el"></span>'; log.appendChild(workEl); scroll();

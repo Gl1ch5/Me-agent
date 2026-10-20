@@ -14,9 +14,9 @@ import acctlog
 DATA = Path(os.environ.get("ME_DATA", "/var/lib/me-agent"))
 CLIENT = Path(os.environ.get("ME_CLIENT", Path(__file__).resolve().parent.parent / "me.py"))
 API = os.environ.get("ME_INTERNAL_URL", "http://127.0.0.1:8790")
-MAX_WORKERS = int(os.environ.get("ME_MAX_WORKERS", "6"))
+MAX_WORKERS = int(os.environ.get("ME_MAX_WORKERS", "16"))  # no per-user cap: the server's free memory decides (MIN_FREE_MB)
+MIN_FREE_MB = int(os.environ.get("ME_MIN_FREE_MB", "350"))
 IDLE_SECS = int(os.environ.get("ME_IDLE_SECS", "900"))
-PER_USER = int(os.environ.get("ME_PER_USER", "3"))
 WS_QUOTA = 100 * 1024 * 1024
 SANDBOX = shutil.which("bwrap") and os.environ.get("ME_SANDBOX", "1") == "1"
 
@@ -370,6 +370,14 @@ def free_port():
     return 0
 
 
+def mem_free_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            return next(int(x.split()[1]) // 1024 for x in f if x.startswith("MemAvailable:"))
+    except (OSError, StopIteration, ValueError):
+        return 1 << 20
+
+
 class Runner:
     def __init__(self):
         self.workers = {}
@@ -412,17 +420,10 @@ class Runner:
                 if session and w.session == session:
                     return w
             alive = [w for w in self.workers.values() if w.alive]
-            if len(alive) >= MAX_WORKERS:
+            if len(alive) >= MAX_WORKERS or mem_free_mb() < MIN_FREE_MB:  # make room, but never interrupt a sandbox that is working
                 idle = sorted((w for w in alive if not w.busy), key=lambda w: w.last)
                 if not idle:
-                    raise RuntimeError("cloud is busy — all sandboxes are working, try again in a minute")
-                idle[0].stop()
-                self.workers.pop(idle[0].id, None)
-            mine = self.of_user(uid)
-            if len(mine) >= PER_USER:  # make room, but never interrupt a sandbox that is working
-                idle = sorted((w for w in mine if not w.busy), key=lambda w: w.last)
-                if not idle:
-                    raise RuntimeError(f"you already have {PER_USER} sandboxes working — wait for one to finish")
+                    raise RuntimeError("the cloud is at full capacity — all sandboxes are working, try again in a minute")
                 idle[0].stop()
                 self.workers.pop(idle[0].id, None)
             if not wid or not ws_exists(uid, wid):

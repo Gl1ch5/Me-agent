@@ -110,7 +110,7 @@ class TgCommands:
         if t:  # topics: the new session gets its own topic, the old one stays as it was
             return self.send(chat, "new session — write here", thread=t)
         st.pop("session", None)
-        if w and w.wid == ws:
+        if w and w.wid == ws and not w.busy:
             w.send({"type": "new"})
         else:
             st.pop("worker", None)

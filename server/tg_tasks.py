@@ -102,8 +102,7 @@ class TgTasks:
 
     def run(self, chat, uid, text, images=(), files=()):
         w = self.worker(chat, uid)
-        if w.busy:
-            return self.send(chat, "still working on the previous task — /stop to interrupt")
+        queue = w.busy  # the sandbox queues it: read after the agent's next step, the answer comes in the running turn
         if files:  # attachments go into the workspace, so the agent can open them like any project file
             from cloud import ws_put
             names = []
@@ -112,6 +111,9 @@ class TgTasks:
                 ws_put(uid, w.wid, [{"path": f"uploads/{safe}", "b64": base64.b64encode(data).decode(), "mtime": time.time()}], [])
                 names.append(f"uploads/{safe}")
             text = (text or "Look at the attached file(s).") + "\n\nAttached: " + ", ".join(names)
+        if queue:
+            w.prompt(text, images)
+            return self.send(chat, "📥 queued — I'll take it into account as soon as I can")
         after, st = w.seq, self.st(chat)
         thread = self.tl.thread or 0
         did = random.randint(1, 2 ** 31 - 1)
@@ -159,6 +161,11 @@ class TgTasks:
                         return
                     elif t == "exit":
                         return self.send(chat, "sandbox stopped")
+                if st.get("worker") != w.id:  # /new or another session was opened: this one keeps working in the cloud
+                    if mid:
+                        self.edit(chat, mid, progress_md(steps, "", time.time() - t0), md=True)
+                    w.tg_turn = False  # its answer comes back as a mirrored message with an "open this session" button
+                    return self.send(chat, "the previous session keeps working in the cloud — its answer will come here")
                 now = time.time()
                 if live:
                     view = progress_md(steps, answer, now - t0)

@@ -9,7 +9,7 @@ Environment=ME_DB=/var/lib/me-agent/me.db
 Environment=ME_CLIENT=/opt/me-agent/me.py
 Environment=ME_DATA=/var/lib/me-agent
 Environment=ME_INTERNAL_URL=http://127.0.0.1:8790
-Environment=ME_MAX_WORKERS=6
+Environment=ME_MAX_WORKERS=16
 Environment=ME_PUBLIC_URL=https://me-agent.ru
 Environment=ME_SITES_DOMAIN=me-agent.ru
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers

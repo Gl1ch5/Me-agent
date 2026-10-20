@@ -33,6 +33,7 @@ header .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:e
 .msg{margin:18px 0}
 .msg.user{display:flex;justify-content:flex-end}
 .msg.user .bub{background:var(--bg3);border-radius:14px 14px 4px 14px;padding:10px 14px;max-width:85%;white-space:pre-wrap;word-break:break-word}
+.msg.user .qtag{display:block;font-size:11px;opacity:.6;text-align:right;margin-top:4px}
 .md{word-break:break-word}
 .md p{margin:8px 0}.md ul,.md ol{margin:8px 0 8px 22px}.md li{margin:3px 0}
 .md h1,.md h2,.md h3{font-size:16px;margin:16px 0 6px;color:var(--a)}
