@@ -13,10 +13,10 @@ Stdlib only. Python 3.8+.
 """
 import ast, atexit, base64, collections, difflib, fnmatch, glob, hashlib, http.client, io, json, os, platform, queue, re
 import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
-import urllib.error, urllib.request, uuid, zipfile, zlib
+import urllib.error, urllib.parse, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.13.4"
+VERSION = "0.13.5"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"
@@ -1507,6 +1507,10 @@ TOOLS = [
 # tools added only when usable (keeps the idle prompt small)
 NOTIFY_TOOL = {"name": "notify", "description": "Send the user a message/file via their Telegram.",
                "parameters": _obj({"text": "string", "file": "string"}, ["text"])}
+LATER_TOOL = {"name": "later", "description": "Come back to this chat later, even with this device off: text arrives here as your task "
+              "after `minutes`, or on a `cron` schedule (5 fields, the user's local time; tz = UTC offset in hours if they said). "
+              "new=true: a fresh chat in this project instead (no old context). No text: list; cancel=id removes one.",
+              "parameters": _obj({"text": "string", "minutes": "number", "cron": "string", "tz": "number", "new": "boolean", "cancel": "string"}, [])}
 PUBLISH_TOOL = {"name": "publish", "description": "Put a static site online at a public link: path = folder with index.html (the built "
                 "output if it has a build step). The same name replaces the site.", "parameters": _obj({"path": "string", "name": "string"}, ["path", "name"])}
 MCP_TOOL = {"name": "mcp", "description": "Use an MCP server: no tool → its tools; else call tool with args.",
@@ -2092,8 +2096,8 @@ class ToolBox:
             return f"{len(done) or sum(1 for i in a['items'] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a['items'])} done"
         if name == "mcp":
             return a.get("server", "") + (f" · {a['tool']}" if a.get("tool") else "")
-        if name == "notify":
-            return a.get("text", "")[:80]
+        if name in ("notify", "later"):
+            return (f"[{a.get('cron') or a.get('minutes')}] " if name == "later" and (a.get("cron") or a.get("minutes")) else "") + str(a.get("text") or a.get("cancel") or "")[:80]
         if name == "publish":
             return f"{a.get('name', '')} ← {a.get('path', '')}"
         if name in ("ls", "grep"):
@@ -3420,7 +3424,7 @@ class Agent:
             allowed.discard("memory")
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
-            out += [NOTIFY_TOOL] + ([PUBLISH_TOOL] if bh["publish"] else [])
+            out += [NOTIFY_TOOL, LATER_TOOL] + ([PUBLISH_TOOL] if bh["publish"] else [])
         if self.s.config.get("mcp"):
             out.append(MCP_TOOL)
         pr = self.preset()
@@ -3747,6 +3751,8 @@ class Agent:
             return self._todo(args)
         if name == "memory":
             return self._memory(args)
+        if name == "later":
+            return self._later(args)
         if name == "task":
             return self._task(args, temit)
         cli = (pr.get("cli") or {}).get(name)
@@ -3824,6 +3830,36 @@ class Agent:
             return True, f"remembered ({mid}) — it will be in every future chat", None
         except ValueError as e:
             return False, f"error: {e}", None
+
+    def _later(self, a):
+        """A reminder in the me cloud: at the time it continues this very chat in a sandbox (see jobs in server/features.py)."""
+        cloud = Cloud(self.s)
+        if not cloud.online:
+            return False, "error: not logged in to the me cloud (/login), so reminders are not available", None
+        sid = self.session["id"]
+        try:
+            if a.get("cancel"):
+                cloud.req("DELETE", f"/api/jobs/{int(str(a['cancel']).lstrip('#'))}")
+                return True, f"cancelled #{a['cancel']}", None
+            if not str(a.get("text") or "").strip():
+                js = [j for j in cloud.req("GET", "/api/jobs?session=" + urllib.parse.quote(sid)) if j.get("enabled")]
+                return True, "\n".join(f"#{j['id']} {j['cron'] or 'once'} · next {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(j['next']))}"
+                                       f"{' · new chat' if j.get('fresh') else ''} · {j['name']}" for j in js) or "no reminders in this chat", None
+            if not a.get("cron") and not float(a.get("minutes") or 0) > 0:
+                return False, "error: give minutes (once) or cron (repeat)", None
+            self.s.save_session(self.session)
+            cloud.sync()  # the sandbox that wakes up loads this chat from the cloud
+            off = time.localtime().tm_gmtoff // 60
+            tz = int(float(a["tz"]) * 60) if a.get("tz") not in (None, "") else (off or None)
+            j = cloud.req("POST", "/api/jobs", {"prompt": str(a["text"]), "session": sid, "cron": str(a.get("cron") or ""),
+                                                "minutes": float(a.get("minutes") or 0), "tz": tz,
+                                                "fresh": a.get("new") in (True, "true", 1)})
+        except Exception as e:
+            return False, f"error: {e}", None
+        tzs = "UTC%+g" % (j["tz"] / 60)
+        when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(j["next"] + j["tz"] * 60))
+        return True, f"#{j['id']} set: {'repeats ' + j['cron'] if j['cron'] else 'once'}, next {when} ({tzs}), " \
+                     f"{'in a new chat of this project' if j.get('fresh') else 'continuing this chat'}. It runs in the me cloud and notifies the user.", None
 
     # ─── todo / goal ───
     def _todo(self, a):

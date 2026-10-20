@@ -13,10 +13,10 @@ Stdlib only. Python 3.8+.
 """
 import ast, atexit, base64, collections, difflib, fnmatch, glob, hashlib, http.client, io, json, os, platform, queue, re
 import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threading, time, traceback, unicodedata
-import urllib.error, urllib.request, uuid, zipfile, zlib
+import urllib.error, urllib.parse, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.13.4"
+VERSION = "0.13.5"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"

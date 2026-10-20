@@ -46,6 +46,10 @@ TOOLS = [
 # tools added only when usable (keeps the idle prompt small)
 NOTIFY_TOOL = {"name": "notify", "description": "Send the user a message/file via their Telegram.",
                "parameters": _obj({"text": "string", "file": "string"}, ["text"])}
+LATER_TOOL = {"name": "later", "description": "Come back to this chat later, even with this device off: text arrives here as your task "
+              "after `minutes`, or on a `cron` schedule (5 fields, the user's local time; tz = UTC offset in hours if they said). "
+              "new=true: a fresh chat in this project instead (no old context). No text: list; cancel=id removes one.",
+              "parameters": _obj({"text": "string", "minutes": "number", "cron": "string", "tz": "number", "new": "boolean", "cancel": "string"}, [])}
 PUBLISH_TOOL = {"name": "publish", "description": "Put a static site online at a public link: path = folder with index.html (the built "
                 "output if it has a build step). The same name replaces the site.", "parameters": _obj({"path": "string", "name": "string"}, ["path", "name"])}
 MCP_TOOL = {"name": "mcp", "description": "Use an MCP server: no tool → its tools; else call tool with args.",
