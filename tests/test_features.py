@@ -63,6 +63,14 @@ def main():
         assert not j["enabled"], "one-off job stays disabled after running"
         print("ok   background job ran in the cloud and recorded its result")
 
+        # account debug log (ME_TRACE=1: the first account): requests, agent tool calls, web errors; keys are masked
+        c.req("POST", "/api/clientlog", {"msg": "boom tvly-abcdef123456", "where": "app.js:1"})
+        recs = [json.loads(x) for x in open(T.Path(T.env["ME_DATA"]) / "logs" / "1.jsonl", encoding="utf-8")]
+        kinds = {r["k"] for r in recs}
+        assert {"http", "worker_start", "tool", "turn_end", "web_error"} <= kinds, kinds
+        assert "abcdef123456" not in json.dumps(recs) and not any(r.get("path") == "/api/clientlog" for r in recs)
+        print("ok   account debug log records requests, agent steps and web errors")
+
         # scheduled job: next fire time computed, can be toggled and run now
         s = c.req("POST", "/api/jobs", {"prompt": "hi", "cron": "0 9 * * 1-5", "tz": 180, "name": "daily"})
         assert s["next"] > time.time() and s["enabled"]

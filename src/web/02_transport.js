@@ -5,9 +5,18 @@ async function api(path, body, method) {
   const r = await fetch(path, {method: method || (body !== undefined ? "POST" : "GET"), headers: h, body: body !== undefined ? JSON.stringify(body) : undefined});
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && MODE === "cloud") { location.href = "/account#cloud"; throw new Error("login"); }
-  if (!r.ok) throw new Error(j.detail || r.statusText);
+  if (!r.ok) { clientLog(`${r.status} ${path}`, j.detail || r.statusText); throw new Error(j.detail || r.statusText); }
   return j;
 }
+// cloud: errors go to the account's debug log on the server (kept only for accounts the admin traces)
+let logged = 0;
+function clientLog(msg, where, stack) {
+  if (MODE !== "cloud" || !token || logged++ > 40 || /\/api\/clientlog/.test(where || "")) return;
+  fetch("/api/clientlog", {method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer " + token},
+    body: JSON.stringify({msg: String(msg).slice(0, 500), where: String(where || "").slice(0, 300), stack: String(stack || "").slice(0, 2000)})}).catch(() => {});
+}
+addEventListener("error", e => clientLog(e.message, `${e.filename}:${e.lineno}:${e.colno}`, e.error && e.error.stack));
+addEventListener("unhandledrejection", e => { const r = e.reason || {}; if (r.message !== "login") clientLog(r.message || String(r), "promise", r.stack); });
 const lane = () => +((base.match(/\/w\/(\d+)/) || [])[1] || 0);
 const A = {
   async boot() {
