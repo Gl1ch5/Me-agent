@@ -4,7 +4,7 @@
 # (failed validations are rate-limited by Let's Encrypt, so a failure waits an hour before the next try).
 DATA=${ME_DATA:-/var/lib/me-agent}
 WANT="$DATA/sites/.want" CERTS="$DATA/sites/.certs"
-mkdir -p "$CERTS" /var/www/acme
+mkdir -p "$WANT" "$CERTS" /var/www/acme
 for f in "$WANT"/*; do
     [ -f "$f" ] || continue
     h=$(basename "$f")
@@ -20,4 +20,5 @@ for f in "$WANT"/*; do
         touch "$f.fail"
     fi
 done
-chown -R meagent "$DATA/sites/.want" "$CERTS" 2>/dev/null
+chown -R meagent "$WANT" "$CERTS" 2>/dev/null
+exit 0
