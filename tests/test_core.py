@@ -1032,4 +1032,6 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
                 print("FAIL", k, e)
-    sys.exit(1 if fails else 0)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1 if fails else 0)  # daemon threads (web server, sse) can hang a 3.8 interpreter shutdown on CI
