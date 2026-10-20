@@ -59,7 +59,25 @@ async function newChatIn(cwd) {  // a new chat inside a given project folder (si
   closeSide(); polling++;
   try { await A.free(); await api(base + "/new", {cwd}); await apply(await api(base + "/state")); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 }
-async function newChat() { closeSide(); polling++; busy = false; await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
+async function newChat(pick = true) {  // pick: choose the project — this one, the ones of the latest chats, or a new one
+  const local = MODE === "local", cur = local ? state.cwd : state.ws;
+  let ps = [...new Set([cur, ...(state.sessions || []).map(s => local ? s.cwd : s.ws)].filter(Boolean))];
+  if (!pick || !ps.length) return startChat(cur);
+  const wss = local ? [] : await api("/api/ws").catch(() => null);
+  if (wss) ps = ps.filter(k => local || wss.some(w => w.id === k));
+  const name = k => local ? (k.split(/[\\/]/).filter(Boolean).pop() || k) : (wss?.find(w => w.id === k)?.name || k);
+  popupList([...ps.slice(0, 5).map(k => [k, name(k), k === cur ? t("current project") : local ? "…/" + k.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : "", k === cur]), ["+", "+ " + t("new project"), "", false]],
+    k => k === "+" ? newProject() : startChat(k));
+}
+async function startChat(k) {
+  if (MODE === "local" && k && k !== state.cwd) return newChatIn(k);
+  closeSide(); polling++; busy = false; await apply(await A.newChat(k)); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat");
+}
+async function newProject() {
+  if (MODE === "local") return $("wsPill").click();
+  const name = prompt(t("Project name"), ""); if (!name) return;
+  try { startChat((await api("/api/ws", {name})).id); } catch (e) { alert(e.message); }
+}
 async function loadSession(id) { closeSide(); polling++; doneIds.delete(id); await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
   const ms = state.config?.models || [], cur = state.config?.model;
@@ -146,7 +164,7 @@ $("wsPill").onclick = async () => {
 };
 if (EMBED) window.addEventListener("message", e => {  // the IDE puts a selection / file reference into the input, or sends a prompt
   if (e.source !== window.parent || !e.data) return;
-  if (e.data.type === "new") return newChat();
+  if (e.data.type === "new") return newChat(false);
   if (typeof e.data.text !== "string") return;
   if (e.data.type === "insert") { inp.value += (inp.value && !/\s$/.test(inp.value) ? "\n" : "") + e.data.text; grow(); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
   if (e.data.type === "send" && !busy) { inp.value = e.data.text; send(); }

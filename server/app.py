@@ -372,7 +372,7 @@ def sessions(u=Depends(user)):
             d = json.loads(r["content"])
         except ValueError:
             continue
-        out.append({"id": d.get("id"), "title": d.get("title"), "cwd": d.get("cwd"), "updated": d.get("updated", r["ts"]),
+        out.append({"id": d.get("id"), "title": d.get("title"), "cwd": d.get("cwd"), "ws": d.get("ws"), "updated": d.get("updated", r["ts"]),
                     "messages": len(d.get("messages", [])), "usage": d.get("usage", {})})
     return out
 

@@ -14,6 +14,7 @@ RU = {
     "web search keys: Tavily (free), Exa, Brave": "ключи веб-поиска: Tavily (бесплатно), Exa, Brave",
     "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY":
         "Веб-поиск работает намного лучше с бесплатным ключом Tavily (1000 поисков в месяц): зарегистрируйтесь на https://app.tavily.com, скопируйте ключ и отправьте /searchkey tvly-… Можно добавить несколько ключей — они расходуются по очереди. Подходят и Exa, Brave: /searchkey exa КЛЮЧ",
+    "new session in:": "новая сессия в проекте:", "+ new project": "+ новый проект",
     "find text in all sessions": "поиск по всем сессиям", "bot language: en / ru": "язык бота: en / ru",
     "where tools run (cloud = isolated sandbox)": "где работают инструменты", "GitHub connection status": "статус GitHub",
     "stop mirroring other sessions into this chat": "не дублировать сюда другие сессии", "all commands": "все команды",

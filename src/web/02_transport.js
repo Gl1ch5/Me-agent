@@ -39,7 +39,11 @@ const A = {
     if (MODE === "local") { base = (await api("/api/agent/lanes", {session: id, from: lane()})).base; return api(base + "/state"); }
     const w = await api("/api/cloud", {session: id}); return A.attach(w);
   },
-  async newChat() {
+  async newChat(ws) {
+    if (MODE === "cloud" && ws && ws !== state.ws) {  // another project: a sandbox on that workspace
+      const s = await A.attach(await api("/api/cloud", {ws}));
+      return {...s, session: null, ctx: 0};
+    }
     if (MODE === "cloud") {  // the sandbox is still working on the previous chat: the new one gets its own, so both can run
       const mine = await api("/api/cloud").catch(() => []), w0 = mine.find(x => x.id === state.worker?.id);
       if (!w0 || w0.busy) {
