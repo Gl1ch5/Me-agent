@@ -1166,7 +1166,7 @@ def test_market_names_unique():
 
 
 def test_server_plugin():
-    """The market `server` plugin: one tool (asks only for risky actions), /server, `me server …`, and its own daemon handler."""
+    """The market `server` plugin: one tool (asks only for risky actions), /server, `me server …`, and SSH target parsing."""
     reg = me.Plugins()
     reg.store = make()
     src = Path(__file__).parent.parent / "server" / "market" / "server.py"
@@ -1179,13 +1179,10 @@ def test_server_plugin():
     assert g["parse_cli"](["logs", "nginx", "50"]) == ("logs", {"name": "nginx", "lines": 50})
     assert g["parse_cli"](["git", "/srv/app", "log", "-3"]) == ("git", {"repo": "/srv/app", "args": "log -3"})
     assert "not set" in reg.tools["server"]["fn"]({"action": "status"}, me.PluginCtx(lambda e: None, threading.Event()))[1]
-    n = g["norm_url"]
-    assert n("64.188.66.249") == "http://64.188.66.249:8722" and n("h:9000") == "http://h:9000" and n("https://h/mcp/x/") == "https://h/mcp/x"
-    assert g["handle"]("secret123", "Bearer nope", {"tool": "system_status"})[0] == 401
-    if os.name != "nt":
-        code, r = g["handle"]("secret123", "Bearer secret123", {"tool": "run_command", "args": {"cmd": "echo hi"}})
-        assert code == 200 and r["ok"] and r["result"]["stdout"] == "hi\n", r
-
+    t = g["target"]
+    assert t({"host": "ssh -p 2222 root@1.2.3.4"}) == ("root", "1.2.3.4", 2222)
+    assert t({"host": "bob@h:2200"}) == ("bob", "h", 2200) and t({"url": "64.188.66.249"}) == ("root", "64.188.66.249", 22)
+    assert t({"host": "ssh root@h", "user": "ann", "port": "23"}) == ("ann", "h", 23)
 
 if __name__ == "__main__":
     fails = 0
