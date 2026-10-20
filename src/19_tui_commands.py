@@ -661,6 +661,21 @@ class TUICommands:
             self.s.save()
             self.toast(f"{k} saved", "ok")
 
+    def cmd_searchkey(self, arg):
+        """/searchkey tvly-… adds a web search key (several rotate), /searchkey clear drops them; bare: status and a prompt."""
+        if not arg:
+            have = any(search_keys(self.s.config, a) for a in SEARCH_APIS)
+            self.info(search_key(self.s.config, "") if have else T(SEARCH_ASK))
+            arg = (self.prompt("Tavily key (tvly-…), empty to skip", secret=True) or "").strip()
+            if not arg:
+                return
+        try:
+            msg = search_key(self.s.config, arg)
+        except ValueError as e:
+            return self.toast(str(e), "err")
+        self.s.save()
+        self.toast(msg.split(" — ")[0], "ok")
+
     def cmd_skills(self, arg):
         while True:
             sks = self.agent.skills.all()

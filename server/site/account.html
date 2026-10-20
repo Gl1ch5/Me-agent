@@ -165,7 +165,10 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     </div>
     <div class="card">
       <h2>web search</h2>
-      <p class="dim" style="margin-bottom:10px">With a DeepSeek key, <code>web_search</code> uses DeepSeek's built-in search (best quality). Without it — DuckDuckGo. A DeepSeek provider above is used automatically.</p>
+      <p class="dim" style="margin-bottom:10px">Free search APIs come first: <a href="https://app.tavily.com" target="_blank" rel="noopener">Tavily</a> gives 1000 searches a month — add several keys, one per line, and they are used in turn. Then Exa and Brave, then DeepSeek's built-in search (a DeepSeek provider above is used automatically), then DuckDuckGo.</p>
+      <div><label>Tavily keys (one per line)</label><textarea id="sk_tavily" style="min-height:64px" placeholder="tvly-…"></textarea></div>
+      <div class="f2"><div><label>Exa keys</label><textarea id="sk_exa" style="min-height:64px"></textarea></div>
+      <div><label>Brave keys</label><textarea id="sk_brave" style="min-height:64px"></textarea></div></div>
       <div class="f2"><div><label>DeepSeek API key</label><input id="ds_key" type="password" onfocus="this.type='text'" placeholder="sk-…"></div>
       <div><label>search model</label><input id="ds_model" placeholder="deepseek-v4-flash"></div></div>
       <div class="btns"><button onclick="saveSearch()">save</button></div>
@@ -360,7 +363,9 @@ const RU_D = {
   "providers": "провайдеры", "+ add provider": "+ добавить провайдера",
   "Any OpenAI-compatible API. Keys are stored in your account and sync to every device.": "Любой OpenAI-совместимый API. Ключи хранятся в вашем аккаунте и синхронизируются на все устройства.",
   "models": "модели", "↻ fetch from provider": "↻ загрузить у провайдера", "+ add model": "+ добавить модель",
-  "web search": "веб-поиск", "With a DeepSeek key,": "С ключом DeepSeek",
+  "web search": "веб-поиск", "With a DeepSeek key,": "С ключом DeepSeek", "Free search APIs come first:": "Сначала бесплатные API поиска:",
+  "gives 1000 searches a month — add several keys, one per line, and they are used in turn. Then Exa and Brave, then DeepSeek's built-in search (a DeepSeek provider above is used automatically), then DuckDuckGo.": "даёт 1000 поисков в месяц — добавьте несколько ключей, по одному в строке, они расходуются по очереди. Дальше Exa и Brave, потом встроенный поиск DeepSeek (провайдер DeepSeek из списка выше подставляется сам), потом DuckDuckGo.",
+  "Tavily keys (one per line)": "ключи Tavily (по одному в строке)", "Exa keys": "ключи Exa", "Brave keys": "ключи Brave",
   "uses DeepSeek's built-in search (best quality). Without it — DuckDuckGo. A DeepSeek provider above is used automatically.": "использует встроенный поиск DeepSeek (лучшее качество). Без него — DuckDuckGo. Провайдер DeepSeek из списка выше подставляется автоматически.",
   "DeepSeek API key": "API-ключ DeepSeek", "search model": "модель поиска", "save": "сохранить",
   "voice input": "голосовой ввод", "Groq Whisper large v3. Hold": "Groq Whisper large v3. Удерживайте",
@@ -850,9 +855,15 @@ async function delPlugin(i) { if (!confirm("Delete " + plugins[i].file + " on al
 // ── search / voice ──
 function renderKeys() {
   $("ds_key").value = cfg.search?.deepseek_key || ""; $("ds_model").value = cfg.search?.model || "";
+  for (const a of ["tavily", "exa", "brave"]) $("sk_" + a).value = [].concat(cfg.search?.[a] || []).join("\n");
   $("vk").value = cfg.voice?.groq_key || ""; $("vm").value = cfg.voice?.model || ""; $("vl").value = cfg.voice?.language || "";
 }
-async function saveSearch() { cfg.search = {deepseek_key: $("ds_key").value.trim(), model: $("ds_model").value.trim() || "deepseek-v4-flash"}; await saveCfg("search settings saved"); }
+async function saveSearch() {
+  const keys = a => [...new Set($("sk_" + a).value.split(/\s+/).filter(Boolean))];
+  cfg.search = {...(cfg.search || {}), deepseek_key: $("ds_key").value.trim(), model: $("ds_model").value.trim() || "deepseek-v4-flash",
+                tavily: keys("tavily"), exa: keys("exa"), brave: keys("brave")};
+  await saveCfg("search settings saved");
+}
 async function saveVoice() { cfg.voice = {groq_key: $("vk").value.trim(), model: $("vm").value.trim() || "whisper-large-v3", language: $("vl").value.trim()}; await saveCfg("voice settings saved"); }
 
 // ── cloud + telegram ──

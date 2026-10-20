@@ -52,7 +52,77 @@ def deepseek_key(cfg):
     return None
 
 
+SEARCH_APIS = ("tavily", "exa", "brave")  # free tiers: Tavily 1000 searches a month, Exa $10 of credits, Brave with a card
+SEARCH_ASK = ("Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, "
+              "copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY")
+_SPENT = {}  # key → when it ran out or was refused; skipped for an hour
+
+
+def search_keys(cfg, api):
+    v = (cfg.get("search") or {}).get(api) or []
+    return [k for k in ([v] if isinstance(v, str) else v) if k]
+
+
+def search_key(cfg, arg):
+    """/searchkey [api] KEY adds a key (several per API rotate), /searchkey clear [api] drops them. Returns a status line."""
+    s = cfg.setdefault("search", {})
+    w = arg.split()
+    if w and w[0] == "clear":
+        for a in SEARCH_APIS:
+            if len(w) < 2 or w[1] == a:
+                s.pop(a, None)
+    elif w:
+        a = w.pop(0).lower() if w[0].lower() in SEARCH_APIS else "tavily" if w[0].startswith("tvly-") else "brave" if w[0].startswith("BSA") else \
+            "exa" if re.fullmatch(r"[0-9a-f-]{36}", w[0]) else None
+        if not a or not w:
+            raise ValueError("usage: /searchkey tvly-… · /searchkey exa|brave KEY · /searchkey clear")
+        s[a] = list(dict.fromkeys(search_keys(cfg, a) + w))
+    have = [f"{a} ×{len(search_keys(cfg, a))}" for a in SEARCH_APIS if search_keys(cfg, a)]
+    return "search keys: " + (", ".join(have) if have else "none — " + SEARCH_ASK)
+
+
+def _search_api(api, key, query):
+    """One request to a search API → a list of (title, url, snippet) and an optional short answer."""
+    import urllib.parse as up
+    if api == "tavily":
+        r = urllib.request.Request("https://api.tavily.com/search", method="POST", headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
+                                   data=json.dumps({"query": query, "max_results": 8, "include_answer": True}).encode())
+        j = json.loads(urllib.request.urlopen(r, timeout=40).read())
+        return [(x.get("title", ""), x.get("url", ""), x.get("content", "")) for x in j.get("results", [])], j.get("answer") or ""
+    if api == "exa":
+        r = urllib.request.Request("https://api.exa.ai/search", method="POST", headers={"Content-Type": "application/json", "x-api-key": key},
+                                   data=json.dumps({"query": query, "numResults": 8, "contents": {"text": {"maxCharacters": 600}}}).encode())
+        j = json.loads(urllib.request.urlopen(r, timeout=40).read())
+        return [(x.get("title") or "", x.get("url", ""), x.get("text") or "") for x in j.get("results", [])], ""
+    r = urllib.request.Request("https://api.search.brave.com/res/v1/web/search?count=8&q=" + up.quote(query),
+                               headers={"Accept": "application/json", "X-Subscription-Token": key})
+    j = json.loads(urllib.request.urlopen(r, timeout=40).read())
+    return [(x.get("title", ""), x.get("url", ""), html_text(x.get("description", ""))) for x in (j.get("web") or {}).get("results", [])], ""
+
+
+def keyed_search(cfg, query):
+    """Tavily, then Exa, then Brave; within one API the keys take turns as each runs out. None when no key worked."""
+    for api in SEARCH_APIS:
+        for key in search_keys(cfg, api):
+            if time.time() - _SPENT.get(key, 0) < 3600:
+                continue
+            try:
+                res, ans = _search_api(api, key, query)
+            except urllib.error.HTTPError as e:
+                if e.code in (401, 402, 403, 429, 432, 433):  # bad key, out of credits, rate limit: next key
+                    _SPENT[key] = time.time()
+                continue
+            except Exception:
+                break  # the API itself is down: next API
+            out = ["- %s — %s\n  %s" % (t.strip(), u, " ".join(c.split())[:400]) for t, u, c in res[:8]]
+            return (ans.strip() + "\n\n" if ans.strip() else "") + ("\n".join(out) or "no results")
+    return None
+
+
 def web_search(cfg, query, cancel=None):
+    found = keyed_search(cfg, query)
+    if found is not None:
+        return True, found, None
     key = deepseek_key(cfg)
     if key:
         body = {"model": (cfg.get("search") or {}).get("model") or "deepseek-v4-flash", "input": query,

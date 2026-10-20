@@ -172,8 +172,10 @@ class Worker:
         limits = ["prlimit", "--as=4000000000", "--nproc=256", "--fsize=200000000", "--nofile=1024", "--", "nice", "-n", "10"]
         if SANDBOX:
             ro = [x for d in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc") if os.path.exists(d) for x in ("--ro-bind", d, d)]
+            # /etc/resolv.conf is often a link into /run (systemd-resolved): without it the sandbox has no DNS
+            dns = [x for d in ("/run/systemd/resolve", "/run/resolvconf") if os.path.isdir(d) for x in ("--ro-bind", d, d)]
             cmd = ["bwrap", *ro, "--ro-bind", str(CLIENT), "/opt/me.py", "--bind", str(home), "/home/me", "--bind", str(work), "/work",
-                   "--tmpfs", "/tmp", "--dir", "/run", "--bind", str(self.dir / "in"), "/run/me.in", "--proc", "/proc", "--dev", "/dev",
+                   "--tmpfs", "/tmp", "--dir", "/run", "--bind", str(self.dir / "in"), "/run/me.in", *dns, "--proc", "/proc", "--dev", "/dev",
                    "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--chdir", "/work", "--setenv", "HOME", "/home/me",
                    "--setenv", "ME_HOME", "/home/me/.me", *limits, *inner]
         else:

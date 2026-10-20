@@ -1087,6 +1087,40 @@ def test_web_lanes(tmp=Path(tempfile.mkdtemp())):
     w0.agent.busy = False
 
 
+def test_search_keys_rotate():
+    """/searchkey adds Tavily/Exa/Brave keys; a key that ran out is skipped and the next one answers."""
+    import urllib.error
+    cfg = {"settings": {}}
+    me.search_key(cfg, "tvly-a tvly-b")
+    me.apply_setting(cfg, "searchkey", "brave BSAx")
+    assert cfg["search"] == {"tavily": ["tvly-a", "tvly-b"], "brave": ["BSAx"]}
+    calls = []
+
+    def fake(api, key, q):
+        calls.append(key)
+        if key == "tvly-a":
+            raise urllib.error.HTTPError("u", 432, "plan limit", {}, None)
+        return [("Title", "https://x.test", "some\n snippet")], "short answer"
+    orig, me._search_api = me._search_api, fake
+    try:
+        ok, out, _ = me.web_search(cfg, "q")
+        assert ok and calls == ["tvly-a", "tvly-b"] and out.startswith("short answer") and "https://x.test\n  some snippet" in out, (calls, out)
+        calls.clear()
+        me.web_search(cfg, "q")
+        assert calls == ["tvly-b"], calls  # the spent key waits an hour
+    finally:
+        me._search_api = orig
+        me._SPENT.clear()
+    me.apply_setting(cfg, "search_asked", "web")
+    assert cfg["settings"]["search_asked"] == ["web"]
+    assert "none" in me.search_key(cfg, "clear") and not cfg["search"]
+    try:
+        me.search_key(cfg, "whatever")
+        assert False
+    except ValueError:
+        pass
+
+
 def test_market_names_unique():
     """The marketplace keys items by name alone: an agent and a skill with one name overwrite each other."""
     seen = {}

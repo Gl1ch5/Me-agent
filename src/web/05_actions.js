@@ -151,4 +151,4 @@ if (EMBED) window.addEventListener("message", e => {  // the IDE puts a selectio
   if (e.data.type === "insert") { inp.value += (inp.value && !/\s$/.test(inp.value) ? "\n" : "") + e.data.text; grow(); inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
   if (e.data.type === "send" && !busy) { inp.value = e.data.text; send(); }
 });
-A.boot().then(s => { if (s) { apply(s); loadThemes().catch(() => {}); } }).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));
+A.boot().then(s => { if (s) { apply(s); askSearchKey(); loadThemes().catch(() => {}); } }).catch(e => el(`<div class="info err">${esc(e.message)}</div>`));

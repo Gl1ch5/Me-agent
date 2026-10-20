@@ -95,8 +95,9 @@ class TgTasks:
         except KeyError:
             pass
         user = self.users(uid)
-        w = self.runner.start(uid, user["username"], lambda: self.token_for(uid), wid=st.get("ws"), session=st.get("session"))
-        st["worker"] = w.id
+        main = self.st(chat, 0)  # a topic opened by hand starts in the project this chat used last, not in the default one
+        w = self.runner.start(uid, user["username"], lambda: self.token_for(uid), wid=st.get("ws") or main.get("ws_last"), session=st.get("session"))
+        st["worker"], main["ws_last"] = w.id, w.wid
         return w
 
     def run(self, chat, uid, text, images=(), files=()):

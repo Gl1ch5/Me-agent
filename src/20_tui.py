@@ -293,6 +293,11 @@ class TUI(TUIRender, TUIInput, TUICommands):
         if not self.s.config.get("models"):
             self.info("Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).")
             self.setup_provider()
+        st = self.s.config["settings"]
+        if "tui" not in st.get("search_asked", []) and not any(search_keys(self.s.config, a) for a in SEARCH_APIS):
+            st["search_asked"] = sorted(set(st.get("search_asked", [])) | {"tui"})
+            self.s.save()
+            self.info(T(SEARCH_ASK))  # a note, not a dialog: `me "task"` must start working right away
         cont, prompt, model = getattr(self, "first", (False, "", None))
         if cont:
             sid = self.s.latest(os.getcwd())

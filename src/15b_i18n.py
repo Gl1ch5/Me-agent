@@ -6,6 +6,10 @@
 UI_LANG = {"v": "en"}
 
 RU = {
+    "web search keys: Tavily (free), Exa, Brave": "ключи веб-поиска: Tavily (бесплатно), Exa, Brave",
+    "Tavily key (tvly-…), empty to skip": "ключ Tavily (tvly-…), пусто — пропустить",
+    "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY":
+        "Веб-поиск работает намного лучше с бесплатным ключом Tavily (1000 поисков в месяц): зарегистрируйтесь на https://app.tavily.com, скопируйте ключ и отправьте /searchkey tvly-… Можно добавить несколько ключей — они расходуются по очереди. Подходят и Exa, Brave: /searchkey exa КЛЮЧ",
     # commands (/help, suggestions)
     "show commands & keys": "команды и клавиши", "switch mode: code, design, plan, review…": "режим агента: code, design, plan, review…",
     "create AGENTS.md for this project": "создать AGENTS.md для проекта", "switch model": "сменить модель (в этом чате)",
