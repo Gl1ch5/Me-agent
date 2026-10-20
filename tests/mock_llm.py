@@ -82,9 +82,10 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        LAST.clear()
-        LAST.update(req)
-        HISTORY.append(req)
+        if not str((req.get("messages") or [{}])[0].get("content", "")).startswith("Guess the user's next message"):
+            LAST.clear()  # the background next-message guess after a turn is not the request tests look at
+            LAST.update(req)
+            HISTORY.append(req)
         if self._special(req):
             return
         if req.get("model") == "blind-1" and "image_url" in json.dumps(req.get("messages")):  # a text-only model

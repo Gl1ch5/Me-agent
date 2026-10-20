@@ -105,6 +105,10 @@ async function setModel(n) {  // switch at once; roll back if the server says no
 const inp = $("input");
 function grow() { inp.style.height = "auto"; inp.style.height = Math.min(220, inp.scrollHeight) + "px"; setBusy(); }
 inp.addEventListener("input", grow);
+// the agent's guess at the next message: shown as the (greyed) placeholder, Tab or → takes it
+let nextHint = "";
+function setHint(h) { nextHint = h || ""; inp.placeholder = nextHint ? nextHint + "  ⇥" : t("Ask anything…"); }
+inp.addEventListener("keydown", e => { if ((e.key === "Tab" || e.key === "ArrowRight") && !inp.value && nextHint && !busy) { e.preventDefault(); inp.value = nextHint; setHint(""); grow(); } });
 inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !TOUCH) { e.preventDefault(); send(); } if (e.key === "Escape" && busy) api(base + "/cancel", {}); });
 // voice: hold the mic button (or hold space in an empty input)
 let rec = null, chunks = [];

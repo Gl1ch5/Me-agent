@@ -63,6 +63,15 @@ BEHAVIOR = {
                     "If a request is ambiguous or misses a key detail, ask one short question before starting instead of guessing.", ""),
     "subagents": (True, "use subagents for big separate jobs", "", ""),
     "memory": (True, "global memory across chats", "", ""),
+    "skills": (True, "load matching skills before a task", "", ""),
+    "suggest": (True, "suggest the next message (tab to accept)", "", ""),
+    "comments": (False, "comment the code it writes",
+                 "Add short comments to code you write wherever the why is not obvious; keep the project's comment style.", ""),
+    "security": (False, "watch for security issues",
+                 "Watch for security issues in code you write or touch (injection, secrets in code, unsafe input handling, weak auth) "
+                 "and point them out briefly.", ""),
+    "summary": (False, "end with a short recap and next steps",
+                "End every finished task with a short recap: what was done, then 1-3 sensible next steps.", ""),
 }
 
 
@@ -234,10 +243,11 @@ class Agent:
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
         self._turn_lock = threading.Lock()
         self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
+        self.suggest = False  # interactive frontends turn it on: after a turn, a guess at the user's next message (event "suggest")
 
     def system_prompt(self):
         sks = self.skills.enabled()
-        skills = ("\nSkills (skill tool: name alone loads the guide; name + action + args runs a tool skill — not shell commands):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
+        skills = ("\nSkills (skill tool: name alone loads the guide — load the one that fits before starting a task it covers; name + action + args runs a tool skill — not shell commands):\n" + "\n".join(f"- {k}: {v['description']}" for k, v in sks.items())) if sks else ""
         project, budget = "", 24000
         for name in self.context_files():
             text = (Path(self.session["cwd"]) / name).read_text("utf-8", "replace")[:min(10000, budget)]
@@ -396,6 +406,9 @@ class Agent:
         start_idx = len(self.session["messages"])
         self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
+        hint = self.skill_hint(text)
+        if hint:  # before the request, so the request stays the last thing the model reads
+            self.session["messages"].append({"role": "user", "_aux": True, "_hint": True, "content": hint})
         self.session["messages"].append({"role": "user", "content": content})
         att = self.mentions(text)
         if att:
@@ -408,6 +421,7 @@ class Agent:
         wrote, ran, nudged, acted = False, False, False, False
         todo_used, todo_idle, todo_nudged = False, 0, False
         squeezed, cutoffs, empties, seen = False, 0, 0, []
+        finished = False
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
         st = self.s.config["settings"]
@@ -489,6 +503,7 @@ class Agent:
                         self.emit({"type": "verify"})
                         self.session["messages"].append({"role": "user", "_aux": True, "content": VERIFY_NUDGE})
                         continue
+                    finished = True
                     break
                 self._limits(cost, st)
                 results = self._run_calls(msg["tool_calls"], pr, cut)
@@ -549,6 +564,8 @@ class Agent:
             self.emit({"type": "turn_end", "time": time.time() - t0, "in": tin, "out": tout, "cached": tcached, "steps": steps,
                        "ctx": self.ctx_used, "cost": cost,
                        "session_cost": self.session["usage"].get("cost", 0)})
+            if finished and self.suggest and self.depth == 0 and behavior(st)["suggest"]:
+                threading.Thread(target=self.suggest_next, args=(m,), daemon=True).start()
 
     TRIM_AT, TRIM_KEEP = 4000, 1500
 
@@ -875,6 +892,7 @@ class Agent:
             return None, "nothing to retry"
         c = msgs[i]["content"]
         text = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")
+        i -= bool(i and msgs[i - 1].get("_hint"))  # the skill hint sent with the request goes with it
         cps = Checkpoints(self.s, self.session["id"]).load()
         if cps and cps[-1].get("msgs") == i and cps[-1].get("gen", 0) == self.session.get("compactions", 0):
             self.undo()  # the turn changed files: restore them too
@@ -952,6 +970,8 @@ class Agent:
         msgs = self.session["messages"]
         if not (0 <= i < len(msgs)) or msgs[i]["role"] != "user":
             return None, "no such request"
+        c = msgs[i]["content"]
+        i -= bool(i and msgs[i - 1].get("_hint"))
         cps, gen, files = Checkpoints(self.s, self.session["id"]), self.session.get("compactions", 0), []
         while True:
             last = (cps.load() or [None])[-1]
@@ -959,7 +979,6 @@ class Agent:
                 break
             restore_files(cps.pop()["files"])
             files += [relp(p, self.cwd) for p in last["files"]]
-        c = msgs[i]["content"]
         self.session["messages"] = msgs[:i]
         self.s.save_session(self.session)
         return (c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")), sorted(set(files))
@@ -976,6 +995,42 @@ class Agent:
         self.session, self.snap = new, {}
         self.s.save_session(new)
         return new
+
+    def skill_hint(self, text):
+        """Models skip skills they were told about: name the ones that fit this request, once, unless already loaded in this chat."""
+        if self.depth or not behavior(self.s.config["settings"])["skills"] or "skill" not in {t["name"] for t in self.tool_schemas()}:
+            return ""
+        used = {(tc_args(tc) or {}).get("name") for x in self.session["messages"] for tc in x.get("tool_calls") or []
+                if tc["function"]["name"] == "skill"}
+        names = [n for n in skill_matches(text, self.skills.enabled()) if n not in used]
+        return ("[skills that fit my next request: " + ", ".join(names) + ". If it is a task (not just a question), load the guide "
+                "with skill(name) first and follow it]") if names else ""
+
+    SUGGEST_PROMPT = ("Guess the user's next message in this chat with a coding agent: one short, natural request (at most 12 words), "
+                      "in the user's language, that they would most likely send next. Reply with that message only, no quotes. "
+                      "If nothing obvious follows, reply with -")
+
+    def suggest_next(self, m):
+        """After a finished turn: a cheap tool-less call guessing the next request; the frontends show it greyed in the input."""
+        msgs = self.session["messages"]
+        req = next((x["content"] for x in reversed(msgs) if x["role"] == "user" and not x.get("_aux") and isinstance(x.get("content"), str)), "")
+        ans = next((x["content"] for x in reversed(msgs) if x["role"] == "assistant" and isinstance(x.get("content"), str) and x["content"]), "")
+        if not req or not ans:
+            return
+        sid = self.session["id"]
+        try:
+            msg, usage = Provider(dict(m, effort=""), self.s.provider(m)).stream(
+                self.SUGGEST_PROMPT, [{"role": "user", "content": f"User asked:\n{req[:2000]}\n\nAgent replied:\n{ans[-3000:]}"}],
+                None, lambda e: None, threading.Event())
+        except Exception:
+            return
+        c = usage_cost(m, usage)
+        if c and self.persist:
+            self.session["usage"]["cost"] = round(self.session["usage"].get("cost", 0) + c, 6)
+            add_day_cost(self.s.home, c)
+        out = re.sub(r"^[\"'«»“”\s]+|[\"'«»“”\s]+$", "", (msg.get("content") or "").strip().split("\n")[0])
+        if out and out != "-" and len(out) <= 120 and not self.busy and self.session["id"] == sid:
+            self.emit({"type": "suggest", "text": out})
 
     BTW_PROMPT = "Answer the user's side question about this coding session briefly and directly. You cannot run tools; answer from the transcript."
 

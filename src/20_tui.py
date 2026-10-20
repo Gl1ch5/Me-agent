@@ -24,6 +24,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
         set_ui_lang(store.config["settings"])
         self.agent = Agent(store, self.on_event, self.confirm_tool, self.ask_text)
         self.agent.take_queued = self.take_pending
+        self.agent.suggest = True
+        self.next_hint = ""  # the agent's guess at the next message: greyed in the empty input, tab accepts it
         self.tools_live = {}
         self.cur_text = None
         self.cur_reason = None
@@ -71,7 +73,10 @@ class TUI(TUIRender, TUIInput, TUICommands):
     def on_event(self, e):
         with self.lock:
             t = e["type"]
-            if t == "turn_start":
+            if t == "suggest":
+                self.next_hint = e["text"]
+            elif t == "turn_start":
+                self.next_hint = ""
                 self.turn_t0 = time.time()
                 self.cur_text = self.cur_reason = None
             elif t == "reasoning":

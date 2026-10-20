@@ -35,7 +35,8 @@ function diffHtml(t) { return t.split("\n").map(l => `<span class="${l[0] === "+
 function onEvent(e) {
   const t = e.type;
   if (t === "user") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }
-  if (t === "turn_start") { if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }
+  if (t === "suggest") { if (!busy) setHint(e.text); return; }
+  if (t === "turn_start") { setHint(""); if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }
   if (t === "reasoning") {
     if (!cur.think) { cur.think = el(`<details class="think"><summary>${I.think}<span class="shimmer">${tt("thinking…")}</span></summary><pre></pre></details>`); cur.thinkT = Date.now(); }
     cur.think.querySelector("pre").textContent += e.text; scroll(); return;
@@ -123,6 +124,7 @@ function onEvent(e) {
   if (t === "exit") { busy = false; setBusy(); restartSandbox(); }
 }
 function renderHistory(s) {
+  setHint("");
   clearLog();
   if (!s || !s.messages || !s.messages.length) renderTodo([]);
   if (!s || !s.messages || !s.messages.length) return emptyState();

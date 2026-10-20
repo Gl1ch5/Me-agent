@@ -64,6 +64,7 @@ class WebSession:
         self.cond = threading.Condition()
         self.waits = {}
         self.agent = Agent(store, self.push, self.confirm, self.ask)
+        self.agent.suggest = True
         store.on_change = self.cloud.autosync
 
     def push(self, e):

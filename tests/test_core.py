@@ -829,6 +829,27 @@ def test_tool_arg_aliases(tmp=Path(tempfile.mkdtemp())):
 
 
 
+def test_skill_hint_and_next_suggestion():
+    s = make()
+    (s.home / "skills").mkdir(exist_ok=True)
+    (s.home / "skills" / "frontend-design.md").write_text("---\nname: frontend-design\ndescription: production-grade web UI, landing pages\n---\nbody", "utf-8")
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.suggest = True
+    ag.run("сделай сайт")
+    msgs = ag.session["messages"]
+    assert msgs[0].get("_hint") and "frontend-design" in msgs[0]["content"] and msgs[1]["content"] == "сделай сайт"
+    for _ in range(50):  # the guess at the next message comes from a background call after turn_end
+        if any(e["type"] == "suggest" for e in ev):
+            break
+        time.sleep(0.1)
+    assert [e for e in ev if e["type"] == "suggest"][0]["text"]
+    assert ag.retry()[0] == "сделай сайт" and not ag.session["messages"]  # the hint leaves with its request
+    assert not me.skill_matches("привет, как дела?", ag.skills.enabled())
+    s.config["settings"]["behavior"] = {"skills": False}
+    assert not ag.skill_hint("сделай сайт")
+
+
 def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     s = make()
     st = s.config["settings"]
