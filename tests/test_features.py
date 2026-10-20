@@ -182,6 +182,25 @@ def main():
             except urllib.error.HTTPError as e:
                 assert e.code == 404
         assert [x["name"] for x in c.req("GET", "/api/sites")["sites"]] == ["my-site"]
+        # its own host (<site>.<user>.<domain>): own origin, no sandbox, nothing of the app reachable there
+        label = c.s.auth["user"].lower().replace("_", "-").replace(".", "-")
+        sites = T.Path(T.env["ME_DATA"]) / "sites"
+        assert (sites / ".want" / f"my-site.{label}.sites.test").exists(), "certificate not requested"
+
+        def at_host(path, method="GET"):
+            rq = urllib.request.Request(T.SERVER + path, method=method, headers={"Host": f"my-site.{label}.sites.test"})
+            try:
+                with urllib.request.urlopen(rq) as r:
+                    return r.status, r.read(), r.headers
+            except urllib.error.HTTPError as e:
+                return e.code, e.read(), e.headers
+        code, body, hd = at_host("/")
+        assert code == 200 and body == b"<h1>my site</h1>" and not hd.get("Content-Security-Policy"), (code, body)
+        assert at_host("/css/a.css")[1] == b"h1{color:red}" and at_host("/api/sites")[0] == 404 and at_host("/", "POST")[0] == 405
+        assert at_host("/../../t.db")[0] == 404 and at_host("/.env")[0] == 404
+        (sites / ".certs").mkdir(exist_ok=True)
+        (sites / ".certs" / f"my-site.{label}.sites.test").touch()  # the certificate helper is done: the host link is handed out
+        assert c.req("GET", "/api/sites")["sites"][0]["url"] == f"https://my-site.{label}.sites.test/"
         (site / "index.html").write_text("<h1>v2</h1>")
         (site / "css" / "a.css").unlink()
         me.ToolBox(c.s, None).run("publish", {"path": str(site), "name": "my-site"}, lambda e: None, None)
@@ -195,7 +214,7 @@ def main():
         assert not ok and "index.html" in out
         c.req("DELETE", "/api/sites/my-site")
         assert c.req("GET", "/api/sites")["sites"] == []
-        print("ok   publish: a folder goes online at /s/<user>/<site>/, sandboxed, replaced in place, deletable")
+        print("ok   publish: a folder goes online at /s/<user>/<site>/ and its own host, sandboxed, replaced in place, deletable")
         c.req("DELETE", f"/api/cloud/{w['id']}")
     finally:
         os.killpg(srv.pid, 9)

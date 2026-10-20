@@ -51,7 +51,7 @@ RU = {
     "nothing found": "ничего не найдено", "no sites yet — turn on publishing in /behavior and ask the agent to publish one":
         "сайтов пока нет — включите публикацию в /behavior и попросите агента опубликовать сайт",
     "bot language:": "язык бота:", "language: Russian": "язык: русский",
-    "no session yet": "сессии пока нет", "↻ retry": "↻ повторить", "↶ undo": "↶ откатить", "＋ new": "＋ новая",
+    "no session yet": "сессии пока нет", "open": "открыть", "↻ retry": "↻ повторить", "↶ undo": "↶ откатить", "＋ new": "＋ новая",
     "Write a task and it runs in your cloud sandbox. Voice, photos and files work too.":
         "Напишите задачу — она выполнится в облачной песочнице. Голосовые, фото и файлы тоже работают.",
 }

@@ -1,11 +1,15 @@
-"""Static sites: the agent publishes a folder, anyone opens it at /s/<username>/<site>/.
-Files live in DATA/sites/<uid>/<site>/ and are served as plain files (no code runs on the server). Every page is sent with a
-CSP sandbox, so a published page gets its own opaque origin and its scripts can't read the me-agent.ru session of a visitor.
+"""Static sites: the agent publishes a folder, anyone opens it at /s/<username>/<site>/ — or, with ME_SITES_DOMAIN set and a
+wildcard DNS record, at https://<site>.<username>.<domain>/ (its own origin, so localStorage works there).
+Files live in DATA/sites/<uid>/<site>/ and are served as plain files (no code runs on the server). Under /s/ every page is sent
+with a CSP sandbox, so a published page gets an opaque origin and its scripts can't read the me-agent.ru session of a visitor.
+Certificates: deploy/site-certs.sh (root, every minute) issues one per host listed in DATA/sites/.want and marks it in .certs;
+until then the /s/ link is handed out.
 """
-import base64, re, shutil, time
+import base64, os, re, shutil, time
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app import app, base_url, conn, user
@@ -14,13 +18,29 @@ from cloud import DATA, safe_path
 MAX_SITES, MAX_BYTES, MAX_FILES = 20, 25_000_000, 2000
 NAME_RX = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 SANDBOX = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-pointer-lock"
+DOMAIN = os.environ.get("ME_SITES_DOMAIN", "").strip(".").lower()
+WANT, CERTS = DATA / "sites" / ".want", DATA / "sites" / ".certs"
 
 
 def site_dir(uid, name):
     return DATA / "sites" / str(uid) / name
 
 
+def host_label(username):
+    """The username as a DNS label: Max_Power.1 -> max-power-1."""
+    return re.sub(r"[^a-z0-9]+", "-", username.lower()).strip("-")[:63]
+
+
 def site_url(req, username, name):
+    if DOMAIN and host_label(username):
+        host = f"{name}.{host_label(username)}.{DOMAIN}"
+        if (CERTS / host).exists():
+            return f"https://{host}/"
+        try:  # ask the certificate helper for this host; the /s/ link works meanwhile
+            WANT.mkdir(parents=True, exist_ok=True)
+            (WANT / host).touch()
+        except OSError:
+            pass
     return f"{base_url(req)}/s/{username}/{name}/"
 
 
@@ -112,21 +132,47 @@ def site_root(username: str, name: str):
 @app.api_route("/s/{username}/{name}/{path:path}", methods=["GET", "HEAD"])
 def site_file(username: str, name: str, path: str):
     r = _owner(username)
-    if not NAME_RX.fullmatch(name) or not site_dir(r[0], name).is_dir():
+    return _serve(r[0], name, path, f"/s/{r[1]}/{name}/", {"Content-Security-Policy": SANDBOX})
+
+
+def _serve(uid, name, path, base, headers):
+    if not NAME_RX.fullmatch(name) or not site_dir(uid, name).is_dir():
         raise HTTPException(404, "no such site")
-    root = site_dir(r[0], name)
+    root = site_dir(uid, name)
     try:
         p = safe_path(root, path) if path else root
     except ValueError:
         raise HTTPException(404)
     if p.is_dir():
         if path and not path.endswith("/"):
-            return RedirectResponse(f"/s/{r[1]}/{name}/{path}/")
+            return RedirectResponse(f"{base}{path}/")
         p = p / "index.html"
     if not p.is_file():
         p = root / "404.html"
         if not p.is_file():
             raise HTTPException(404, "not found")
-        return FileResponse(p, status_code=404, headers={"Content-Security-Policy": SANDBOX})
-    return FileResponse(p, headers={"Content-Security-Policy": SANDBOX, "Cache-Control": "public, max-age=60",
-                                    "X-Content-Type-Options": "nosniff"})
+        return FileResponse(p, status_code=404, headers=headers)
+    return FileResponse(p, headers={**headers, "Cache-Control": "public, max-age=60", "X-Content-Type-Options": "nosniff"})
+
+
+def _serve_host(label, name, path):
+    """<site>.<user label>.<domain>: the label must name exactly one user (Max.Power and max_power would both be max-power)."""
+    rows = [r for r in conn.execute("SELECT id, username FROM users").fetchall() if host_label(r[1]) == label]
+    if len(rows) != 1:
+        raise HTTPException(404, "no such site")
+    return _serve(rows[0][0], name, path, "/", {})
+
+
+@app.middleware("http")
+async def site_hosts(req: Request, call_next):
+    host = req.headers.get("host", "").split(":")[0].lower()
+    if DOMAIN and host.endswith("." + DOMAIN):
+        parts = host[:-len(DOMAIN) - 1].split(".")
+        if len(parts) == 2:  # never falls through to the app: a site's host has no API, no account pages
+            if req.method not in ("GET", "HEAD"):
+                return PlainTextResponse("method not allowed", 405)
+            try:
+                return await run_in_threadpool(_serve_host, parts[1], parts[0], req.url.path.lstrip("/"))
+            except HTTPException as e:
+                return PlainTextResponse(str(e.detail), e.status_code)
+    return await call_next(req)

@@ -2,9 +2,10 @@
 # Compact index of files + top-level symbols, built lazily (map tool) and cached per workspace by file mtime.
 
 MAP_EXT = {".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".swift", ".rb", ".php", ".c", ".h", ".cc",
-           ".cpp", ".hpp", ".cs", ".scala", ".lua", ".sh", ".vue", ".svelte", ".dart", ".ex", ".css", ".scss", ".html", ".md", ".sql"}
+           ".cpp", ".hpp", ".cs", ".scala", ".lua", ".sh", ".vue", ".svelte", ".dart", ".ex", ".css", ".scss", ".html", ".md", ".sql",
+           ".gd", ".gdshader", ".zig", ".nim", ".jl", ".hs", ".ml", ".kts"}
 SYM_RX = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:pub(?:\(\w+\))?\s+)?(?:async\s+)?(?:abstract\s+)?(?:static\s+)?"
-                    r"(?:def|class|function\*?|func|fn|struct|enum|trait|interface|type|impl|module|object|const|let|var)\s+"
+                    r"(?:def|class|class_name|signal|function\*?|func|fn|struct|enum|trait|interface|type|impl|module|object|const|let|var)\s+"
                     r"(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)")
 MD_RX = re.compile(r"^#{1,2}\s+(.+)")
 CSS_RX = re.compile(r"^([.#]?[A-Za-z][\w-]*)\s*[{,]")
@@ -55,7 +56,19 @@ def repo_map(root, sub="", home=HOME, limit=12000):
         cache.update(fresh)
         jsave(cache_p, cache)
     text = "\n".join(lines) or "no source files"
-    return text if len(text) <= limit else text[:limit] + f"\n… cut; use map with path=<subdir> ({len(lines)} files)"
+    if len(text) <= limit:
+        return text
+    # too big: the files that matter most first (shallow, with symbols, recently touched), the rest counted per folder
+    rank = sorted(lines, key=lambda ln: (ln.split(":")[0].count("/"), ":" not in ln, -fresh[ln.split(":")[0]][0]))
+    keep, size = set(), 0
+    for ln in rank:
+        if size + len(ln) > limit - 600:
+            break
+        keep.add(ln)
+        size += len(ln) + 1
+    rest = collections.Counter(os.path.dirname(ln.split(":")[0]) or "." for ln in lines if ln not in keep)
+    more = ", ".join(f"{d}/ {n}" for d, n in rest.most_common(12))
+    return ("\n".join(ln for ln in lines if ln in keep) + f"\n… {sum(rest.values())} more files ({more}); ls map <folder> for one folder")
 
 
 # ───────────────────────────── global memory ─────────────────────────────
@@ -139,6 +152,39 @@ def snapshot_file(p):
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return {"b64": base64.b64encode(data).decode()}
+
+
+RM_RX = re.compile(r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+)rm\s+([^;&|\n]+)")
+
+
+def rm_targets(cmd, cwd, limit=300, max_bytes=30_000_000):
+    """Files an `rm` in this command would delete (globs expanded, -r walks folders), snapshotted first so /undo brings them back."""
+    out, size = [], 0
+    for m in RM_RX.finditer(cmd):
+        try:
+            words = shlex.split(m.group(1))
+        except ValueError:
+            continue
+        rec = any(w == "--recursive" or (w.startswith("-") and not w.startswith("--") and ("r" in w or "R" in w)) for w in words)
+        for w in words:
+            if w.startswith("-"):
+                continue
+            for p in glob.glob(os.path.join(cwd, os.path.expanduser(w))):
+                if os.path.isfile(p):
+                    files = [p]
+                elif rec and os.path.isdir(p):
+                    files = [os.path.join(r, f) for r, ds, fs in os.walk(p) if not ds.__setitem__(slice(None), [d for d in ds if d not in (".git", "node_modules")]) for f in fs]
+                else:
+                    files = []
+                for f in files:
+                    try:
+                        size += os.path.getsize(f)
+                    except OSError:
+                        continue
+                    if len(out) >= limit or size > max_bytes:
+                        return out
+                    out.append(f)
+    return out
 
 
 def _snap_text(old):

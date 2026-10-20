@@ -10,7 +10,7 @@ const RU = {"files": "файлы", "empty folder": "пустая папка", "b
   "Running locally on this machine": "Работает локально на этом компьютере",
   "Today": "Сегодня", "This week": "На этой неделе", "Older": "Раньше", "no chats yet": "чатов пока нет", "(untitled)": "(без названия)",
   "Checklist": "Чек-лист", "Goal": "Цель", "Goal done": "Цель достигнута", "Goal blocked": "Цель заблокирована",
-  "thinking…": "думаю…", "thought for {d}": "думал {d}", "working…": "работаю…", "copy": "копировать",
+  "thinking…": "думаю…", "thought for {d}": "думал {d}", "working…": "работаю…", "done": "готово", "copy": "копировать",
   "Allow {name}?": "Разрешить {name}?", "allow": "разрешить", "always allow": "всегда разрешать", "allow all (full)": "разрешить всё (полный доступ)", "deny": "отклонить",
   "answer…": "ответ…", "interrupted": "прервано",
   "compacting history…": "сжимаю историю…", "compacted {a} → {b} messages · ~{c} tokens": "история сжата: {a} → {b} сообщений · ~{c} токенов",

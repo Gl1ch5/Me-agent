@@ -8,6 +8,7 @@ async function api(path, body, method) {
   if (!r.ok) throw new Error(j.detail || r.statusText);
   return j;
 }
+const lane = () => +((base.match(/\/w\/(\d+)/) || [])[1] || 0);
 const A = {
   async boot() {
     if (MODE === "local") {
@@ -34,8 +35,8 @@ const A = {
             lang: (cfg.settings || {}).lang || "", behavior: {...BEHAVIOR_DEFAULTS, ...((cfg.settings || {}).no_verify ? {tests: false} : {}), ...((cfg.settings || {}).behavior || {})},
             agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },
-  async load(id) {
-    if (MODE === "local") { await api(base + "/load", {id}); return api(base + "/state"); }
+  async load(id) {  // local: the chat may already be running in another lane — attach to it instead of reloading
+    if (MODE === "local") { base = (await api("/api/agent/lanes", {session: id, from: lane()})).base; return api(base + "/state"); }
     const w = await api("/api/cloud", {session: id}); return A.attach(w);
   },
   async newChat() {
@@ -46,11 +47,17 @@ const A = {
         return {...s, session: null, ctx: 0};
       }
     }
+    await A.free();
     await api(base + "/new", {});
     if (MODE === "local") return A.state();
     // the sandbox starts the new session asynchronously: never reload the old one through the worker's previous session id
     const w = {...(state.worker || {}), session: null}, s = await A.state(w);
     return {...s, session: null, ctx: 0, after};  // keep the live event cursor: older events must not replay
+  },
+  async free() { if (MODE === "local") base = (await api("/api/agent/lanes", {from: lane()})).base; },  // an idle lane: this one, or another while it works
+  async running() {  // ids of the chats being worked on right now, in any lane / sandbox
+    const l = MODE === "local" ? await api("/api/agent/lanes") : await api("/api/cloud");
+    return l.filter(x => x.busy && x.session).map(x => x.session);
   },
   async setAgent(name) {
     if (MODE === "local") return api(base + "/agent", {name});

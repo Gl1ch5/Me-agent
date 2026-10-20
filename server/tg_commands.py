@@ -187,7 +187,10 @@ class TgCommands:
         if not w:
             return self.send(chat, "no project yet — start a task first")
         url = w.info().get("preview")
-        self.send(chat, f"preview: {url}/" if url and url.startswith("http") else "preview is available once the project runs on the server")
+        if not (url and url.startswith("http")):
+            return self.send(chat, "preview is available once the project runs on the server")
+        self.send(chat, f"preview: {url}/")
+        self.send_shot(chat, f"{url}/", self.tl.thread or 0)
 
     def cmd_perm(self, chat, uid, st, w, arg):
         self.send(chat, "Cloud tasks always run in an isolated sandbox: files only in the workspace, no access to the server.\n"

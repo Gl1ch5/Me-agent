@@ -174,7 +174,8 @@ function renderStatus(tin, tout) {
 }
 function renderSessions() {
   const ss = state.sessions || [], sid = state.session?.id;
-  const item = s => `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${esc(s.title || t("(untitled)"))}</button>`;
+  const mark = id => runIds.has(id) ? `<i class="dot run" title="${esc(t("working…"))}"></i>` : doneIds.has(id) ? `<i class="dot done" title="${esc(t("done"))}"></i>` : "";
+  const item = s => `<button class="si ${s.id === sid ? "on" : ""}" onclick="loadSession('${esc(s.id)}')" title="${esc(s.cwd || "")}">${mark(s.id)}${esc(s.title || t("(untitled)"))}</button>`;
   const projects = {};  // Codex-style: chats grouped by project folder, the most recently used project first
   if (MODE === "local") ss.forEach(s => (projects[s.cwd || ""] ??= []).push(s));
   if (MODE === "local" && Object.keys(projects).length) {
@@ -193,6 +194,16 @@ function renderSessions() {
   $("slist").innerHTML = Object.entries(groups).map(([g, l]) => `<div class="lbl">${g}</div>` + l.map(item).join("")).join("") || `<div class="lbl">${esc(t("no chats yet"))}</div>`;
 }
 async function refreshSessions() { try { const s = await A.state(state.worker); state.sessions = s.sessions; if (!state.session || state.session.id === s.session?.id) state.session = s.session || state.session; renderSessions(); } catch (e) {} }
+let runIds = new Set(), doneIds = new Set();  // chats working in other lanes / sandboxes, and ones that finished unseen
+function setRunning(ids) {
+  const now = new Set(ids), sid = state.session?.id;
+  let ended = false;
+  runIds.forEach(id => { if (!now.has(id)) { ended = true; if (id !== sid) doneIds.add(id); } });
+  const changed = ended || ids.some(id => !runIds.has(id));
+  runIds = now;
+  if (ended) refreshSessions(); else if (changed) renderSessions();
+}
+setInterval(() => { if (base && !document.hidden) A.running().then(setRunning).catch(() => {}); }, 5000);
 function setBusy() {
   $("sendIcon").innerHTML = busy ? I.stop : I.up;
   $("send").disabled = !busy && !$("input").value.trim() && !atts.length;
