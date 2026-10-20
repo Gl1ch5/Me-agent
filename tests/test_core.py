@@ -943,6 +943,22 @@ def test_output_loop_stopped():
     assert any(e["type"] == "notice" and "repeating" in e["text"] for e in ev)
 
 
+def test_headless_sigterm_saves_the_chat():
+    if me.WIN:  # no catchable SIGTERM there
+        return
+    s, err = make(), io.StringIO()
+    threading.Timer(1.5, os.kill, (os.getpid(), me.signal.SIGTERM)).start()
+    t0 = time.time()
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = me.run_headless(s, "tool:bash " + json.dumps({"cmd": "sleep 20"}), True)
+    finally:
+        me.signal.signal(me.signal.SIGTERM, me.signal.SIG_DFL)
+    sid = s.sessions()[0]["id"]
+    assert rc == 143 and time.time() - t0 < 10 and "me -c" in err.getvalue(), (rc, err.getvalue())
+    assert "[interrupted by user]" in json.dumps(me.jload(s.session_path(sid))), "the chat was not saved"
+
+
 def test_continue_latest(tmp=Path(tempfile.mkdtemp())):
     s = make()
     cwd = os.getcwd()
@@ -1016,4 +1032,6 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
                 print("FAIL", k, e)
-    sys.exit(1 if fails else 0)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(1 if fails else 0)  # daemon threads (web server, sse) can hang a 3.8 interpreter shutdown on CI

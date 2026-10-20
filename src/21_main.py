@@ -41,9 +41,11 @@ def main():
             piped = sys.stdin.read().strip()
             prompt = f"{prompt}\n\n```\n{piped}\n```" if prompt and piped else prompt or piped
         c = Cloud(store)
-        run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None, model)
+        rc = run_headless(store, prompt, yolo, store.latest(os.getcwd()) if cont else None, model)
         if store.auth.get("token"):
             c.sync()
+        if rc:
+            sys.exit(rc)  # 2: /goal not reached, 143: stopped by SIGTERM
         return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         if WIN and (os.environ.get("TERM_PROGRAM") == "mintty" or os.environ.get("MSYSTEM")):

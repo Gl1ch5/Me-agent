@@ -2,7 +2,7 @@
   "name": "me-agent",
   "displayName": "me — coding agent",
   "description": "The me agent inside VS Code: a chat in the side bar, edits with diff review and undo, goals, skills — runs locally in your workspace folder, synced with your me account.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "me-agent",
   "license": "MIT",
   "engines": {

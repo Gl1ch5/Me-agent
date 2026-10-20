@@ -59,8 +59,22 @@ def run_headless(store, prompt, yolo, resume=None, model=None):
         sys.stderr.write(f"\ngoal {g['status']}: {g['reason']}\n")
         print("".join(buf).strip())
         return 0 if g["status"] == "done" else 2
+    stopped = []
+
+    def on_term(*_):  # `timeout`, kill, CI: stop like Ctrl+C so the chat is saved and `me -c` can pick it up
+        if stopped:
+            os._exit(143)
+        stopped.append(1)
+        ag.cancel.set()
+    try:
+        signal.signal(signal.SIGTERM, on_term)
+    except (ValueError, OSError):  # not the main thread
+        pass
     ag.run(prompt)
     print("".join(buf).strip() if buf else "")
+    if stopped:
+        sys.stderr.write("\nstopped - `me -c` continues this chat\n")
+        return 143
 
 
 def run_rpc(store):
