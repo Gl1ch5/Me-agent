@@ -88,12 +88,21 @@ async function pickRepo(gh) {
   try { repos = await api("/api/github/repos"); } catch (e) { $("rlist").innerHTML = `<p class="phint">${esc(e.message)}</p>`; return; }
   const draw = () => {
     const q = $("rsearch").value.trim().toLowerCase(), hit = repos.filter(r => r.repo.toLowerCase().includes(q));
-    $("rlist").innerHTML = hit.slice(0, 30).map(r => `<button data-r="${esc(r.repo)}"><span>${r.private ? "◆" : "○"}</span><b>${esc(r.repo)}</b><span class="d">${esc(r.desc || r.branch)}</span></button>`).join("")
+    const nq = /^[\w.-]+$/.test(q) ? q : "";
+    $("rlist").innerHTML = `<button data-new="${esc(nq)}"><span>+</span><b>${esc(t("new repository"))}${nq ? " " + esc(nq) : ""}</b><span class="d">${esc(t("private"))}</span></button>` + hit.slice(0, 30).map(r => `<button data-r="${esc(r.repo)}"><span>${r.private ? "◆" : "○"}</span><b>${esc(r.repo)}</b><span class="d">${esc(r.desc || r.branch)}</span></button>`).join("")
       || (/^[\w.-]+\/[\w.-]+$/.test(q) ? `<button data-r="${esc(q)}"><span>○</span><b>${esc(q)}</b></button>` : `<p class="phint">${esc(t("nothing found"))}</p>`);
   };
-  $("rlist").onclick = e => { const b = e.target.closest("button[data-r]"); if (b) { $("popup").classList.add("hidden"); startRepo(b.dataset.r); } };
+  $("rlist").onclick = e => {
+    const n = e.target.closest("button[data-new]"); if (n) return newRepo(n.dataset.new);
+    const b = e.target.closest("button[data-r]"); if (b) { $("popup").classList.add("hidden"); startRepo(b.dataset.r); }
+  };
   $("rsearch").oninput = draw; $("rsearch").onkeydown = e => { if (e.key === "Enter") $("rlist").querySelector("button")?.click(); };
   draw(); $("rsearch").focus();
+}
+async function newRepo(name) {
+  name = name || prompt(t("Repository name"), ""); if (!name) return;
+  $("popup").classList.add("hidden"); note(t("creating") + " " + name + "…");
+  try { const r = await api("/api/github/repos", {name}); await startChat(r.ws); note("⎇ " + r.repo + " · " + r.base, "ok"); } catch (e) { note(e.message, "err"); }
 }
 async function startRepo(repo) {
   note(t("cloning") + " " + repo + "…");

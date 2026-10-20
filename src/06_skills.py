@@ -143,6 +143,17 @@ def _stems(text):
     return out
 
 
+ACT_WORDS = re.compile(r"\b(?:сдела|созда|напиш|добав|исправ|почин|переде|сверста|разраб|постро|реализ|запил|улучш|оформ|make|create|build|write|add|fix|"
+                       r"implement|design|redesign|refactor|generate|develop|improve)", re.I)
+QUESTION = re.compile(r"\?\s*$|^\s*(?:что|как|почему|зачем|где|когда|кто|какой|какая|какие|какое|сколько|чей|можно ли|есть ли|объясни|расскажи|"
+                      r"what|why|how|where|when|who|which|is|are|does|do|can|could|explain|tell me)\b", re.I)
+
+
+def is_question(text):
+    """A question about something (no request to build or change it): skills are for tasks, not for answers."""
+    return bool(QUESTION.search(text or "")) and not ACT_WORDS.search(text or "")
+
+
 def skill_matches(request, skills, limit=2):
     """Skills whose name or description fits a request (any language, via SKILL_WORDS): a hint so the model loads them."""
     words = (request or "").lower()

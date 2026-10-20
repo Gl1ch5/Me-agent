@@ -12,6 +12,8 @@ def main():
             store.config = jload(store.cfg_path) or store.config
     if not (args and args[0] in ("-v", "--version", "-h", "--help", "--sync")):
         PLUGINS.load(store)
+    if args and args[0] in PLUGINS.clis:
+        sys.exit(PLUGINS.clis[args[0]](store, args[1:]) or 0)
     if args and args[0] in ("-v", "--version"):
         return print(f"me {VERSION}")
     model = want and pick_model(store, want)

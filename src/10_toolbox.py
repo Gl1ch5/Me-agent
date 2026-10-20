@@ -55,7 +55,8 @@ class ToolBox:
             p = os.path.normcase(os.path.abspath(os.path.join(cwd or os.getcwd(), os.path.expanduser(a.get("path", "")))))
             return not (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
         if name in PLUGINS.tools:
-            return PLUGINS.tools[name].get("confirm", False)
+            c = PLUGINS.tools[name].get("confirm", False)
+            return c(a) if callable(c) else c  # a plugin can ask only for its risky actions
         if name == "skill" and a.get("action"):
             sk = self.skills.enabled().get(a.get("name"), {})
             return sk.get("actions", {}).get(a["action"], {}).get("confirm", False)
