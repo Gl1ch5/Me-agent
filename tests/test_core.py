@@ -256,6 +256,12 @@ def test_mcp_lazy(tmp=Path(tempfile.mkdtemp())):
     srv.write_text(MCP_SERVER)
     s = make()
     assert "mcp" not in [t["name"] for t in me.Agent(s, print).tool_schemas()]
+    s.auth["token"] = "t"  # publish: only for a logged-in user who turned it on in /behavior
+    assert "publish" not in [t["name"] for t in me.Agent(s, print).tool_schemas()]
+    s.config["settings"]["behavior"] = {"publish": True}
+    assert "publish" in [t["name"] for t in me.Agent(s, print).tool_schemas()]
+    s.auth.pop("token")
+    s.config["settings"].pop("behavior")
     s.config["mcp"] = {"calc": {"command": sys.executable, "args": [str(srv)], "description": "math"}}
     a = me.Agent(s, print)
     assert "mcp" in [t["name"] for t in a.tool_schemas()] and "calc: math" in a.system_prompt()

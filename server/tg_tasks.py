@@ -2,6 +2,10 @@
 import base64, random, threading, time
 
 from tg_format import progress_md, steps_md
+from tg_i18n import tr
+
+ANSWER_KB = {"inline_keyboard": [[{"text": "↻ retry", "callback_data": "c:retry"}, {"text": "↶ undo", "callback_data": "c:undo"},
+                                  {"text": "＋ new", "callback_data": "c:new"}]]}
 
 
 class TgTasks:
@@ -16,7 +20,7 @@ class TgTasks:
             self.asks[k] = {"id": e["id"], "worker": w, "options": options, "t": time.time()}
             kw = {"reply_markup": {"inline_keyboard": [[{"text": o[:60], "callback_data": f"a:{i}"}] for i, o in enumerate(options)]}} if options else {}
             hint = "" if options else f"\n\nReply with your answer (you have {self.ASK_TIMEOUT // 60} min)."
-            self.send(k[0], "❓ " + (e.get("text") or "The agent has a question.") + hint, thread=k[1], **kw)
+            self.send(k[0], "❓ " + (e.get("text") or tr("The agent has a question.", self.ui_lang(k[0]))) + hint, thread=k[1], **kw)
             t = threading.Timer(self.ASK_TIMEOUT, self._ask_timeout, args=(k, e["id"]))
             t.daemon = True
             t.start()
@@ -110,7 +114,8 @@ class TgTasks:
                         if mid:
                             self.edit(chat, mid, steps_md(steps) + foot, md=True)
                             foot = ""
-                        self.send(chat, (steps_md(steps) if live else "") + (answer.strip() or "(no text)") + ("\n\n" + foot if foot else ""), md=True)
+                        self.send(chat, (steps_md(steps) if live else "") + (answer.strip() or tr("(no text)", self.ui_lang(chat)))
+                                  + ("\n\n" + foot if foot else ""), md=True, reply_markup=ANSWER_KB)
                         return
                     elif t == "exit":
                         return self.send(chat, "sandbox stopped")

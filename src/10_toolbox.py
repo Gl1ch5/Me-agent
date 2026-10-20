@@ -30,6 +30,8 @@ class ToolBox:
             return a.get("server", "") + (f" · {a['tool']}" if a.get("tool") else "")
         if name == "notify":
             return a.get("text", "")[:80]
+        if name == "publish":
+            return f"{a.get('name', '')} ← {a.get('path', '')}"
         if name in ("ls", "grep"):
             return a.get("pattern", "") + (f"  in {a['path']}" if a.get("path") else "")
         if name == "skill":
@@ -104,6 +106,8 @@ class ToolBox:
             return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
             return self._notify(a)
+        if name == "publish":
+            return self._publish(at(a.get("path") or "."), str(a.get("name") or ""))
         if name == "mcp":
             return self._mcp(a, emit)
         if name == "web_search":
@@ -135,6 +139,33 @@ class ToolBox:
             return False, f"error: {e}", None
         n = r.get("sent", 0)
         return bool(n), f"sent to Telegram ({n} chat{'s' if n != 1 else ''})" if n else "error: " + (r.get("detail") or "no Telegram chat linked"), None
+
+    def _publish(self, root, name):
+        """Upload a folder as a static site (dotfiles, .git, node_modules and the like stay private)."""
+        cloud = Cloud(self.s)
+        if not cloud.online:
+            return False, "error: not logged in to the me cloud (/login), so publishing is not available", None
+        if not (root / "index.html").is_file():
+            return False, f"error: no index.html in {root} — pass the folder that has it (the build output, if there is a build)", None
+        files, total = [], 0
+        for d, dirs, names in os.walk(root):
+            dirs[:] = [x for x in dirs if not x.startswith(".") and x not in ("node_modules", "__pycache__", "venv")]
+            for n in names:
+                fp = Path(d, n)
+                if n.startswith(".") or not fp.is_file():
+                    continue
+                total += fp.stat().st_size
+                if total > 25_000_000 or len(files) >= 2000:
+                    return False, "error: site over 25 MB or 2000 files — publish only the built output", None
+                files.append({"path": fp.relative_to(root).as_posix(), "b64": base64.b64encode(fp.read_bytes()).decode()})
+        try:
+            r = cloud.req("POST", "/api/sites", {"name": re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:40] or "site", "files": files},
+                          timeout=300)
+        except Exception as e:
+            return False, f"error: {e}", None
+        if not r.get("url"):
+            return False, "error: " + str(r.get("detail") or r), None
+        return True, f"published {r['files']} files: {r['url']}", None
 
     def _mcp(self, a, emit):
         try:

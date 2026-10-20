@@ -17,6 +17,7 @@ from pathlib import Path
 
 from tg_api import TgApi
 from tg_commands import COMMANDS, TgCommands
+from tg_i18n import tr
 from tg_tasks import TgTasks
 from tg_topics import TgTopics
 
@@ -49,6 +50,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
         self.topics = False  # the bot has topic mode in private chats: one topic per session
         self.caps = {"rich": True, "draft": True, "rich_draft": True}  # switched off for good when this Bot API lacks a method
         self.tl = threading.local()  # the topic the update being handled came from: replies go back there
+        self.seen_lang = {}  # chat -> Telegram's language of its user, for messages sent outside an update (mirroring)
         self.db.execute("CREATE TABLE IF NOT EXISTS tg_codes(code TEXT PRIMARY KEY, uid INTEGER, bot TEXT, exp REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS tg_topics(chat_id INTEGER, bot TEXT, thread INTEGER, session TEXT, ws TEXT, "
                         "PRIMARY KEY(chat_id, bot, thread))")
@@ -89,6 +91,14 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 pass
         return n
 
+    def ui_lang(self, chat):
+        """'ru' or 'en' for the bot's own words: the update's language, else the account setting, else Telegram's."""
+        lang = getattr(self.tl, "lang", None)
+        if lang is None:
+            uid = self.uid_for(chat)
+            lang = ((self.config(uid).get("settings") or {}).get("lang") if uid else "") or self.seen_lang.get(chat, "")
+        return "ru" if lang == "ru" else "en"
+
     def stop(self):
         self.stopped = True
         self.token = None
@@ -102,6 +112,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
         me = self.call("getMe")
         self.username, self.topics = me["username"], bool(me.get("has_topics_enabled"))
         self.call("setMyCommands", commands=[{"command": c, "description": d[:250]} for c, d in COMMANDS])
+        self.call("setMyCommands", commands=[{"command": c, "description": tr(d, "ru")[:250]} for c, d in COMMANDS], language_code="ru")
         threading.Thread(target=self.profile, daemon=True).start()
         if not self.thread:
             self.thread = threading.Thread(target=self.loop, daemon=True)
@@ -158,9 +169,15 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 threading.Thread(target=self.handle, args=(u,), daemon=True).start()
 
     # ─── incoming messages ───
+    def _lang(self, chat, frm):
+        tg = "ru" if str((frm or {}).get("language_code", "")).startswith(("ru", "uk", "be", "kk")) else "en"
+        self.seen_lang[chat] = tg
+        uid = self.uid_for(chat)
+        self.tl.lang = ((self.config(uid).get("settings") or {}).get("lang") if uid else "") or tg
+
     def handle(self, u):
         chat = None
-        self.tl.thread = 0
+        self.tl.thread, self.tl.lang = 0, None
         try:
             if "stopped_message_generation" in u:  # the stop button under a streamed draft
                 g = u["stopped_message_generation"]
@@ -168,6 +185,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
             if "callback_query" in u:
                 qm = u["callback_query"]["message"]
                 chat = qm["chat"]["id"]
+                self._lang(chat, u["callback_query"].get("from"))
                 self.tl.thread = qm.get("message_thread_id") if qm.get("is_topic_message") else 0
                 return self.on_callback(u["callback_query"])
             m = u.get("message")
@@ -175,6 +193,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 return
             chat = m["chat"]["id"]
             self.tl.thread = m.get("message_thread_id") if m.get("is_topic_message") else 0
+            self._lang(chat, m.get("from"))
             if m.get("forum_topic_created") or m.get("forum_topic_edited"):
                 return
             text = (m.get("text") or m.get("caption") or "").strip()

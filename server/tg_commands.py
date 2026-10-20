@@ -1,15 +1,35 @@
 """Telegram bot: slash commands and inline buttons."""
-import json, time
+import json, os, re, time
+from pathlib import Path
+
+from tg_i18n import tr
 
 COMMANDS = [
-    ("new", "start a new session"), ("sessions", "resume a session"), ("ws", "choose the workspace for new tasks"),
-    ("model", "switch model"), ("goal", "work until done and verified: /goal <what>"), ("stop", "interrupt"),
-    ("undo", "revert the last turn's files"), ("todo", "show the checklist"), ("compact", "summarize history"),
-    ("cost", "spending: this session and total"), ("memory", "global notes: /memory, /memory forget <id>"),
-    ("jobs", "background tasks: /jobs, /jobs run <id>"), ("preview", "link to the site the agent built"),
-    ("perm", "where tools run (cloud = isolated sandbox)"), ("github", "GitHub connection status"),
+    ("new", "start a new session"), ("sessions", "resume a session"), ("stop", "interrupt"), ("retry", "run the last request again"),
+    ("undo", "revert the last turn's files"), ("goal", "work until done and verified: /goal <what>"), ("model", "switch model"),
+    ("agent", "agent mode: code, design, plan…"), ("effort", "reasoning effort"), ("behavior", "switches: self-testing, todo, web, brief…"),
+    ("ws", "choose the workspace for new tasks"), ("todo", "show the checklist"), ("cost", "spending: this session and total"),
+    ("compact", "summarize history"), ("rename", "rename this session"), ("export", "this session as a Markdown file"),
+    ("search", "find text in all sessions"), ("sites", "published sites"), ("preview", "link to the site the agent built"),
+    ("memory", "global notes: /memory, /memory forget <id>"), ("jobs", "background tasks: /jobs, /jobs run <id>"),
+    ("lang", "bot language: en / ru"), ("github", "GitHub connection status"), ("perm", "where tools run (cloud = isolated sandbox)"),
     ("quiet", "stop mirroring other sessions into this chat"), ("help", "all commands"),
 ]
+EFFORTS = ("none", "low", "medium", "high", "xhigh")
+_BH = {}
+
+
+def behavior_switches():
+    """[(key, default, label, label_ru)] read from the client the server hands out, so the bot never lags behind /behavior."""
+    CLIENT = Path(os.environ.get("ME_CLIENT", Path(__file__).resolve().parent.parent / "me.py"))  # as app.CLIENT
+    mt = CLIENT.stat().st_mtime
+    if _BH.get("mt") != mt:
+        src = CLIENT.read_text("utf-8")
+        i = src.index("BEHAVIOR = {")
+        rows = re.findall(r'^    "(\w+)": \((True|False), "([^"]+)"', src[i:src.index("\n}\n", i)], re.M)
+        ru = lambda label: (re.search(r'"' + re.escape(label) + r'": "([^"]+)"', src[src.index("RU = {") if "RU = {" in src else 0:]) or [None, label])[1]
+        _BH.update(mt=mt, rows=[(k, d == "True", label, ru(label)) for k, d, label in rows])
+    return _BH["rows"]
 
 
 class TgCommands:
@@ -32,8 +52,9 @@ class TgCommands:
         return handler(chat, uid, st, w, arg)
 
     def cmd_help(self, chat, uid, st, w, arg):
-        self.send(chat, "Write a task and it runs in your cloud sandbox. Voice, photos and files work too.\n\n"
-                  + "\n".join(f"/{c} — {d}" for c, d in COMMANDS))
+        lang = self.ui_lang(chat)
+        self.send(chat, tr("Write a task and it runs in your cloud sandbox. Voice, photos and files work too.", lang) + "\n\n"
+                  + "\n".join(f"/{c} — {tr(d, lang)}" for c, d in COMMANDS))
 
     def cmd_new(self, chat, uid, st, w, arg):
         t = self.new_topic(chat, arg or "new chat", ws=st.get("ws"))
@@ -85,7 +106,10 @@ class TgCommands:
     def cmd_undo(self, chat, uid, st, w, arg):
         if not w:
             return self.send(chat, "nothing to undo yet")
+        after = w.seq
         w.send({"type": "undo"})
+        err = next((e for e in w.wait_events(after, timeout=3) if e.get("type") == "error"), None)
+        self.send(chat, "error: " + err.get("text", "") if err else "↶ the last turn's files are restored")
 
     def cmd_compact(self, chat, uid, st, w, arg):
         if not w:
@@ -181,6 +205,120 @@ class TgCommands:
         self.send(chat, "other sessions are no longer mirrored here (/quiet again to turn it back on)" if q
                   else "mirroring is on: tasks from the web and terminal show up here")
 
+    def cmd_retry(self, chat, uid, st, w, arg):
+        if not w:
+            return self.send(chat, "nothing to retry yet")
+        if w.busy:
+            return self.send(chat, "still working — /stop first")
+        after = w.seq
+        w.send({"type": "retry"})  # the sandbox takes the request back (history + files) and returns its text
+        end = time.time() + 20
+        while time.time() < end:
+            for e in w.wait_events(after, timeout=5):
+                after = e["seq"]
+                if e.get("type") == "retried":
+                    return self.run(chat, uid, e["text"])
+                if e.get("type") == "error":
+                    return self.send(chat, "nothing to retry yet" if "nothing" in e.get("text", "") else "error: " + e.get("text", ""))
+        self.send(chat, "nothing to retry yet")
+
+    def _put_config(self, uid, cfg, st):
+        """Save the account config (syncs to every device) and make this chat's sandbox pick it up now."""
+        from app import put_doc  # late import to avoid a cycle
+        put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
+        try:
+            self.runner.get(uid, st.get("worker", "")).send({"type": "sync"})
+        except (KeyError, AttributeError):
+            pass
+
+    def _behavior_kb(self, uid, chat):
+        on = (self.config(uid).get("settings") or {}).get("behavior") or {}
+        ru = self.ui_lang(chat) == "ru"
+        return {"inline_keyboard": [[{"text": ("✅ " if on.get(k, d) else "▫️ ") + (lr if ru else label), "callback_data": "b:" + k}]
+                                    for k, d, label, lr in behavior_switches()]}
+
+    def cmd_behavior(self, chat, uid, st, w, arg):
+        self.send(chat, "behavior:", reply_markup=self._behavior_kb(uid, chat))
+
+    def cmd_agent(self, chat, uid, st, w, arg):
+        names = ["code"]
+        for (content,) in self.db.execute("SELECT content FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'agent/%'", (uid,)):
+            m = re.search(r"^name:\s*(\S.*)$", content.split("\n---", 1)[0], re.M)
+            if m and m.group(1).strip() not in names:
+                names.append(m.group(1).strip())
+        cur = self.config(uid).get("agent") or "code"
+        self.send(chat, "agent mode:", reply_markup={"inline_keyboard": [[{"text": ("● " if n == cur else "") + n, "callback_data": "g:" + n[:60]}] for n in names]})
+
+    def cmd_effort(self, chat, uid, st, w, arg):
+        cfg = self.config(uid)
+        m = next((x for x in cfg.get("models", []) if x.get("name") == cfg.get("model")), {})
+        cur = m.get("effort") or "none"
+        self.send(chat, "reasoning effort:", reply_markup={"inline_keyboard": [[{"text": ("● " if e == cur else "") + e, "callback_data": "e:" + e} for e in EFFORTS]]})
+
+    def _sid(self, st, w):
+        return (w.session if w else None) or st.get("session")
+
+    def cmd_rename(self, chat, uid, st, w, arg):
+        if not arg:
+            return self.send(chat, "usage: /rename <title>")
+        sid = self._sid(st, w)
+        doc = self._session_doc(uid, sid)
+        if not doc:
+            return self.send(chat, "no session yet")
+        from app import put_doc
+        doc["title"] = arg[:80]
+        put_doc(uid, "session/" + sid, json.dumps(doc, ensure_ascii=False))
+        if self.tl.thread:
+            self.name_topic(chat, self.tl.thread, arg)
+        self.send(chat, f"renamed → {arg[:80]}")
+
+    def cmd_export(self, chat, uid, st, w, arg):
+        doc = self._session_doc(uid, self._sid(st, w))
+        if not doc.get("messages"):
+            return self.send(chat, "no session yet")
+        out = [f"# {doc.get('title') or 'chat'}\n"]
+        for m in doc["messages"]:
+            c = m.get("content")
+            c = c if isinstance(c, str) else " ".join(x.get("text", "") for x in c or [] if x.get("type") == "text")
+            if m.get("role") == "user" and not m.get("_aux") and not m.get("_hint"):
+                out.append("## You\n\n" + c + "\n")
+            elif m.get("role") == "assistant":
+                if c:
+                    out.append("## me\n\n" + c + "\n")
+                out += [f"- `{tc['function']['name']}`" for tc in m.get("tool_calls") or []]
+        name = re.sub(r"[^\w-]+", "-", doc.get("title") or "chat").strip("-")[:40] or "chat"
+        self.send_file(chat, name + ".md", ("\n".join(out) + "\n").encode())
+
+    def cmd_search(self, chat, uid, st, w, arg):
+        if not arg:
+            return self.send(chat, "usage: /search <text>")
+        q, kb = arg.lower(), []
+        for key, content in self.db.execute("SELECT key, content FROM docs WHERE user_id=? AND deleted=0 AND key LIKE 'session/%' ORDER BY ts DESC", (uid,)):
+            if q in content.lower():
+                try:
+                    title = json.loads(content).get("title") or "(untitled)"
+                except ValueError:
+                    continue
+                kb.append([{"text": title[:40], "callback_data": "s:" + key[8:]}])
+                if len(kb) >= 8:
+                    break
+        self.send(chat, f"{len(kb)} found:" if kb else "nothing found", reply_markup={"inline_keyboard": kb})
+
+    def cmd_sites(self, chat, uid, st, w, arg):
+        from cloud import DATA
+        root = DATA / "sites" / str(uid)
+        names = sorted(d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith(".")) if root.is_dir() else []
+        if not names:
+            return self.send(chat, "no sites yet — turn on publishing in /behavior and ask the agent to publish one")
+        from app import PUBLIC
+        user = self.users(uid)["username"]
+        self.send(chat, "\n".join(f"{PUBLIC or 'https://me-agent.ru'}/s/{user}/{n}/" for n in names),
+                  reply_markup={"inline_keyboard": [[{"text": "🗑 " + n, "callback_data": "x:" + n}] for n in names]})
+
+    def cmd_lang(self, chat, uid, st, w, arg):
+        self.send(chat, "bot language:", reply_markup={"inline_keyboard": [[{"text": "Русский", "callback_data": "l:ru"},
+                                                                             {"text": "English", "callback_data": "l:en"}]]})
+
     def config(self, uid):
         r = self.db.execute("SELECT content FROM docs WHERE user_id=? AND key='config' AND deleted=0", (uid,)).fetchone()
         try:
@@ -224,14 +362,49 @@ class TgCommands:
             st.pop("session", None)
             self.send(chat, f"workspace set: {val}")
         elif kind == "m":
-            from app import put_doc  # late import to avoid a cycle
             cfg = self.config(uid)
             cfg["model"] = val
-            put_doc(uid, "config", json.dumps(cfg, ensure_ascii=False, indent=1))
+            self._put_config(uid, cfg, st)
             try:
-                w = self.runner.get(uid, st.get("worker", ""))
-                w.send({"type": "sync"})
-                w.send({"type": "model", "name": val})  # the chat running now switches too; other chats keep theirs
+                self.runner.get(uid, st.get("worker", "")).send({"type": "model", "name": val})  # the running chat switches too
             except KeyError:
                 pass
             self.send(chat, f"model → {val}")
+        elif kind == "c":  # the buttons under an answer
+            return self.command(chat, uid, "/" + val)
+        elif kind == "b":
+            cfg = self.config(uid)
+            sw = {k: d for k, d, _, _ in behavior_switches()}
+            if val in sw:
+                bh = cfg.setdefault("settings", {}).setdefault("behavior", {})
+                bh[val] = not bh.get(val, sw[val])
+                self._put_config(uid, cfg, st)
+                self.call("editMessageReplyMarkup", chat_id=chat, message_id=q["message"]["message_id"], reply_markup=self._behavior_kb(uid, chat))
+        elif kind == "g":
+            cfg = self.config(uid)
+            cfg["agent"] = val
+            self._put_config(uid, cfg, st)
+            self.send(chat, f"agent → {val}")
+        elif kind == "e" and val in EFFORTS:
+            cfg = self.config(uid)
+            m = next((x for x in cfg.get("models", []) if x.get("name") == cfg.get("model")), None)
+            if m is not None:
+                m["effort"] = "" if val == "none" else val
+                self._put_config(uid, cfg, st)
+            self.send(chat, f"effort → {val}")
+        elif kind == "l" and val in ("ru", "en"):
+            cfg = self.config(uid)
+            cfg.setdefault("settings", {})["lang"] = val
+            self._put_config(uid, cfg, st)
+            self.tl.lang = val
+            self.send(chat, "language: Russian" if val == "ru" else "language: English")
+        elif kind == "x":  # delete a site: ask first, the link stops working
+            self.send(chat, f"delete site {val}?" if self.ui_lang(chat) != "ru" else f"удалить сайт {val}?",
+                      reply_markup={"inline_keyboard": [[{"text": "🗑 " + ("delete" if self.ui_lang(chat) != "ru" else "удалить"), "callback_data": "X:" + val}]]})
+        elif kind == "X":
+            import shutil
+            from cloud import DATA
+            d = DATA / "sites" / str(uid) / val
+            if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", val) and d.is_dir():
+                shutil.rmtree(d)
+            self.send(chat, f"site {val} deleted")
