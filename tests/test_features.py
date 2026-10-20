@@ -81,17 +81,19 @@ def main():
             pass
         import cloud
         saved = features._gh, features._clone, features._gh_token
-        features._gh = lambda tok, path, *a, **k: {"default_branch": "dev"}
+        features._gh = lambda tok, path, *a, **k: {"default_branch": "dev", "full_name": "octo/" + a[0]["name"] if a else ""}
         features._clone = lambda uid, wid, url, branch: (cloud.ws_root(uid, wid) / ".git").mkdir(parents=True)
         features._gh_token = lambda uid: "t"
         try:
             r1 = features.repo_ws(1, "octo/app")
             r2 = features.repo_ws(1, "octo/app")
+            r3 = features.github_new_repo(features.GhNew(name="my new app"), {"id": 1})
         finally:
             features._gh, features._clone, features._gh_token = saved
         assert r1 == r2 and r1["base"] == "dev" and r1["name"] == "octo/app", (r1, r2)
         assert next(w for w in c.req("GET", "/api/ws") if w["id"] == r1["ws"])["repo"] == "octo/app"
-        print("ok   GitHub repo session: one workspace per repo, base branch recorded")
+        assert r3["repo"] == "octo/my-new-app" and r3["ws"] != r1["ws"], r3
+        print("ok   GitHub repo session: one workspace per repo, base branch recorded; a new repo gets its own")
 
         # scheduled job: next fire time computed, can be toggled and run now
         s = c.req("POST", "/api/jobs", {"prompt": "hi", "cron": "0 9 * * 1-5", "tz": 180, "name": "daily"})

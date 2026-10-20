@@ -14,6 +14,8 @@ RU = {
     "web search keys: Tavily (free), Exa, Brave": "ключи веб-поиска: Tavily (бесплатно), Exa, Brave",
     "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY":
         "Веб-поиск работает намного лучше с бесплатным ключом Tavily (1000 поисков в месяц): зарегистрируйтесь на https://app.tavily.com, скопируйте ключ и отправьте /searchkey tvly-… Можно добавить несколько ключей — они расходуются по очереди. Подходят и Exa, Brave: /searchkey exa КЛЮЧ",
+    "create a GitHub repo and start on it: /newrepo name": "создать репозиторий GitHub и начать в нём: /newrepo имя", "usage: /newrepo name": "так: /newrepo имя",
+    "repository (or create one: /newrepo name):": "репозиторий (или создайте новый: /newrepo имя):", "no repositories yet. Create one: /newrepo name": "репозиториев пока нет. Создайте: /newrepo имя",
     "new session in:": "новая сессия в проекте:", "+ new project": "+ новый проект",
     "⎇ GitHub repository…": "⎇ репозиторий GitHub…", "Sign in with GitHub, then send /new again.": "Войдите через GitHub и снова отправьте /new.",
     "sign in with GitHub": "войти через GitHub", "repository:": "репозиторий:", "no repositories found": "репозитории не найдены", "send /new again": "отправьте /new ещё раз",
@@ -63,6 +65,7 @@ RU = {
 }
 RU_RX = [
     (re.compile(r"^cloning (.+)…$"), lambda m: f"клонирую {m[1]}…"),
+    (re.compile(r"^creating (.+)…$"), lambda m: f"создаю {m[1]}…"),
     (re.compile(r"^search keys: "), lambda m: "ключи поиска: "),
     (re.compile(r"<summary>(\d+) steps?</summary>"), lambda m: f"<summary>шагов: {m[1]}</summary>"),
     (re.compile(r"_working… (\d+)s_"), lambda m: f"_работаю… {m[1]} с_"),

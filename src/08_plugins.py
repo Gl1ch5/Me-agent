@@ -25,11 +25,12 @@ class Plugins:
     They get `plugin` (this registry) and `me` (this module — anything can be patched).
       @plugin.tool("name", "description", {"arg": "string"}, confirm=False)  def fn(args, ctx) -> str
       @plugin.command("name", "description")                                   def fn(tui, arg)
+      @plugin.cli("name")  `me name …` in a shell                              def fn(store, argv) -> exit code
       @plugin.on("key"|"event"|"startup"|"tick"|"status"|"system_prompt"|"before_tool")
     """
 
     def __init__(self):
-        self.tools, self.commands, self.hooks, self.loaded, self.errors = {}, {}, {}, {}, {}
+        self.tools, self.commands, self.hooks, self.loaded, self.errors, self.clis = {}, {}, {}, {}, {}, {}
         self.store = self.tui = None
 
     def tool(self, name, description, params=None, confirm=False, required=None):
@@ -44,6 +45,12 @@ class Plugins:
     def command(self, name, description=""):
         def deco(fn):
             self.commands[name] = (fn, description)
+            return fn
+        return deco
+
+    def cli(self, name):
+        def deco(fn):
+            self.clis[name] = fn
             return fn
         return deco
 

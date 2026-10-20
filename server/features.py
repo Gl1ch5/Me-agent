@@ -6,7 +6,7 @@
 - Preview: /preview/<signed token>/<path> serves a workspace's files; /preview/<token>/port/… proxies the sandbox's dev server ($PORT).
 - Telegram: every user may run their own bot (token in the account); notify() sends through it (or the global bot).
 """
-import base64, hashlib, hmac, html, json, os, re, secrets, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+import base64, hashlib, hmac, html, json, os, re, secrets, shutil, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request
@@ -691,6 +691,26 @@ def github_repos(q: str = "", u=Depends(user)):
              "pushed": r.get("pushed_at")} for r in rs if q in r["full_name"].lower()][:50]
 
 
+class GhNew(BaseModel):
+    name: str
+    private: bool = True
+    description: str = ""
+
+
+@app.post("/api/github/repos")
+def github_new_repo(g: GhNew, u=Depends(user)):
+    """Create a repo on the user's GitHub account and start a session on it."""
+    name = re.sub(r"[^\w.-]+", "-", g.name.strip()).strip("-.")
+    if not name:
+        raise HTTPException(400, "give a repo name")
+    try:
+        r = _gh(_gh_token(u["id"]), "/user/repos", {"name": name, "private": g.private, "description": g.description[:300], "auto_init": True})
+    except urllib.error.HTTPError as e:  # 422: the name is taken
+        msg = json.loads(e.read() or b"{}")
+        raise HTTPException(400, "; ".join(x.get("message", "") for x in msg.get("errors", []) if isinstance(x, dict)) or msg.get("message") or str(e))
+    return repo_ws(u["id"], r["full_name"], r.get("default_branch") or "main")
+
+
 class GhSession(BaseModel):
     repo: str
     branch: str = ""
@@ -741,8 +761,19 @@ def _clone(uid, wid, url, branch=""):
     env = cloud.me.shell_env(user_config(uid).get("secrets"))
     cmd = ["git", "clone", "--depth", "50", "--no-single-branch", *(["--branch", branch] if branch else []), url, str(dest)]
     r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+    if r.returncode and branch and "not found in upstream" in r.stderr:  # an empty repo has no branches yet
+        shutil.rmtree(dest, ignore_errors=True) if dest != root else None
+        r = subprocess.run(cmd[:5] + cmd[7:], capture_output=True, text=True, env=env, timeout=300)
     if r.returncode:
         raise HTTPException(400, (r.stderr or r.stdout).strip()[-600:])
+    git = ["git", "-C", str(dest)]
+    if branch and subprocess.run(git + ["rev-parse", "-q", "--verify", "HEAD"], capture_output=True, env=env).returncode:
+        # empty repo: give it a first (empty) commit on its base branch, so the agent can branch from origin/<base> and open PRs
+        subprocess.run(git + ["checkout", "-q", "-b", branch], capture_output=True, env=env)
+        c = subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "Initial commit"], capture_output=True, text=True, env=env)
+        p = subprocess.run(git + ["push", "-q", "-u", "origin", branch], capture_output=True, text=True, env=env, timeout=120)
+        if c.returncode or p.returncode:
+            raise HTTPException(400, "empty repo, could not push a first commit: " + (c.stderr or p.stderr).strip()[-400:])
     return dest
 
 

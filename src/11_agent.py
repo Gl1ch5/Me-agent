@@ -1046,7 +1046,8 @@ class Agent:
 
     def skill_hint(self, text):
         """Models skip skills they were told about: name the ones that fit this request, once, unless already loaded in this chat."""
-        if self.depth or not behavior(self.s.config["settings"])["skills"] or "skill" not in {t["name"] for t in self.tool_schemas()}:
+        if (self.depth or not behavior(self.s.config["settings"])["skills"] or is_question(text)
+                or "skill" not in {t["name"] for t in self.tool_schemas()}):
             return ""
         used = {(tc_args(tc) or {}).get("name") for x in self.session["messages"] for tc in x.get("tool_calls") or []
                 if tc["function"]["name"] == "skill"}

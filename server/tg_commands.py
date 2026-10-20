@@ -12,7 +12,7 @@ COMMANDS = [
     ("compact", "summarize history"), ("rename", "rename this session"), ("export", "this session as a Markdown file"),
     ("search", "find text in all sessions"), ("sites", "published sites"), ("preview", "link to the site the agent built"),
     ("memory", "global notes: /memory, /memory forget <id>"), ("jobs", "background tasks: /jobs, /jobs run <id>"),
-    ("searchkey", "web search keys: Tavily (free), Exa, Brave"), ("lang", "bot language: en / ru"), ("github", "GitHub connection status"), ("perm", "where tools run (cloud = isolated sandbox)"),
+    ("searchkey", "web search keys: Tavily (free), Exa, Brave"), ("lang", "bot language: en / ru"), ("github", "GitHub connection status"), ("newrepo", "create a GitHub repo and start on it: /newrepo name"), ("perm", "where tools run (cloud = isolated sandbox)"),
     ("quiet", "stop mirroring other sessions into this chat"), ("help", "all commands"),
 ]
 EFFORTS = ("none", "low", "medium", "high", "xhigh")
@@ -75,7 +75,22 @@ class TgCommands:
         repos = features.github_repos("", {"id": uid})[:10]
         st["repos"] = [r["repo"] for r in repos]
         kb = [[{"text": ("🔒 " if r["private"] else "") + r["repo"], "callback_data": f"r:{i}"}] for i, r in enumerate(repos)]
-        self.send(chat, "repository:" if kb else "no repositories found", reply_markup={"inline_keyboard": kb} if kb else None)
+        self.send(chat, "repository (or create one: /newrepo name):" if kb else "no repositories yet. Create one: /newrepo name",
+                  reply_markup={"inline_keyboard": kb} if kb else None)
+
+    def cmd_newrepo(self, chat, uid, st, w, arg):
+        """/newrepo name: a new private GitHub repo, cloned into its own project, and a new session there."""
+        import features
+        if not arg.strip():
+            return self.send(chat, "usage: /newrepo name")
+        if not (self.config(uid).get("secrets") or {}).get("GITHUB_TOKEN"):
+            return self.gh_pick(chat, uid, st)
+        self.send(chat, f"creating {arg.strip()}…")
+        try:
+            r = features.github_new_repo(features.GhNew(name=arg.strip()), {"id": uid})
+        except Exception as e:
+            return self.send(chat, f"error: {getattr(e, 'detail', e)}")
+        self.new_in(chat, uid, st, w, r["ws"], r["repo"])
 
     def recent_ws(self, uid, cur=None, n=5):
         """[(id, name)]: this project first, then the projects of the latest sessions, then the newest projects."""

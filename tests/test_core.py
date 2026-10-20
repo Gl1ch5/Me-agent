@@ -903,6 +903,8 @@ def test_skill_hint_and_next_suggestion():
     assert [e for e in ev if e["type"] == "suggest"][0]["text"]
     assert ag.retry()[0] == "сделай сайт" and not ag.session["messages"]  # the hint leaves with its request
     assert not me.skill_matches("привет, как дела?", ag.skills.enabled())
+    assert not ag.skill_hint("что за сайт") and not ag.skill_hint("What is this website?")  # a question is not a task
+    assert "frontend-design" in ag.skill_hint("почини кнопку на сайте")
     s.config["settings"]["behavior"] = {"skills": False}
     assert not ag.skill_hint("сделай сайт")
 
@@ -1160,6 +1162,27 @@ def test_market_names_unique():
         n = m.group(1) if m else p.stem
         assert n not in seen, f"{p.name} and {seen[n]} are both named {n}"
         seen[n] = p.name
+
+
+
+def test_server_plugin():
+    """The market `server` plugin: one tool (asks only for risky actions), /server, `me server …`, and its own daemon handler."""
+    reg = me.Plugins()
+    reg.store = make()
+    src = Path(__file__).parent.parent / "server" / "market" / "server.py"
+    g = {"__name__": "me_plugin_server", "__file__": str(src), "plugin": reg, "me": me}
+    exec(compile(src.read_text("utf-8"), str(src), "exec"), g)
+    assert "server" in reg.tools and "server" in reg.commands and "server" in reg.clis
+    ask = reg.tools["server"]["confirm"]
+    assert not ask({"action": "read"}) and ask({"action": "root"}) and not ask({"action": "service", "args": {"action": "status"}})
+    assert g["parse_cli"](["run", "ls", "-la", "/var"]) == ("run", {"cmd": "ls -la /var"})
+    assert g["parse_cli"](["logs", "nginx", "50"]) == ("logs", {"name": "nginx", "lines": 50})
+    assert g["parse_cli"](["git", "/srv/app", "log", "-3"]) == ("git", {"repo": "/srv/app", "args": "log -3"})
+    assert "not set" in reg.tools["server"]["fn"]({"action": "status"}, me.PluginCtx(lambda e: None, threading.Event()))[1]
+    assert g["handle"]("secret123", "Bearer nope", {"tool": "system_status"})[0] == 401
+    if os.name != "nt":
+        code, r = g["handle"]("secret123", "Bearer secret123", {"tool": "run_command", "args": {"cmd": "echo hi"}})
+        assert code == 200 and r["ok"] and r["result"]["stdout"] == "hi\n", r
 
 
 if __name__ == "__main__":
