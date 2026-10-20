@@ -311,7 +311,7 @@ def on_worker_event(w, e):
         if w.job:
             threading.Thread(target=job_finished, args=(w, e, text), daemon=True).start()
         else:
-            if not own and not getattr(w, "tg_goal", False):
+            if text and not own and not getattr(w, "tg_goal", False):  # a turn cut short by the next message has nothing to show
                 mirror_to_chats(w.uid, f"✓ {(w.title or 'task')[:40]}\n\n{text[:3500] or 'done'}", w=w)
             if time.time() - w.watched > 20:
                 title = "Done: " + (w.title or "task")[:60]

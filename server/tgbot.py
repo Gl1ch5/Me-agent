@@ -83,10 +83,13 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
             if quiet:
                 continue
             thread = (self.topic_of(chat, session) or self.new_topic(chat, title or "session", session)) if session and self.topics else 0
-            if self.state.get((chat, thread or 0), {}).get("busy"):
+            st = self.state.get((chat, thread or 0), {})
+            if st.get("busy"):
                 continue
+            here = thread or st.get("session") == session  # already in this session: nothing to open
+            kb = None if here or not session else {"inline_keyboard": [[{"text": "open this session", "callback_data": "s:" + session}]]}
             try:
-                self.send(chat, text, thread=thread or 0, md=True)
+                self.send(chat, text, thread=thread or 0, md=True, **({"reply_markup": kb} if kb else {}))
                 n += 1
             except Exception:
                 pass
