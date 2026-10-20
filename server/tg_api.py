@@ -2,6 +2,7 @@
 import json, re, urllib.request, uuid
 
 from tg_format import close_md, md_chunks
+from tg_i18n import tr, tr_markup
 
 
 class TgApi:
@@ -40,23 +41,27 @@ class TgApi:
 
     def send(self, chat, text, thread=None, md=False, **kw):
         """Plain text, or (md=True) the agent's Markdown as a rich message, falling back to plain text if Telegram rejects it."""
-        tk = self._thread_kw(thread)
+        tk, lang = self._thread_kw(thread), self.ui_lang(chat)
+        text = tr(text, lang)
+        markup = tr_markup(kw.pop("reply_markup", None), lang)
+        last = lambda i, n: {**kw, **({"reply_markup": markup} if markup and i == n - 1 else {})}  # buttons under the last part only
         if md:
-            out = None
-            for part in md_chunks(text, 30000):
-                out = self._try("rich", "sendRichMessage", chat_id=chat, rich_message={"markdown": part}, **tk, **kw)
+            out, parts = None, md_chunks(text, 30000)
+            for i, part in enumerate(parts):
+                out = self._try("rich", "sendRichMessage", chat_id=chat, rich_message={"markdown": part}, **tk, **last(i, len(parts)))
                 if out is None:
                     break
             else:
                 return out
-        out = None
-        for i in range(0, max(1, len(text)), 4000):
-            out = self.call("sendMessage", chat_id=chat, text=text[i:i + 4000] or "…", disable_web_page_preview=True, **tk, **kw)
+        out, parts = None, [text[i:i + 4000] for i in range(0, max(1, len(text)), 4000)]
+        for i, part in enumerate(parts):
+            out = self.call("sendMessage", chat_id=chat, text=part or "…", disable_web_page_preview=True, **tk, **last(i, len(parts)))
         return out
 
     def draft(self, chat, did, md, thread=None):
         """Stream a partial answer (private chats): the draft shows live with a stop button until the final message is sent."""
         tk = self._thread_kw(thread)
+        md = tr(md, self.ui_lang(chat))
         if md and self._try("rich_draft", "sendRichMessageDraft", chat_id=chat, draft_id=did, rich_message={"markdown": close_md(md)[-30000:]},
                             can_stop=True, **tk) is not None:
             return True
@@ -86,6 +91,7 @@ class TgApi:
         return self.upload("sendDocument", fields, {"document": (name, data)})
 
     def edit(self, chat, mid, text, md=False):
+        text = tr(text, self.ui_lang(chat))
         try:
             if md and self.caps["rich"]:
                 try:

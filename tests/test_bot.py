@@ -363,9 +363,8 @@ def test_topics_one_session_each():
 
 
 def test_profile_set_once():
-    conn = db()
     b = api_bot()
-    b.db = conn
+    conn = b.db
     conn.execute("CREATE TABLE IF NOT EXISTS tg_profile(bot TEXT PRIMARY KEY, ver INTEGER)")
     up = []
     b.upload = lambda method, fields, files: up.append((method, fields, list(files)))
@@ -378,6 +377,99 @@ def test_profile_set_once():
     b.profile()  # restart: already set, no second upload
     assert not b.calls and len(up) == 1
     print("ok   every bot gets the avatar and description once")
+
+
+def fake_app(conn):
+    """The server's app module, as far as the bot uses it: put_doc writes the docs table."""
+    fake = types.ModuleType("app")
+    def put_doc(uid, key, content, deleted=False):
+        conn.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?,?,0,?,?)", (uid, key, content, time.time(), int(deleted), len(content)))
+    fake.put_doc, fake.PUBLIC = put_doc, "https://me.test"
+    return fake
+
+
+def test_answer_buttons_and_retry():
+    w = FakeWorker("w1", events=[{"type": "turn_start"}, {"type": "text", "text": "hi"}, {"type": "turn_end", "time": 1, "in": 1, "out": 1}])
+    w.alive = True
+    b = bot(w=w)
+    link(b, 4)
+    b.handle(msg(4, "make it"))
+    kb = b.out[-1][2]["reply_markup"]["inline_keyboard"][0]
+    assert [x["callback_data"] for x in kb] == ["c:retry", "c:undo", "c:new"], kb
+    w.scripted = [{"type": "retried", "text": "make it"}, {"type": "turn_start"}, {"type": "text", "text": "again"},
+                  {"type": "turn_end", "time": 1, "in": 1, "out": 1}]
+    b.handle({"callback_query": {"id": "q", "data": "c:retry", "message": {"chat": {"id": 4}, "message_id": 1}}})
+    assert {"type": "retry"} in w.sent and w.prompts[-1][0] == "make it" and "again" in b.out[-1][1], b.out
+    print("ok   answers carry retry / undo / new buttons; retry runs the request again")
+
+
+def test_settings_from_chat():
+    conn = db()
+    w = FakeWorker("w1")
+    w.alive = True
+    b = bot(conn, w)
+    link(b, 4)
+    b.state[(4, 0)] = {"worker": "w1"}
+    conn.execute("INSERT INTO docs VALUES(1,'config',?,0,0,0,0)", (json.dumps({"model": "m1", "models": [{"name": "m1"}], "settings": {}}),))
+    conn.execute("INSERT INTO docs VALUES(1,'agent/design.md',?,0,0,0,0)", ("---\nname: design\n---\nmake it pretty",))
+    sys.modules["app"] = fake_app(conn)
+    try:
+        b.handle(msg(4, "/behavior"))
+        rows = b.out[-1][2]["reply_markup"]["inline_keyboard"]
+        pub = next(r[0] for r in rows if r[0]["callback_data"] == "b:publish")
+        assert pub["text"].startswith("▫️"), pub  # off by default
+        b.handle({"callback_query": {"id": "q", "data": "b:publish", "message": {"chat": {"id": 4}, "message_id": 9}}})
+        assert b.config(1)["settings"]["behavior"]["publish"] is True and {"type": "sync"} in w.sent
+        b.handle(msg(4, "/agent"))
+        assert [r[0]["callback_data"] for r in b.out[-1][2]["reply_markup"]["inline_keyboard"]] == ["g:code", "g:design"]
+        b.handle({"callback_query": {"id": "q", "data": "g:design", "message": {"chat": {"id": 4}, "message_id": 9}}})
+        b.handle({"callback_query": {"id": "q", "data": "e:high", "message": {"chat": {"id": 4}, "message_id": 9}}})
+        cfg = b.config(1)
+        assert cfg["agent"] == "design" and cfg["models"][0]["effort"] == "high", cfg
+    finally:
+        del sys.modules["app"]
+    print("ok   /behavior, /agent and /effort change the account settings from the chat")
+
+
+def test_russian():
+    b = api_bot()
+    conn = b.db
+    link(b, 4)
+    b.handle(msg(4, "/nonsense", **{"from": {"language_code": "ru"}}))
+    assert b.calls[-1][1]["text"] == "неизвестная команда /nonsense — /help", b.calls[-1]
+    b.handle(msg(4, "/help", **{"from": {"language_code": "en"}}))
+    assert "/retry — run the last request again" in b.calls[-1][1]["text"]
+    conn.execute("INSERT INTO docs VALUES(1,'config',?,0,0,0,0)", (json.dumps({"settings": {"lang": "ru"}}),))
+    b.handle(msg(4, "/help", **{"from": {"language_code": "en"}}))  # the account's language wins
+    assert "/retry — повторить последний запрос" in b.calls[-1][1]["text"]
+    b.tl.lang = None
+    b.send(4, "hi", reply_markup={"inline_keyboard": [[{"text": "↻ retry", "callback_data": "c:retry"}]]})
+    assert b.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "↻ повторить"  # outside an update too
+    print("ok   the bot speaks Russian: account setting first, else the Telegram language")
+
+
+def test_session_tools():
+    w = FakeWorker("w1", session="s9")
+    w.alive = True
+    b = api_bot(w=w)
+    conn = b.db
+    link(b, 4)
+    b.state[(4, 0)] = {"worker": "w1"}
+    conn.execute("INSERT INTO docs VALUES(1,'session/s9',?,0,0,0,0)", (json.dumps({"title": "landing", "messages": [
+        {"role": "user", "content": "build a landing page"}, {"role": "assistant", "content": "done", "tool_calls": [{"function": {"name": "write"}}]}]}),))
+    files = []
+    b.send_file = lambda chat, name, data, caption="": files.append((name, data))
+    sys.modules["app"] = fake_app(conn)
+    try:
+        b.handle(msg(4, "/export"))
+        assert files[0][0] == "landing.md" and b"## You\n\nbuild a landing page" in files[0][1] and b"`write`" in files[0][1]
+        b.handle(msg(4, "/search LANDING"))
+        assert b.calls[-1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "s:s9"
+        b.handle(msg(4, "/rename new site"))
+        assert b._session_doc(1, "s9")["title"] == "new site"
+    finally:
+        del sys.modules["app"]
+    print("ok   /export sends the chat as Markdown, /search finds sessions, /rename renames")
 
 
 if __name__ == "__main__":

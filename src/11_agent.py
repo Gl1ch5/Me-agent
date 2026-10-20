@@ -70,6 +70,7 @@ BEHAVIOR = {
     "security": (False, "watch for security issues",
                  "Watch for security issues in code you write or touch (injection, secrets in code, unsafe input handling, weak auth) "
                  "and point them out briefly.", ""),
+    "publish": (False, "publish static sites at a public link (me cloud)", "", ""),
     "summary": (False, "end with a short recap and next steps",
                 "End every finished task with a short recap: what was done, then 1-3 sensible next steps.", ""),
 }
@@ -349,7 +350,7 @@ class Agent:
             allowed.discard("memory")
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
-            out.append(NOTIFY_TOOL)
+            out += [NOTIFY_TOOL] + ([PUBLISH_TOOL] if bh["publish"] else [])
         if self.s.config.get("mcp"):
             out.append(MCP_TOOL)
         pr = self.preset()

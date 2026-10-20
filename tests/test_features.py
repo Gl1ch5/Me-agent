@@ -158,6 +158,44 @@ def main():
         assert "memory/20260101-000000-abcd.json" in keys
         c.req("DELETE", "/api/doc?key=memory/20260101-000000-abcd.json")
         print("ok   memory notes sync as memory/<id>.json")
+
+        # static sites: the agent's publish tool uploads a folder, anyone opens it by link, sandboxed
+        import tempfile, urllib.error, urllib.request
+        bh = me.behavior(c.s.config["settings"])
+        assert not bh["publish"], "publishing is off by default"
+        site = Path(tempfile.mkdtemp())
+        (site / "index.html").write_text("<h1>my site</h1>")
+        (site / "css").mkdir()
+        (site / "css" / "a.css").write_text("h1{color:red}")
+        (site / ".env").write_text("SECRET=1")
+        ok, out, _ = me.ToolBox(c.s, None).run("publish", {"path": str(site), "name": "My Site!"}, lambda e: None, None)
+        assert ok and "/s/" in out, out
+        url = out.split(": ", 1)[1]
+        assert url.endswith(f"/s/{c.s.auth['user']}/my-site/"), url
+        with urllib.request.urlopen(url) as r:
+            assert r.read() == b"<h1>my site</h1>" and "sandbox" in r.headers["Content-Security-Policy"]
+        assert urllib.request.urlopen(url + "css/a.css").read() == b"h1{color:red}"
+        for bad in (".env", "../../t.db", "nope.html"):
+            try:
+                urllib.request.urlopen(url + bad)
+                raise AssertionError(bad + " served")
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+        assert [x["name"] for x in c.req("GET", "/api/sites")["sites"]] == ["my-site"]
+        (site / "index.html").write_text("<h1>v2</h1>")
+        (site / "css" / "a.css").unlink()
+        me.ToolBox(c.s, None).run("publish", {"path": str(site), "name": "my-site"}, lambda e: None, None)
+        assert urllib.request.urlopen(url).read() == b"<h1>v2</h1>"
+        try:
+            urllib.request.urlopen(url + "css/a.css")
+            raise AssertionError("old file kept after republish")
+        except urllib.error.HTTPError:
+            pass
+        ok, out, _ = me.ToolBox(c.s, None).run("publish", {"path": str(site / "css"), "name": "x"}, lambda e: None, None)
+        assert not ok and "index.html" in out
+        c.req("DELETE", "/api/sites/my-site")
+        assert c.req("GET", "/api/sites")["sites"] == []
+        print("ok   publish: a folder goes online at /s/<user>/<site>/, sandboxed, replaced in place, deletable")
         c.req("DELETE", f"/api/cloud/{w['id']}")
     finally:
         os.killpg(srv.pid, 9)

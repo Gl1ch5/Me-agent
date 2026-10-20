@@ -240,6 +240,8 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
   <div data-pane="workspaces">
     <div class="card"><h2>workspaces</h2><p class="dim" style="margin-bottom:12px">Project folders synced between your machines and the cloud. Code files ≤ 1 MB; heavy, binary and .gitignored files stay local.</p>
       <table id="wslist"></table></div>
+    <div class="card"><h2>sites</h2><p class="dim" style="margin-bottom:12px">Static sites the agent published (turn it on in /behavior). Anyone with the link can open them.</p>
+      <table id="sitelist"></table></div>
     <div class="card hidden" id="wsview"><div class="row"><h2 style="margin:0" id="wsname"></h2><div class="btns" style="margin:0"><a class="btn-a sm" id="wsopen">open in cloud →</a><a class="btn-a sm ghost-a" id="wsprev" target="_blank">preview</a><button class="ghost sm" id="wsclone">clone repo</button><button class="danger sm" id="wsdel">delete</button></div></div>
       <div class="ftree"><div id="wsfiles"></div><pre id="wsfile" class="fview">select a file</pre></div></div>
   </div>
@@ -384,6 +386,7 @@ const RU_D = {
   "comment the code it writes": "комментирует код, который пишет",
   "watch for security issues": "следит за проблемами безопасности",
   "end with a short recap and next steps": "в конце — краткий итог и следующие шаги",
+  "publish static sites at a public link (me cloud)": "публикует статические сайты по публичной ссылке (облако me)",
   "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
   "another model already has this name": "модель с таким именем уже есть",
   "system prompt": "системный промпт", "Appended to me's tiny base prompt on every machine.": "Добавляется к короткому базовому промпту me на каждой машине.",
@@ -445,6 +448,8 @@ const RU_D = {
   "notifications on": "уведомления включены", "notifications off": "уведомления выключены", "sent — check your notifications": "отправлено — проверьте уведомления", "no subscribed devices yet": "подписанных устройств пока нет",
   "signed in as": "вы вошли как", "now": "сейчас",
   "files": "файлы", "size": "размер", "open in cloud": "открыть в облаке",
+  "sites": "сайты", "Static sites the agent published (turn it on in /behavior). Anyone with the link can open them.": "Статические сайты, которые опубликовал агент (включается в /behavior). Открыть их может любой, у кого есть ссылка.",
+  "No sites yet. Ask the agent to publish one.": "Сайтов пока нет. Попросите агента опубликовать сайт.",
   "No workspaces yet. Run": "Рабочих областей пока нет. Запустите", "inside a git repo (auto-linked) or use": "внутри git-репозитория (подключится автоматически) или используйте",
   "empty": "пусто", "open the workspace in the cloud once to get its preview link": "откройте рабочую область в облаке один раз, чтобы получить ссылку на превью",
   "clone a repository": "клонировать репозиторий", "owner/repo or https URL": "owner/repo или https-ссылка", "branch (optional)": "ветка (необязательно)", "clone": "клонировать", "Private repos use your GitHub token (cloud tab).": "Для приватных репозиториев используется ваш токен GitHub (вкладка «облако»).", "cloning…": "клонирование…",
@@ -486,7 +491,7 @@ const RU_R = [
   [/^Delete workspace (.+) from the cloud\? Local copies stay\.$/, "Удалить рабочую область $1 из облака? Локальные копии останутся."],
   [/^active model → (.+)$/, "активная модель → $1"], [/^theme → (.+) · terminal, web app and site$/, "тема → $1 · терминал, веб-приложение и сайт"],
   [/^(?:bot )?@(\S+) is running$/, "бот @$1 запущен"], [/^configured · (@.*)$/, "настроен · $1"],
-  [/^cloned into (.+)$/, "склонировано в $1"], [/^binary file · (.+)$/, "бинарный файл · $1"],
+  [/^cloned into (.+)$/, "склонировано в $1"], [/^Delete site (.+)\? Its link stops working\.$/, "Удалить сайт $1? Ссылка перестанет работать."], [/^binary file · (.+)$/, "бинарный файл · $1"],
   [/^rated (\d)★ · now (.+)$/, "оценка $1★ · теперь $2"], [/^notifications: (.+)$/, "уведомления: $1"],
   [/^(.+?)\/ already exists in this workspace$/, "$1/ уже существует в этой рабочей области"],
   [/^GitHub rejected the token: (.+)$/, "GitHub отклонил токен: $1"],
@@ -576,7 +581,7 @@ function tab(name) {
   if (name === "market") loadMarket();
   if (name === "admin") loadAdmin();
   if (name === "cloud") loadCloud();
-  if (name === "workspaces") loadWs();
+  if (name === "workspaces") { loadWs(); loadSites(); }
 }
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => tab(b.dataset.tab));
 
@@ -654,7 +659,7 @@ const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "
   ["no_new_deps", false, "ask before adding dependencies", ""], ["ask_unclear", false, "ask when the request is unclear", ""],
   ["subagents", true, "use subagents for big separate jobs", ""], ["memory", true, "global memory across chats", ""],
   ["skills", true, "load matching skills before a task", ""], ["suggest", true, "suggest the next message (tab to accept)", ""], ["comments", false, "comment the code it writes", ""],
-  ["security", false, "watch for security issues", ""], ["summary", false, "end with a short recap and next steps", ""]];
+  ["security", false, "watch for security issues", ""], ["summary", false, "end with a short recap and next steps", ""], ["publish", false, "publish static sites at a public link (me cloud)", ""]];
 function behaviorOn(k, d) { const b = cfg.settings.behavior || {}; return k in b ? !!b[k] : (k === "tests" && cfg.settings.no_verify ? false : d); }
 function renderBehavior() {
   $("behavior").innerHTML = BEHAVIOR.map(([k, d, l, h]) => `<label style="display:flex;gap:10px;align-items:flex-start;color:var(--fg);margin:8px 0">
@@ -938,6 +943,17 @@ async function loadWs() {
     `<tr class="click" onclick="viewWs('${esc(w.id)}','${esc(w.name)}')"><td><b>${esc(w.name)}</b> <span class="dim" style="font-size:12px">${esc(w.id)}</span></td><td>${w.files}</td><td class="dim">${size(w.bytes)}</td><td class="dim">${ago(w.updated)}</td>
      <td style="text-align:right"><a class="btn-a sm" href="/app?ws=${esc(w.id)}" onclick="event.stopPropagation()">open in cloud</a></td></tr>`).join("")
     : '<tr><td class="dim">No workspaces yet. Run <code>me</code> inside a git repo (auto-linked) or use <code>/workspace</code>.</td></tr>';
+}
+async function loadSites() {
+  const r = await api("/api/sites").catch(() => ({sites: []}));
+  $("sitelist").innerHTML = r.sites.length ? "<tr><th>name</th><th>size</th><th>updated</th><th></th></tr>" + r.sites.map(s =>
+    `<tr><td><a href="${esc(s.url)}" target="_blank" style="color:var(--a)">${esc(s.url.replace(/^https?:\/\//, ""))}</a></td><td class="dim">${size(s.size)}</td><td class="dim">${ago(s.updated)}</td>
+     <td style="text-align:right"><button class="danger sm" onclick="delSite('${esc(s.name)}')">delete</button></td></tr>`).join("")
+    : '<tr><td class="dim">No sites yet. Ask the agent to publish one.</td></tr>';
+}
+async function delSite(name) {
+  if (!confirm("Delete site " + name + "? Its link stops working.")) return;
+  await api("/api/sites/" + name, undefined, "DELETE"); loadSites();
 }
 async function viewWs(id, name) {
   wsCur = id; $("wsview").classList.remove("hidden"); $("wsname").textContent = name; $("wsopen").href = "/app?ws=" + id;

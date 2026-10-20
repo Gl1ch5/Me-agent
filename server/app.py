@@ -784,3 +784,4 @@ async def _threads():
 
 import routes_cloud  # noqa: E402,F401  (registers workspace/cloud/telegram/admin routes)
 import features  # noqa: E402,F401  (push, jobs, preview, personal Telegram bots, GitHub, notify)
+import sites  # noqa: E402,F401  (static sites published by the agent at /s/<user>/<site>/)

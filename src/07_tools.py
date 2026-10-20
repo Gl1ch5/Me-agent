@@ -46,6 +46,8 @@ TOOLS = [
 # tools added only when usable (keeps the idle prompt small)
 NOTIFY_TOOL = {"name": "notify", "description": "Send the user a message/file via their Telegram.",
                "parameters": _obj({"text": "string", "file": "string"}, ["text"])}
+PUBLISH_TOOL = {"name": "publish", "description": "Put a static site online at a public link: path = folder with index.html (the built "
+                "output if it has a build step). The same name replaces the site.", "parameters": _obj({"path": "string", "name": "string"}, ["path", "name"])}
 MCP_TOOL = {"name": "mcp", "description": "Use an MCP server: no tool → its tools; else call tool with args.",
             "parameters": _obj({"server": "string", "tool": "string", "args": "object"}, ["server"])}
 READONLY_TOOLS = {"read", "ls", "grep", "web_search", "web_fetch"}
