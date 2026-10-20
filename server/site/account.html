@@ -182,8 +182,10 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     </div>
     <div class="card">
       <h2>your server</h2>
-      <p class="dim" style="margin-bottom:10px">For the <b>server</b> plugin: the agent runs commands, edits files and manages services on your own Linux server; <code>me server status</code> works in a shell. On the server run <code>python3 server.py serve --password SECRET --install</code>, or paste a Claude MCP URL.</p>
-      <div class="f2"><div><label>server address</label><input id="srv_url" placeholder="1.2.3.4 or https://my-server:8722"></div>
+      <p class="dim" style="margin-bottom:10px">For the <b>server</b> plugin: the agent runs commands, edits files and manages services on your own Linux server over SSH; <code>me server</code> opens a shell. Nothing is installed on the server. Leave the password empty to use your SSH key.</p>
+      <div class="f2"><div><label>server address</label><input id="srv_host" placeholder="1.2.3.4 or ssh root@1.2.3.4" onchange="srvParse()"></div>
+      <div><label>user</label><input id="srv_user" placeholder="root"></div></div>
+      <div class="f2"><div><label>port</label><input id="srv_port" inputmode="numeric" placeholder="22"></div>
       <div><label>password</label><input id="srv_pw" type="password" onfocus="this.type='text'"></div></div>
       <div class="btns"><button onclick="saveServer()">save</button></div>
     </div>
@@ -381,7 +383,9 @@ const RU_D = {
   "DeepSeek API key": "API-ключ DeepSeek", "search model": "модель поиска", "save": "сохранить",
   "your server": "ваш сервер", "server address": "адрес сервера", "server settings saved": "настройки сервера сохранены",
   "For the": "Для плагина", "plugin: the agent runs commands, edits files and manages services on your own Linux server;": "— агент выполняет команды, правит файлы и управляет сервисами на вашем Linux-сервере;",
-  "works in a shell. On the server run": "работает в терминале. На сервере запустите", ", or paste a Claude MCP URL.": "или вставьте адрес Claude MCP.",
+  "plugin: the agent runs commands, edits files and manages services on your own Linux server over SSH;": "— агент по SSH выполняет команды, правит файлы и управляет сервисами на вашем Linux-сервере;",
+  "opens a shell. Nothing is installed on the server. Leave the password empty to use your SSH key.": "открывает консоль. На сервер ничего не ставится. Без пароля используется ваш SSH-ключ.",
+  "port": "порт",
   "voice input": "голосовой ввод", "Groq Whisper large v3. Hold": "Groq Whisper large v3. Удерживайте",
   "in the terminal, hold the mic in the web app, or send a voice message to the Telegram bot.": "в терминале, удерживайте микрофон в веб-приложении или отправьте голосовое сообщение Telegram-боту.",
   "Groq API key": "API-ключ Groq", "model": "модель", "language (blank = auto)": "язык (пусто = авто)", "get a key →": "получить ключ →",
@@ -870,7 +874,8 @@ async function delPlugin(i) { if (!confirm("Delete " + plugins[i].file + " on al
 function renderKeys() {
   $("ds_key").value = cfg.search?.deepseek_key || ""; $("ds_model").value = cfg.search?.model || "";
   for (const a of ["tavily", "exa", "brave"]) $("sk_" + a).value = [].concat(cfg.search?.[a] || []).join("\n");
-  $("srv_url").value = cfg.server?.url || ""; $("srv_pw").value = cfg.server?.password || "";
+  const sv = cfg.server || {};
+  $("srv_host").value = sv.host || sv.url || ""; $("srv_user").value = sv.user || ""; $("srv_port").value = sv.port || ""; $("srv_pw").value = sv.password || "";
   $("vk").value = cfg.voice?.groq_key || ""; $("vm").value = cfg.voice?.model || ""; $("vl").value = cfg.voice?.language || "";
 }
 async function saveSearch() {
@@ -879,7 +884,19 @@ async function saveSearch() {
                 tavily: keys("tavily"), exa: keys("exa"), brave: keys("brave")};
   await saveCfg("search settings saved");
 }
-async function saveServer() { cfg.server = {url: $("srv_url").value.trim(), password: $("srv_pw").value.trim()}; await saveCfg("server settings saved"); }
+function srvParse() {  // "ssh -p 2222 root@1.2.3.4" or "root@host:port" → separate fields
+  const v = $("srv_host").value.trim().replace(/^ssh\s+/, "");
+  const p = v.match(/-p\s*(\d+)/); let h = v.replace(/-p\s*\d+/, "").trim().split(/\s+/).pop() || "";
+  if (h.includes("@")) { $("srv_user").value = h.split("@")[0]; h = h.split("@").pop(); }
+  const m = h.match(/^([^:\/]+):(\d+)$/); if (m) { h = m[1]; $("srv_port").value = m[2]; }
+  if (p) $("srv_port").value = p[1];
+  $("srv_host").value = h.replace(/^\w+:\/\//, "").replace(/\/.*$/, "");
+}
+async function saveServer() {
+  srvParse();
+  cfg.server = {host: $("srv_host").value.trim(), user: $("srv_user").value.trim(), port: parseInt($("srv_port").value) || 22, password: $("srv_pw").value};
+  await saveCfg("server settings saved");
+}
 async function saveVoice() { cfg.voice = {groq_key: $("vk").value.trim(), model: $("vm").value.trim() || "whisper-large-v3", language: $("vl").value.trim()}; await saveCfg("voice settings saved"); }
 
 // ── cloud + telegram ──
