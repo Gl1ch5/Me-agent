@@ -77,6 +77,9 @@ def main():
         assert c.req("POST", f"/api/ws/{ws}/get", {"paths": ["later.txt"]})["files"], "the reminder ran in the chat's workspace"
         f = wait_job(c, c.req("POST", "/api/jobs", {"prompt": "hi", "session": j["session"], "fresh": True})["id"])
         assert f["status"] == "done" and f["session"] and f["session"] != j["session"] and f["ws"] == ws and f["chat"] == j["session"], f
+        for tok in [features.runner_token(1), features.runner_token(1)]:  # a second sandbox must not log out the first
+            r = me.urllib.request.Request(T.SERVER + "/api/jobs", headers={"Authorization": "Bearer " + tok})
+            assert me.urllib.request.urlopen(r).status == 200
         print("ok   later: a scheduled message continues the same chat in its workspace, or a fresh chat in the same project")
 
         # account debug log (ME_TRACE=1: the first account): requests, agent tool calls, web errors; keys are masked

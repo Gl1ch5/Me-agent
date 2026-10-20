@@ -210,6 +210,10 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                     self.db.execute("INSERT INTO tg_links(chat_id,user_id,created,bot,quiet) VALUES(?,?,?,?,0)", (chat, uid, time.time(), self.key))
                     return self.send(chat, "Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\n"
                                            "Things started elsewhere show up here too. /help for commands.")
+                if self.uid_for(chat):  # a plain /start (or an old link) in a chat that is already linked
+                    return self.send(chat, "You're connected. Write a task — it runs in your cloud sandbox. /help for commands.")
+                if not code:
+                    return self.send(chat, "Not linked yet. Open your account on the me site → Telegram → connect.")
                 return self.send(chat, "This link has expired or belongs to another bot. Open your account on the me site → Telegram → connect.")
             uid = self.uid_for(chat)
             if not uid:
