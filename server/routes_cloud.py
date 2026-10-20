@@ -134,9 +134,7 @@ def cloud_events(wid: str, after: int = 0, u=Depends(user)):
 @app.post("/api/cloud/{wid}/prompt")
 def cloud_prompt(wid: str, p: Prompt, u=Depends(user)):
     w = _worker(u, wid)
-    if w.busy:
-        raise HTTPException(409, "still working")
-    w.prompt(p.text, p.images[:8])
+    w.prompt(p.text, p.images[:8])  # while busy the sandbox queues it (Agent.submit)
     return {"ok": True}
 
 

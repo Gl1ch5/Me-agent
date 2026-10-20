@@ -39,6 +39,23 @@ def test_text():
     assert end["in"] > 0 and end["out"] == 20
 
 
+def test_submit_queues_while_busy():
+    ev = []
+    ag = me.Agent(make(), ev.append)
+    assert ag.submit('tool:bash {"command": "sleep 1"}')
+    time.sleep(0.2)
+    assert not ag.submit("and also this")  # busy: queued, not rejected
+    assert ag.submit("img", ["data:image/png;base64,AA"]) is False
+    t0 = time.time()
+    while ag._driving and time.time() - t0 < 30:
+        time.sleep(0.05)
+    assert not ag._driving and not ag.inbox
+    assert sum(e["type"] == "queued" for e in ev) == 2
+    sent = [t for e in ev if e["type"] == "queued_sent" for t in e["texts"]]
+    assert "and also this" in sent and "img" in sent, sent  # text joins the running turn, the image runs as the next turn
+    assert sum(e["type"] == "turn_end" for e in ev) == 2
+
+
 def test_tool_read(tmp=Path(tempfile.mkdtemp())):
     f = tmp / "a.txt"
     f.write_text("alpha\nbeta\n")

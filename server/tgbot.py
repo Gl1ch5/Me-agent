@@ -47,6 +47,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
         self.offset = 0
         self.state = {}  # (chat_id, topic or 0) -> {"worker": id, "session": sid, "ws": wid, "busy"}
         self.asks = {}  # (chat_id, topic or 0) -> pending agent question: {"id", "worker", "options", "t"}
+        self.albums, self.album_lock = {}, threading.Lock()  # media_group_id -> photos sent together, collected into one task
         self.thread = None
         self.topics = False  # the bot has topic mode in private chats: one topic per session
         self.caps = {"rich": True, "draft": True, "rich_draft": True}  # switched off for good when this Bot API lacks a method
@@ -84,7 +85,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 continue
             thread = (self.topic_of(chat, session) or self.new_topic(chat, title or "session", session)) if session and self.topics else 0
             st = self.state.get((chat, thread or 0), {})
-            if st.get("busy"):
+            if st.get("busy") and st.get("session") == session:  # that chat's own live turn shows it already
                 continue
             here = thread or st.get("session") == session  # already in this session: nothing to open
             kb = None if here or not session else {"inline_keyboard": [[{"text": "open this session", "callback_data": "s:" + session}]]}
@@ -179,6 +180,19 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
         uid = self.uid_for(chat)
         self.tl.lang = ((self.config(uid).get("settings") or {}).get("lang") if uid else "") or tg
 
+    def album(self, gid, a):
+        """Wait until no part of the album arrived for 1.5 s, then join it: all images, all files, each caption tied to its image."""
+        while True:
+            time.sleep(0.5)
+            with self.album_lock:
+                if (not a["busy"] and time.time() - a["t"] > 1.5) or time.time() - a["t"] > 30:  # 30 s: a part failed to download
+                    self.albums.pop(gid, None)
+                    break
+        parts = sorted(a["parts"], key=lambda p: p[0])
+        caps = [(i, t) for i, (_, t, _, _) in enumerate(parts, 1) if t]
+        text = caps[0][1] if len(caps) == 1 else "\n".join(f"Image {i}: {t}" for i, t in caps)
+        return text, [x for p in parts for x in p[2]], [x for p in parts for x in p[3]]
+
     def handle(self, u):
         chat = None
         self.tl.thread, self.tl.lang = 0, None
@@ -224,6 +238,15 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 self.ask_search_key(chat, uid)
             except Exception:
                 pass
+            gid = m.get("media_group_id")
+            if gid:  # an album comes as one update per item: the first one waits for the rest
+                with self.album_lock:
+                    a = self.albums.get(gid)
+                    lead = a is None
+                    if lead:
+                        a = self.albums[gid] = {"parts": [], "busy": 0, "t": 0}
+                    a["busy"] += 1
+                    a["t"] = time.time()
             images, files = [], []
             if m.get("voice") or m.get("audio"):
                 f = m.get("voice") or m.get("audio")
@@ -236,10 +259,18 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 p = max(m["photo"], key=lambda x: x.get("file_size", 0))
                 data = self.download(p["file_id"])
                 images.append("data:image/jpeg;base64," + base64.b64encode(data).decode())
-                files.append(("photo.jpg", data))
+                files.append((f"photo-{m.get('message_id', 0)}.jpg", data))
             if m.get("document"):
                 d = m["document"]
                 files.append((d.get("file_name") or "file", self.download(d["file_id"])))
+            if gid:
+                with self.album_lock:
+                    a["parts"].append((m.get("message_id", 0), text, images, files))
+                    a["busy"] -= 1
+                    a["t"] = time.time()
+                if not lead:
+                    return
+                text, images, files = self.album(gid, a)
             if not text and not files:
                 return
             if text.startswith("/"):

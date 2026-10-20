@@ -127,8 +127,8 @@ def run_rpc(store):
         except ValueError:
             continue
         t = cmd.get("type")
-        if t == "prompt" and not ag.busy:
-            threading.Thread(target=ag.run, args=(cmd["text"], cmd.get("images", ())), daemon=True).start()
+        if t == "prompt":
+            ag.submit(cmd["text"], cmd.get("images", ()))
         elif t == "goal" and not ag.busy:
             threading.Thread(target=ag.goal, args=(cmd["text"],), daemon=True).start()
         elif t == "retry":

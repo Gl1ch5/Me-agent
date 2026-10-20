@@ -254,7 +254,8 @@ class Agent:
         self.persist = True  # subagents don't save their own sessions
         self.snap = {}  # path -> content before this turn first touched it (None = did not exist)
         self._turn_lock = threading.Lock()
-        self.take_queued = lambda: []  # frontend hook: messages the user sent mid-turn, read after every tool step
+        self.inbox, self._driving, self._inbox_lock = [], False, threading.Lock()  # messages sent while a turn runs (submit)
+        self.take_queued = self.take_inbox  # frontend hook: messages the user sent mid-turn, read after every tool step
         self.suggest = False  # interactive frontends turn it on: after a turn, a guess at the user's next message (event "suggest")
 
     def system_prompt(self):
@@ -405,6 +406,37 @@ class Agent:
             names.append(name)
             parts.append(f"[{name}]\n" + clip("\n".join(f"{i}\t{l}" for i, l in enumerate(lines[a - 1:b], a)), 40000))
         return (names, "[files the user attached with @]\n\n" + "\n\n".join(parts)) if names else None
+
+    def submit(self, text, images=()):
+        """Non-blocking send for web/RPC: runs now, or queues while a turn is working (event "queued"). Plain queued
+        messages reach the model after the next tool step; the rest run as the next turns, in order."""
+        with self._inbox_lock:
+            if self._driving:
+                self.inbox.append((text, list(images or ())))
+                self.emit({"type": "queued", "text": text})
+                return False
+            self._driving = True
+        threading.Thread(target=self._drive, args=(text, images), daemon=True).start()
+        return True
+
+    def _drive(self, text, images):
+        while True:
+            try:
+                self.run(text, images)
+            except Exception:
+                log_error("turn")
+            with self._inbox_lock:
+                if not self.inbox or self.cancel.is_set():
+                    self.inbox, self._driving = [], False
+                    return
+                text, images = self.inbox.pop(0)
+            self.emit({"type": "queued_sent", "texts": [text]})
+
+    def take_inbox(self):
+        with self._inbox_lock:
+            out = [t for t, im in self.inbox if not im]
+            self.inbox = [x for x in self.inbox if x[1]]
+            return out
 
     def run(self, text, images=()):
         """Blocking. Runs one user turn to completion; turns started from other threads wait for it."""

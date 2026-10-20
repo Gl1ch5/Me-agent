@@ -133,7 +133,7 @@ class WebSession:
                 evs = [e for e in self.events if e["seq"] > after]
             return {"events": evs, "state": {"busy": a.busy}}
         if path in ("/prompt", "/goal"):
-            if a.busy:
+            if a.busy and path == "/goal":
                 raise ValueError("still working")
             self.push({"type": "user", "text": ("/goal " if path == "/goal" else "") + body["text"]})
             if not a.session.get("ws") and self.cloud.online:
@@ -141,7 +141,7 @@ class WebSession:
             if path == "/goal":
                 threading.Thread(target=a.goal, args=(body["text"],), daemon=True).start()
             else:
-                threading.Thread(target=a.run, args=(body["text"], body.get("images") or ()), daemon=True).start()
+                a.submit(body["text"], body.get("images") or ())
             return {"ok": True}
         if path in ("/files", "/file"):  # project browser: list a folder / read a file, never outside the session's project
             root = os.path.realpath(a.cwd)

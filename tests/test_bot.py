@@ -53,7 +53,7 @@ class Runner:
 
 
 def db():
-    c = sqlite3.connect(":memory:", isolation_level=None)
+    c = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
     c.executescript(SCHEMA)
     return c
 
@@ -268,6 +268,31 @@ def test_photo_goes_to_model_and_chat_turn_answers():
     assert sum("it is a cat" in t for _, t, _ in b.out) == 1, b.out  # answered once, in this chat
     assert b.out[-1][2].get("md") and "_done" in b.out[-1][1]
     print("ok   a photo goes to the model; the chat's own turn is answered once")
+
+
+def test_album_is_one_task_with_captions():
+    import threading
+    w = FakeWorker("w1", events=[{"type": "turn_start"}, {"type": "turn_end", "time": 1.0, "in": 1, "out": 1}])
+    b = bot(w=w)
+    link(b, 4)
+    ts = [threading.Thread(target=b.handle, args=(msg(4, "", message_id=i, media_group_id="g1", caption=c,
+                                                      photo=[{"file_id": f"p{i}", "file_size": 10}]),))
+          for i, c in ((11, "the bug"), (12, ""), (13, "how it should look"))]
+    fake = types.ModuleType("cloud")
+    fake.ws_put = lambda *a: None
+    sys.modules["cloud"] = fake
+    try:
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+    finally:
+        del sys.modules["cloud"]
+    assert len(w.prompts) == 1, w.prompts  # one task, not three
+    text, images = w.prompts[0]
+    assert len(images) == 3 and "Image 1: the bug" in text and "Image 3: how it should look" in text, text
+    assert "photo-11.jpg" in text and "photo-13.jpg" in text, text
+    print("ok   an album of photos with captions becomes one task")
 
 
 def test_document_saved_to_workspace(tmp=None):

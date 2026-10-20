@@ -33,10 +33,12 @@ async function apply(s, history = true) {
   poll();
 }
 async function send() {
-  let t = $("input").value.trim(); if ((!t && !atts.length) || busy) return;
+  let t = $("input").value.trim(); if (!t && !atts.length) return;
+  const queue = busy;  // while a turn runs the message is queued: the agent reads it after its next step
   const fail = e => el(`<div class="info err">${esc(e.message)}</div>`);
   if (/^\/[a-z0-9]/i.test(t) && !/^\/goal\s/.test(t) && !atts.length && await runSlash(t)) { $("input").value = ""; grow(); return slashUpdate(); }
   const goal = /^\/goal\s+/.test(t);
+  if (queue && goal) return;
   if (goal) t = t.replace(/^\/goal\s+/, "").replace(/^"|"$/g, "");
   const images = atts.filter(a => a.image).map(a => a.url);
   const files = [];
@@ -45,10 +47,12 @@ async function send() {
   if (!t && images.length) t = "(see the attached image" + (images.length > 1 ? "s" : "") + ")";
   atts = []; renderAtts();
   $("input").value = ""; grow(); userMsg((goal ? "/goal " : "") + t + (images.length ? `  [${images.length} ${pl(images.length, "image", "images")}]` : ""));
-  if (untr($("title").textContent) === "New chat") $("title").textContent = t.split("\n")[0].slice(0, 60); cur.echo = true; busy = true; turnT0 = Date.now(); setBusy(); stick = true;
-  try { await (goal ? A.goal(t) : A.prompt(t, images)); } catch (e) { fail(e); busy = false; setBusy(); }
+  if (untr($("title").textContent) === "New chat") $("title").textContent = t.split("\n")[0].slice(0, 60); cur.echo = true; stick = true;
+  if (!queue) { busy = true; turnT0 = Date.now(); }
+  setBusy();
+  try { await (goal ? A.goal(t) : A.prompt(t, images)); } catch (e) { fail(e); if (!queue) { busy = false; setBusy(); } }
 }
-function sendOrStop() { busy ? api(base + "/cancel", {}) : send(); }
+function sendOrStop() { busy && !$("input").value.trim() && !atts.length ? api(base + "/cancel", {}) : send(); }
 function openSide() { side.classList.add("open"); $("scrim").classList.add("on"); }
 function closeSide() { side.classList.remove("open"); $("scrim").classList.remove("on"); }
 document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSide(); $("popup").classList.add("hidden"); } });
@@ -162,7 +166,7 @@ async function setModel(n) {  // switch at once; roll back if the server says no
 }
 const inp = $("input");
 function grow() { inp.style.height = "auto"; inp.style.height = Math.min(220, inp.scrollHeight) + "px"; setBusy(); }
-inp.addEventListener("input", grow);
+inp.addEventListener("input", () => { grow(); if (busy) setBusy(); });
 // the agent's guess at the next message: shown as the (greyed) placeholder, Tab or → takes it
 let nextHint = "";
 function setHint(h) { nextHint = h || ""; inp.placeholder = nextHint ? nextHint + "  ⇥" : t("Ask anything…"); }

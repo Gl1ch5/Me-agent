@@ -46,6 +46,9 @@ RU = {
     "resumed — continue here": "сессия открыта — продолжайте здесь", "resumed — continue writing": "сессия открыта — продолжайте",
     "The agent has a question.": "У агента вопрос.", "No answer in time — the agent continues without it.": "Ответа не было — агент продолжает без него.",
     "still working on the previous task — /stop to interrupt": "ещё работаю над прошлой задачей — /stop, чтобы прервать",
+    "the previous session keeps working in the cloud — its answer will come here":
+        "прошлая сессия продолжает работать в облаке — её ответ придёт сюда",
+    "📥 queued — I'll take it into account as soon as I can": "📥 в очереди — учту, как только смогу",
     "working…": "работаю…", "sandbox stopped responding — try again": "песочница не отвечает — попробуйте ещё раз", "sandbox stopped": "песочница остановлена",
     "✓ answer sent": "✓ ответ отправлен", "(no text)": "(без текста)",
     "Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\nThings started elsewhere show up here too. /help for commands.":

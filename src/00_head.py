@@ -16,7 +16,7 @@ import shlex, shutil, signal, stat, subprocess, sys, tempfile, textwrap, threadi
 import urllib.error, urllib.parse, urllib.request, uuid, zipfile, zlib
 from pathlib import Path
 
-VERSION = "0.13.6"
+VERSION = "0.13.7"
 SERVER = os.environ.get("ME_SERVER", "https://me-agent.ru")
 HOME = Path(os.environ.get("ME_HOME", Path.home() / ".me"))
 WIN = os.name == "nt"

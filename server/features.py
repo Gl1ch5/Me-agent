@@ -460,15 +460,21 @@ def run_job(r):
         if w and w.busy:
             conn.execute("UPDATE jobs SET next=? WHERE id=?", (time.time() + 60, r["id"]))
             return
-    conn.execute("UPDATE jobs SET status='running', last=?, next=? WHERE id=?",
-                 (time.time(), cron_next(r["cron"], time.time(), r["tz"]) if r["cron"] else 0, r["id"]))
-    if not r["cron"]:
-        conn.execute("UPDATE jobs SET enabled=0 WHERE id=?", (r["id"],))
     try:
         w = cloud.runner.start(u["id"], u["username"], lambda: runner_token(u["id"]), wid=r["ws"] or None, session=chat or None)
-    except RuntimeError as e:
-        conn.execute("UPDATE jobs SET status='error', result=? WHERE id=?", (str(e), r["id"]))
+    except RuntimeError as e:  # the cloud is full: wait for a free sandbox, give up (and say so) after half an hour
+        first = r["last"] if r["status"] == "waiting" and r["last"] else time.time()
+        if time.time() - first < 1800:
+            conn.execute("UPDATE jobs SET status='waiting', result=?, last=?, next=? WHERE id=?", (str(e), first, time.time() + 60, r["id"]))
+            return
+        nxt = cron_next(r["cron"], time.time(), r["tz"]) if r["cron"] else 0
+        conn.execute("UPDATE jobs SET status='error', result=?, next=?, enabled=? WHERE id=?", (str(e), nxt, int(bool(r["cron"])), r["id"]))
+        msg = f"✗ {r['name']}\n\ncould not start: {e}"
+        if not tg_send(r["user_id"], msg):
+            push(r["user_id"], "Failed: " + r["name"], str(e), "/account", f"job-{r['id']}")
         return
+    conn.execute("UPDATE jobs SET status='running', last=?, next=?, enabled=? WHERE id=?",
+                 (time.time(), cron_next(r["cron"], time.time(), r["tz"]) if r["cron"] else 0, int(bool(r["cron"])), r["id"]))
     w.job = r["id"]
     w.watched = 0
     w.prompt(r["prompt"] + (LATER_NOTE if chat else "") + JOB_SUFFIX)
