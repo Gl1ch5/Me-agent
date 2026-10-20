@@ -265,12 +265,12 @@ def notify_route(n: Notify, u=Depends(user)):
 _texts = {}  # worker id -> final answer text of the current turn
 
 
-def mirror_to_chats(uid, text, file=None):
-    """Show an event in every Telegram chat of this user (personal bot and global bot)."""
+def mirror_to_chats(uid, text, file=None, w=None):
+    """Show an event in every Telegram chat of this user (personal bot and global bot); with the worker, in its session's topic."""
     for b in (bots.get(uid), global_bot):
         if b and b.token:
             try:
-                b.mirror(uid, text, file)
+                b.mirror(uid, text, file, session=w.session if w else None, title=w.title if w else "")
             except Exception:
                 pass
 
@@ -292,14 +292,14 @@ def on_worker_event(w, e):
     elif t == "tool_start":
         _texts[w.id] = ""
     elif t == "user" and not job and not getattr(w, "tg_turn", False):
-        mirror_to_chats(w.uid, f"› {(w.title or 'task')[:40]}: {e.get('text', '')[:300]}")
+        mirror_to_chats(w.uid, f"› {(w.title or 'task')[:40]}: {e.get('text', '')[:300]}", w=w)
     elif t == "goal" and e.get("status") in ("done", "blocked") and not job:
         ok = e["status"] == "done"
         w.tg_goal = w.tg_turn = False
         mirror_to_chats(w.uid, f"{'✓ goal done' if ok else '✗ goal blocked'} · {(w.title or 'task')[:40]}"
-                               + (f"\n{e['reason'][:600]}" if e.get("reason") else ""))
+                               + (f"\n{e['reason'][:600]}" if e.get("reason") else ""), w=w)
     elif t == "undone" and not job:
-        mirror_to_chats(w.uid, "↶ " + e.get("text", "reverted"))
+        mirror_to_chats(w.uid, "↶ " + e.get("text", "reverted"), w=w)
     elif t in ("ask", "confirm") and time.time() - w.watched > 20:
         threading.Thread(target=push, args=(w.uid, "me is waiting for you", e.get("text") or e.get("name", ""),
                                             f"/app?s={w.session or ''}", "wait-" + w.id), daemon=True).start()
@@ -312,7 +312,7 @@ def on_worker_event(w, e):
             threading.Thread(target=job_finished, args=(w, e, text), daemon=True).start()
         else:
             if not own and not getattr(w, "tg_goal", False):
-                mirror_to_chats(w.uid, f"✓ {(w.title or 'task')[:40]}\n{text[:3500] or 'done'}")
+                mirror_to_chats(w.uid, f"✓ {(w.title or 'task')[:40]}\n\n{text[:3500] or 'done'}", w=w)
             if time.time() - w.watched > 20:
                 title = "Done: " + (w.title or "task")[:60]
                 threading.Thread(target=push, args=(w.uid, title, text[:300] or "finished", f"/app?s={w.session or ''}", "done-" + w.id),

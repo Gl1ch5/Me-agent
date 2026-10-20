@@ -81,7 +81,7 @@ def test_text_answer():
     w = FakeWorker("w1")
     b = bot(w=w)
     link(b, 5)
-    b.state[5] = {"worker": "w1"}
+    b.state[(5, 0)] = {"worker": "w1"}
     assert b.on_ask(w, {"id": "a1", "text": "which db?"})
     assert "which db?" in b.out[-1][1]
     b.handle(msg(5, "postgres"))
@@ -93,7 +93,7 @@ def test_button_answer():
     w = FakeWorker("w1")
     b = bot(w=w)
     link(b, 5)
-    b.state[5] = {"worker": "w1"}
+    b.state[(5, 0)] = {"worker": "w1"}
     b.on_ask(w, {"id": "a2", "text": "pick", "options": ["red", "blue"]})
     kb = b.out[-1][2]["reply_markup"]["inline_keyboard"]
     assert [row[0]["callback_data"] for row in kb] == ["a:0", "a:1"]
@@ -105,11 +105,11 @@ def test_button_answer():
 def test_timeout_releases_agent():
     w = FakeWorker("w1")
     b = bot(w=w)
-    b.state[5] = {"worker": "w1"}
+    b.state[(5, 0)] = {"worker": "w1"}
     b.on_ask(w, {"id": "a4", "text": "q"})
-    b._ask_timeout(5, "a4")
+    b._ask_timeout((5, 0), "a4")
     assert w.sent[-1] == {"type": "answer", "id": "a4", "text": ""}
-    b._ask_timeout(5, "a4")
+    b._ask_timeout((5, 0), "a4")
     assert len(w.sent) == 1
     print("ok   no answer in time → agent is released with an empty answer")
 
@@ -118,10 +118,10 @@ def test_stop_clears_question():
     w = FakeWorker("w1")
     b = bot(w=w)
     link(b, 5)
-    b.state[5] = {"worker": "w1"}
+    b.state[(5, 0)] = {"worker": "w1"}
     b.on_ask(w, {"id": "a5", "text": "q"})
     b.handle(msg(5, "/stop"))
-    assert 5 not in b.asks
+    assert (5, 0) not in b.asks
     print("ok   /stop clears a pending question")
 
 
@@ -158,7 +158,7 @@ def test_mirror_respects_quiet_and_busy():
     link(b, 1)
     link(b, 2, quiet=1)
     link(b, 3)
-    b.state[3] = {"busy": True}
+    b.state[(3, 0)] = {"busy": True}
     assert b.mirror(1, "› hello") == 1
     assert [c for c, _, _ in b.out] == [1]
     print("ok   mirroring reaches linked chats, skips muted and busy ones")
@@ -183,7 +183,7 @@ def test_commands_render():
     w = FakeWorker("w1", session="s9")
     b = bot(conn, w)
     link(b, 4)
-    b.state[4] = {"worker": "w1"}
+    b.state[(4, 0)] = {"worker": "w1"}
     conn.execute("INSERT INTO docs VALUES(1,'session/s9',?,0,0,0,0)", (json.dumps({
         "todo": [{"t": "a", "s": "done"}, {"t": "b", "s": "doing"}], "usage": {"cost": 0.25, "in": 10, "out": 5}}),))
     b.handle(msg(4, "/todo"))
@@ -258,7 +258,8 @@ def test_photo_goes_to_model_and_chat_turn_answers():
     link(b, 4)
     b.handle(msg(4, "what is this?", photo=[{"file_id": "p1", "file_size": 10}]))
     assert w.prompts and w.prompts[0][1] and w.prompts[0][1][0].startswith("data:image/jpeg;base64,")
-    assert [t for _, t, _ in b.out].count("it is a cat") == 1, b.out  # answered once, in this chat
+    assert sum("it is a cat" in t for _, t, _ in b.out) == 1, b.out  # answered once, in this chat
+    assert b.out[-1][2].get("md") and "_done" in b.out[-1][1]
     print("ok   a photo goes to the model; the chat's own turn is answered once")
 
 
@@ -285,6 +286,98 @@ def test_mirror_from_web_turn_not_echoed_for_chat_turn():
     w.tg_turn = True
     assert getattr(w, "tg_turn")
     print("ok   chat turns are flagged so they are not mirrored back")
+
+
+# ─── newer Bot API: rich messages, drafts, topics ───
+def api_bot(fail=(), w=None, topics=False):
+    """A bot whose send goes through the real TgApi; Telegram calls are recorded, methods in `fail` raise."""
+    b = bot(w=w)
+    del b.send
+    b.calls, b.topics = [], topics
+    def call(method, _timeout=60, **p):
+        b.calls.append((method, p))
+        if method in fail:
+            raise RuntimeError("Not Found: method not found")
+        if method == "createForumTopic":
+            return {"message_thread_id": 77}
+        return {"message_id": len(b.calls)}
+    b.call = call
+    return b
+
+
+def test_rich_send_falls_back_to_plain():
+    b = api_bot()
+    b.send(4, "# hi\n| a |\n|---|", md=True)
+    assert b.calls[-1][0] == "sendRichMessage" and b.calls[-1][1]["rich_message"] == {"markdown": "# hi\n| a |\n|---|"}
+    b = api_bot(fail=("sendRichMessage",))
+    b.send(4, "**x**", md=True)
+    b.send(4, "**y**", md=True)
+    assert [m for m, _ in b.calls] == ["sendRichMessage", "sendMessage", "sendMessage"]  # rich turned off after the first miss
+    print("ok   Markdown goes out as a rich message; without the method it falls back to plain text for good")
+
+
+def test_answer_streams_as_draft():
+    w = FakeWorker("w1", events=[{"type": "turn_start"}, {"type": "tool_start", "name": "bash", "label": "ls"},
+                                 {"type": "text", "text": "## result\nall good"}, {"type": "turn_end", "time": 2.0, "in": 5, "out": 5}])
+    b = api_bot(w=w)
+    link(b, 4)
+    b.handle(msg(4, "check"))
+    names = [m for m, _ in b.calls]
+    assert names[0] == "sendMessageDraft" and "sendMessage" not in names, names  # "Thinking…" first, no status message
+    final = b.calls[-1]
+    assert final[0] == "sendRichMessage" and "all good" in final[1]["rich_message"]["markdown"], final
+    assert "bash" in final[1]["rich_message"]["markdown"] and "<details>" in final[1]["rich_message"]["markdown"]
+    b2 = api_bot(w=FakeWorker("w1", events=[{"type": "turn_start"}, {"type": "text", "text": "ok"}, {"type": "turn_end", "time": 1, "in": 1, "out": 1}]))
+    link(b2, -100)  # a group: no drafts, one edited status message
+    b2.handle(msg(-100, "check"))
+    assert not any("Draft" in m for m, _ in b2.calls) and any(m == "editMessageText" for m, _ in b2.calls), b2.calls
+    print("ok   a private chat streams the answer as a draft; a group gets an edited status message")
+
+
+def test_stop_button_cancels_turn():
+    w = FakeWorker("w1")
+    w.alive = True
+    b = bot(w=w)
+    link(b, 4)
+    b.state[(4, 0)] = {"worker": "w1"}
+    b.handle({"update_id": 1, "stopped_message_generation": {"chat": {"id": 4}, "draft_id": 9}})
+    assert w.sent == [{"type": "cancel"}]
+    print("ok   the stop button under a draft cancels the turn")
+
+
+def test_topics_one_session_each():
+    b = api_bot(topics=True)
+    link(b, 4)
+    b.handle(msg(4, "/new landing page"))
+    assert ("createForumTopic", {"chat_id": 4, "name": "landing page"}) in b.calls
+    assert b.calls[-1][1].get("message_thread_id") == 77  # the reply goes into the new topic
+    b.bind_topic(4, 78, "s5", "ws1")
+    b.tl.thread = 78
+    assert b.st(4)["session"] == "s5" and b.st(4, 0) == {}  # a topic remembers its session; the main chat is separate
+    b.tl.thread = 0
+    b.calls.clear()
+    assert b.mirror(1, "› from web", session="s5") == 1 and b.calls[-1][1]["message_thread_id"] == 78
+    b.mirror(1, "› other", session="s6", title="other task")
+    assert ("createForumTopic", {"chat_id": 4, "name": "other task"}) in b.calls and b.topic_of(4, "s6") == 77
+    print("ok   topics: /new opens one, a topic keeps its session, mirrored sessions get their own topic")
+
+
+def test_profile_set_once():
+    conn = db()
+    b = api_bot()
+    b.db = conn
+    conn.execute("CREATE TABLE IF NOT EXISTS tg_profile(bot TEXT PRIMARY KEY, ver INTEGER)")
+    up = []
+    b.upload = lambda method, fields, files: up.append((method, fields, list(files)))
+    b.profile()
+    names = [(m, p.get("language_code")) for m, p in b.calls]
+    assert ("setMyDescription", "") in names and ("setMyShortDescription", "ru") in names, names
+    assert up == [("setMyProfilePhoto", {"photo": {"type": "static", "photo": "attach://avatar"}}, ["avatar"])], up
+    assert tgbot.AVATAR.read_bytes()[:2] == b"\xff\xd8"  # a JPG, as Telegram requires
+    b.calls.clear()
+    b.profile()  # restart: already set, no second upload
+    assert not b.calls and len(up) == 1
+    print("ok   every bot gets the avatar and description once")
 
 
 if __name__ == "__main__":
