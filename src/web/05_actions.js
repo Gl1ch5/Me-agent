@@ -27,6 +27,7 @@ async function apply(s, history = true) {
   if (history) renderHistory(s.session); renderSessions(); renderStatus();
   renderChrome();
   after = s.after ?? after;
+  if (s.running) setRunning(s.running);
   if (s.busy) { busy = true; turnT0 = Date.now(); setBusy(); }
   (s.pending || []).forEach(onEvent);
   poll();
@@ -56,10 +57,10 @@ side.addEventListener("touchstart", e => touchX = e.touches[0].clientX, {passive
 side.addEventListener("touchend", e => { if (touchX !== null && e.changedTouches[0].clientX - touchX < -60) closeSide(); touchX = null; });
 async function newChatIn(cwd) {  // a new chat inside a given project folder (sidebar "+")
   closeSide(); polling++;
-  try { await api(base + "/new", {cwd}); await apply(await api(base + "/state")); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
+  try { await A.free(); await api(base + "/new", {cwd}); await apply(await api(base + "/state")); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 }
 async function newChat() { closeSide(); polling++; busy = false; await apply(await A.newChat()); history.replaceState(null, "", location.pathname); $("title").textContent = t("New chat"); }
-async function loadSession(id) { closeSide(); polling++; await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
+async function loadSession(id) { closeSide(); polling++; doneIds.delete(id); await apply(await A.load(id)); if (MODE === "cloud") history.replaceState(null, "", "?s=" + id); }
 function pickModel() {
   const ms = state.config?.models || [], cur = state.config?.model;
   if (!ms.length) { $("pbody").innerHTML = `<p style="padding:12px;color:var(--dim)">${esc(t("No models — add one in your account or with /models."))}</p>`; return $("popup").classList.remove("hidden"); }
@@ -141,7 +142,7 @@ $("wsPill").onclick = async () => {
   const native = window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder;  // desktop app: real folder dialog
   const p = native ? await window.pywebview.api.pick_folder(state.cwd || "") : prompt(t("Project folder for the local agent"), state.cwd || "");
   if (!p) return;
-  try { await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
+  try { await A.free(); await apply(await api(base + "/cwd", {path: p})); $("title").textContent = t("New chat"); } catch (e) { alert(e.message); }
 };
 if (EMBED) window.addEventListener("message", e => {  // the IDE puts a selection / file reference into the input, or sends a prompt
   if (e.source !== window.parent || !e.data) return;

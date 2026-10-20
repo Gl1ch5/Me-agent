@@ -1,10 +1,11 @@
 """Telegram bot logic without Telegram or a sandbox: questions, mirroring, commands, attachments, link codes.
 Run: python3 tests/test_bot.py   (needs server deps: fastapi, cryptography, pydantic)"""
-import base64, json, sqlite3, sys, time, types
+import base64, json, os, sqlite3, sys, time, types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
 import tgbot  # noqa: E402
+import tg_tasks  # noqa: E402
 
 SCHEMA = """
 CREATE TABLE tg_links(chat_id INTEGER, user_id INTEGER, created REAL, bot TEXT DEFAULT '', PRIMARY KEY(chat_id, bot));
@@ -470,6 +471,41 @@ def test_session_tools():
     finally:
         del sys.modules["app"]
     print("ok   /export sends the chat as Markdown, /search finds sessions, /rename renames")
+
+
+def test_page_screenshot_after_publish():
+    os.environ.update(ME_PUBLIC_URL="https://me-agent.ru", ME_SITES_DOMAIN="me-agent.ru")
+    try:
+        assert tg_tasks.page_links("see https://me-agent.ru/s/u/a/, http://127.0.0.1:8081/s/x/ https://evil.com/s/u/a/ "
+                                   "https://a.u.me-agent.ru/ https://me-agent.ru/account") == ["https://me-agent.ru/s/u/a/", "https://a.u.me-agent.ru/"]
+        w = FakeWorker("w1", events=[{"type": "turn_start"}, {"type": "tool_start", "name": "publish", "label": "a ← site"},
+                                     {"type": "tool_end", "ok": True, "output": "published 3 files: https://a.u.me-agent.ru/"},
+                                     {"type": "text", "text": "online at https://a.u.me-agent.ru/"}, {"type": "turn_end", "time": 1, "in": 1, "out": 1}])
+        b = bot(w=w)
+        link(b, 4)
+        shots = []
+        b.send_shot = lambda chat, url, thread=0: shots.append((chat, url))
+        b.handle(msg(4, "publish it"))
+        assert shots == [(4, "https://a.u.me-agent.ru/")], shots
+        b.handle(msg(4, "/preview"))
+        assert shots[-1] == (4, "https://me-agent.ru/preview/x/"), shots
+        up = []
+        b = bot(w=w)
+        b.upload = lambda method, fields, files: up.append((method, fields, files))
+        tg_tasks_shots = sys.modules["shots"] = type(sys)("shots")
+        tg_tasks_shots.screenshot = lambda url: b"\xff\xd8jpeg"
+        b.tl.lang = "ru"
+        b.send_shot(4, "https://a.u.me-agent.ru/")
+        for _ in range(50):
+            if up:
+                break
+            time.sleep(0.02)
+        assert up[0][0] == "sendPhoto" and up[0][2]["photo"][1] == b"\xff\xd8jpeg", up
+        assert up[0][1]["reply_markup"]["inline_keyboard"][0][0] == {"text": "открыть ↗", "url": "https://a.u.me-agent.ru/"}
+    finally:
+        sys.modules.pop("shots", None)
+        os.environ.pop("ME_PUBLIC_URL"), os.environ.pop("ME_SITES_DOMAIN")
+    print("ok   a page the turn put online (site, preview) comes back as a screenshot with an open button; only our own hosts")
 
 
 if __name__ == "__main__":

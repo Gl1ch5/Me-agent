@@ -178,6 +178,7 @@ header .pill span{max-width:90px;overflow:hidden;text-overflow:ellipsis}
 .proj summary::-webkit-details-marker{display:none}.proj summary:hover{background:var(--bg2)}
 .proj summary span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proj summary .n{font:500 11px var(--mono);color:var(--dim)}
 .proj .pnew{width:24px;height:24px;opacity:.55}.proj summary:hover .pnew{opacity:1}
+.si .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}.si .dot.run{background:var(--a);animation:pulse 1s infinite}.si .dot.done{background:var(--ok,#3fb950)}
 .proj .si{padding-left:32px}.si.addp{color:var(--a);margin-top:6px}
 
 .fhead{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);margin-bottom:4px;font:12.5px var(--mono)}

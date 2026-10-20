@@ -153,6 +153,19 @@ def test_repo_map(tmp=Path(tempfile.mkdtemp())):
     (tmp / "web.js").write_text("export function render() {}\nconst X = 1\n")
     out = me.repo_map(str(tmp), home=tempfile.mkdtemp())
     assert "pkg/a.py: Foo, bar" in out and "inner" not in out and "web.js: render, X" in out, out
+    (tmp / "player.gd").write_text("extends Node\nclass_name Player\nsignal died\nfunc jump():\n\tpass\n")
+    for i in range(60):  # a big project: the map keeps the top level whole and counts the deep files per folder
+        (tmp / "deep" / "x" / f"m{i}").mkdir(parents=True)
+        (tmp / "deep" / "x" / f"m{i}" / "mod.py").write_text("def handler_with_a_long_name_%d(): pass\n" % i)
+    out = me.repo_map(str(tmp), home=tempfile.mkdtemp(), limit=1500)
+    assert "player.gd: Player, died, jump" in out and "pkg/a.py: Foo, bar" in out and "more files (deep/x/m" in out, out
+    s = make()
+    ag = me.Agent(s, lambda e: None)
+    ag.session["cwd"] = str(tmp)
+    assert ag.map_hint("hi there") == ""  # small talk: no map
+    assert "player.gd" in ag.map_hint("add a double jump to the player")
+    s.config["settings"]["behavior"] = {"repo_map": False}
+    assert ag.map_hint("add a double jump to the player") == ""
 
 
 def test_parallel_readonly(tmp=Path(tempfile.mkdtemp())):
@@ -177,6 +190,13 @@ def test_undo_and_diff(tmp=Path(tempfile.mkdtemp())):
     n = len(ag.session["messages"])
     assert ag.undo()["ok"] and not (tmp / "new.txt").exists() and len(ag.session["messages"]) < n
     assert ag.undo()["ok"] and f.read_text() == "before\n"
+    (tmp / "d" / "sub").mkdir(parents=True)  # files deleted with rm in bash come back with /undo too
+    (tmp / "d" / "sub" / "a.html").write_text("<p>a")
+    (tmp / "b.png").write_bytes(b"\x89PNG\xff")
+    ag.session["cwd"] = str(tmp)
+    ag.run("tool:bash " + json.dumps({"cmd": "rm -rf d && rm -f *.png"}))
+    assert not (tmp / "d").exists() and not (tmp / "b.png").exists()
+    assert ag.undo()["ok"] and (tmp / "d" / "sub" / "a.html").read_text() == "<p>a" and (tmp / "b.png").read_bytes() == b"\x89PNG\xff"
     assert not ag.undo()["ok"]
 
 
@@ -871,10 +891,16 @@ def test_behavior_switches(tmp=Path(tempfile.mkdtemp())):
     ag = me.Agent(s, ev.append)
     ag.run("tool:write " + json.dumps({"path": str(tmp / "x.py"), "content": "x = 1\n"}))
     assert not any(e["type"] == "verify" for e in ev)  # tests off: no self-check round
+    ag.run("tool:bash " + json.dumps({"cmd": "python3 -m pytest -q"}))
+    assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"]
+    ag.session["messages"].append({"role": "user", "content": "make the page prettier"})
     for cmd in ("python3 -m pytest -q", "npm i puppeteer-core@22", "cd x && npm run build", "chromium --headless --screenshot a.png", "npx vite build",
                 "godot --headless --path . --quit-after 300", "cd /tmp/chk && node check.mjs main.js"):
-        ag.run("tool:bash " + json.dumps({"cmd": cmd}))
-        assert "turned self-testing off" in [e for e in ev if e["type"] == "tool_end"][-1]["output"], cmd
+        assert ag._no_checks(cmd), cmd
+    for ask in ("запусти игру на 3002", "run the tests please", "собери проект"):  # the user asked for it: the switch steps aside
+        ag.session["messages"].append({"role": "user", "content": ask})
+        assert not ag._no_checks("npx vite build"), ask
+    ag.session["messages"].append({"role": "user", "content": "make the page prettier"})
     assert not me.CHECK_RX.search("node server.js") and not me.CHECK_RX.search("node scripts/checkout.js")
     assert not ag._no_checks("which python3 chromium google-chrome; command -v playwright") and ag._no_checks("which node; npx playwright test")
     ag.run("tool:bash " + json.dumps({"cmd": "echo fine"}))
@@ -1033,6 +1059,32 @@ def test_rewind_fork_shell_search_btw(tmp=Path(tempfile.mkdtemp())):
     n = len(ag.session["messages"])
     assert ag.side_question("what is this?") and len(ag.session["messages"]) == n  # /btw stays out of the history
 
+
+
+def test_web_lanes(tmp=Path(tempfile.mkdtemp())):
+    """A second chat opens in its own lane while the first one works; opening a running chat attaches to its lane."""
+    s = make()
+    s.save = lambda: None
+    hub = me.Lanes(s)
+    w0 = hub.list[0]
+    w0.handle("POST", "/new", {"cwd": str(tmp)})
+    first = w0.agent.session["id"]
+    assert hub.open(None, 0) == {"id": 0, "base": "/api/agent"}  # idle: stay
+    w0.agent.busy = True
+    l = hub.open(None, 0)
+    assert l == {"id": 1, "base": "/api/agent/w/1"}
+    lane, sub = hub.route("/w/1/state")
+    assert lane is hub.list[1] and sub == "/state"
+    assert hub.open(first, 1)["id"] == 0  # the running chat: its own lane, not reloaded
+    st = lane.state()
+    assert st["running"] == [first] and st["after"] == 0
+    assert hub.route("/state")[0] is w0
+    try:
+        hub.route("/w/9/state")
+        assert False
+    except KeyError:
+        pass
+    w0.agent.busy = False
 
 
 def test_market_names_unique():

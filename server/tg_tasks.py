@@ -1,5 +1,6 @@
 """Telegram bot: running a task in the sandbox from a chat, streaming its answer, and the agent's questions."""
-import base64, random, threading, time
+import base64, os, random, re, threading, time
+from urllib.parse import urlsplit
 
 from tg_format import progress_md, steps_md
 from tg_i18n import tr
@@ -8,7 +9,41 @@ ANSWER_KB = {"inline_keyboard": [[{"text": "↻ retry", "callback_data": "c:retr
                                   {"text": "＋ new", "callback_data": "c:new"}]]}
 
 
+URL_RX = re.compile(r"https?://[^\s<>()\[\]`'\"*]+")
+
+
+def page_links(text):
+    """Links to pages this server serves (published sites, previews) in a turn's output: worth a screenshot in the chat.
+    Only our own hosts, so a chat can't make the server open arbitrary (or internal) addresses."""
+    public = urlsplit(os.environ.get("ME_PUBLIC_URL", "")).hostname
+    sites = os.environ.get("ME_SITES_DOMAIN", "").strip(".").lower()
+    out = []
+    for u in URL_RX.findall(text or ""):
+        u = u.rstrip(".,;:!?")
+        h, path = urlsplit(u).hostname or "", urlsplit(u).path
+        if ((public and h == public and path.startswith(("/s/", "/preview/"))) or (sites and h.endswith("." + sites))) and u not in out:
+            out.append(u)
+    return out
+
+
 class TgTasks:
+    def send_shot(self, chat, url, thread=0):
+        """A phone-sized screenshot of a page with a button to open it (in the background: Chromium takes a few seconds)."""
+        from shots import screenshot
+        lang = self.ui_lang(chat)
+
+        def go():
+            img = screenshot(url)
+            if not img:
+                return
+            try:
+                self.upload("sendPhoto", {"chat_id": chat, "caption": url, **({"message_thread_id": thread} if thread else {}),
+                                          "reply_markup": {"inline_keyboard": [[{"text": tr("open", lang) + " ↗", "url": url}]]}},
+                            {"photo": ("page.jpg", img)})
+            except Exception:
+                pass
+        threading.Thread(target=go, daemon=True).start()
+
     # ─── agent questions: the sandbox waits for an answer, so Telegram must answer or time out ───
     ASK_TIMEOUT = 600
 
@@ -84,7 +119,7 @@ class TgTasks:
         w.tg_turn = True  # this turn's answer goes to this chat; other turns are mirrored
         st["busy"] = True
         w.prompt(text, images)
-        steps, answer, t0, last, shown, idle = [], "", time.time(), 0, None, 0
+        steps, answer, t0, last, shown, idle, links = [], "", time.time(), 0, None, 0, []
         try:
             while True:
                 evs = w.wait_events(after, timeout=2 if live else 20)
@@ -99,6 +134,8 @@ class TgTasks:
                         answer = ""
                     elif t == "tool_end" and not e.get("ok") and steps:
                         steps[-1] += "  ✗"
+                    elif t == "tool_end":
+                        links += [u for u in page_links(str(e.get("output", ""))[:4000]) if u not in links]
                     elif t == "text":
                         answer += e["text"]
                     elif t == "error":
@@ -116,6 +153,8 @@ class TgTasks:
                             foot = ""
                         self.send(chat, (steps_md(steps) if live else "") + (answer.strip() or tr("(no text)", self.ui_lang(chat)))
                                   + ("\n\n" + foot if foot else ""), md=True, reply_markup=ANSWER_KB)
+                        for u in (links + [u for u in page_links(answer) if u not in links])[:1]:  # the page this turn put online
+                            self.send_shot(chat, u, thread)
                         return
                     elif t == "exit":
                         return self.send(chat, "sandbox stopped")

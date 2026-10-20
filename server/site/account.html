@@ -382,6 +382,7 @@ const RU_D = {
   "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач",
   "global memory across chats": "глобальная память между чатами",
   "load matching skills before a task": "подбирает и загружает подходящие скиллы перед задачей",
+  "show a project map (files and symbols) with the first task": "даёт карту проекта (файлы и функции) с первой задачей",
   "suggest the next message (tab to accept)": "подсказывает следующее сообщение (tab — принять)",
   "comment the code it writes": "комментирует код, который пишет",
   "watch for security issues": "следит за проблемами безопасности",
@@ -658,7 +659,7 @@ const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "
   ["minimal_diff", false, "change only what the task needs", "no refactors or cleanups of code you did not ask about"],
   ["no_new_deps", false, "ask before adding dependencies", ""], ["ask_unclear", false, "ask when the request is unclear", ""],
   ["subagents", true, "use subagents for big separate jobs", ""], ["memory", true, "global memory across chats", ""],
-  ["skills", true, "load matching skills before a task", ""], ["suggest", true, "suggest the next message (tab to accept)", ""], ["comments", false, "comment the code it writes", ""],
+  ["skills", true, "load matching skills before a task", ""], ["repo_map", true, "show a project map (files and symbols) with the first task", ""], ["suggest", true, "suggest the next message (tab to accept)", ""], ["comments", false, "comment the code it writes", ""],
   ["security", false, "watch for security issues", ""], ["summary", false, "end with a short recap and next steps", ""], ["publish", false, "publish static sites at a public link (me cloud)", ""]];
 function behaviorOn(k, d) { const b = cfg.settings.behavior || {}; return k in b ? !!b[k] : (k === "tests" && cfg.settings.no_verify ? false : d); }
 function renderBehavior() {

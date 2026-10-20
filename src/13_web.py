@@ -54,18 +54,20 @@ def apply_setting(cfg, key, value, model=None):
 class WebSession:
     """Agent + event log for the browser UI. Same endpoint shape as the cloud runner (/api/cloud/<id>/...)."""
 
-    def __init__(self, store):
+    def __init__(self, store, cloud=None, ws=None):
         import collections
         self.s = store
-        self.cloud = Cloud(store)
-        self.ws = Workspaces(store, self.cloud)
+        self.hub = None
+        self.cloud = cloud or Cloud(store)
+        self.ws = ws or Workspaces(store, self.cloud)
         self.events = collections.deque(maxlen=2000)
         self.seq = 0
         self.cond = threading.Condition()
         self.waits = {}
         self.agent = Agent(store, self.push, self.confirm, self.ask)
         self.agent.suggest = True
-        store.on_change = self.cloud.autosync
+        if not cloud:
+            store.on_change = self.cloud.autosync
 
     def push(self, e):
         with self.cond:
@@ -105,6 +107,7 @@ class WebSession:
                            "autocompact": self.s.config["settings"].get("autocompact", 80)},
                 "session": ses, "ws": ses.get("ws"), "busy": self.agent.busy,
                 "pending": [w[2] for w in list(self.waits.values())], "perm": perm_mode(self.s.config["settings"]),
+                "running": self.hub.running() if self.hub else ([ses.get("id")] if self.agent.busy else []),
                 "day_cost": day_cost(self.s.home), "preview": "", "behavior": behavior(self.s.config["settings"]), "lang": self.s.config["settings"].get("lang", ""),
                 "agent": self.agent.preset()["name"], "context": self.agent.context_files(),
                 "agents": [{"name": n, "label": p.get("label", n), "description": p.get("description", "")} for n, p in presets(self.s).items()],
@@ -249,6 +252,59 @@ class WebSession:
         raise KeyError(path)
 
 
+class Lanes:
+    """Several agents side by side, so a second chat can run while the first one works. Lane 0 is /api/agent itself."""
+    MAX = 8
+
+    def __init__(self, store):
+        self.s = store
+        self.lock = threading.Lock()
+        self.list = [WebSession(store)]
+        self.list[0].hub = self
+
+    def base(self, i):
+        return "/api/agent" + (f"/w/{i}" if i else "")
+
+    def running(self):
+        return [w.agent.session.get("id") for w in self.list if w.agent.busy]
+
+    def info(self):
+        return [{"id": i, "base": self.base(i), "session": w.agent.session.get("id"), "title": w.agent.session.get("title"), "busy": w.agent.busy}
+                for i, w in enumerate(self.list)]
+
+    def open(self, session=None, cur=0):
+        """The lane already holding `session`, else an idle one (the caller's own first), else a new one."""
+        with self.lock:
+            for i, w in enumerate(self.list):
+                if session and w.agent.session.get("id") == session:
+                    return {"id": i, "base": self.base(i)}
+            idle = [i for i, w in enumerate(self.list) if not w.agent.busy and not w.waits]
+            if cur in idle:
+                i = cur
+            elif idle:
+                i = idle[0]
+            elif len(self.list) < self.MAX:
+                w = WebSession(self.s, self.list[0].cloud, self.list[0].ws)
+                w.hub = self
+                self.list.append(w)
+                i = len(self.list) - 1
+            else:
+                raise ValueError(f"{self.MAX} tasks are already running — wait for one or stop it")
+        if session:
+            self.list[i].handle("POST", "/load", {"id": session})
+        return {"id": i, "base": self.base(i)}
+
+    def route(self, sub):
+        """'/w/2/state' → (lane 2, '/state'); anything else is lane 0."""
+        m = re.match(r"/w/(\d+)(/.*)", sub)
+        if not m:
+            return self.list[0], sub
+        i = int(m.group(1))
+        if i >= len(self.list):
+            raise KeyError(sub)
+        return self.list[i], m.group(2)
+
+
 def groq_transcribe(cfg, audio, ctype="audio/webm"):
     v = cfg.get("voice") or {}
     key = v.get("groq_key") or next((p.get("api_key") for p in cfg.get("providers", {}).values() if "groq.com" in p.get("base_url", "")), "")
@@ -269,7 +325,8 @@ def groq_transcribe(cfg, audio, ctype="audio/webm"):
 def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import secrets as _sec
-    ws = WebSession(store)
+    lanes = Lanes(store)
+    ws = lanes.list[0]
     key = "" if host in ("127.0.0.1", "localhost") else _sec.token_urlsafe(16)
 
     class H(BaseHTTPRequestHandler):
@@ -315,7 +372,11 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
             try:
                 if sub == "/voice":
                     return self._send(200, {"text": groq_transcribe(store.config, raw, self.headers.get("Content-Type", "audio/webm"))})
-                return self._send(200, ws.handle(method, sub, json.loads(raw or b"{}")))
+                body = json.loads(raw or b"{}")
+                if sub == "/lanes":
+                    return self._send(200, lanes.open(body.get("session"), int(body.get("from") or 0)) if method == "POST" else lanes.info())
+                lane, sub = lanes.route(sub)
+                return self._send(200, lane.handle(method, sub, body))
             except KeyError:
                 return self._send(404, {"detail": "not found"})
             except Exception as e:
@@ -344,8 +405,9 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
             pass
     def remote(n):
         store.config.update(jload(store.cfg_path) or {})
-        if ws.agent.refresh_from_disk(os.getcwd()):
-            ws.push({"type": "reload"})
+        for w in lanes.list:
+            if not w.agent.busy and w.agent.refresh_from_disk(os.getcwd()):
+                w.push({"type": "reload"})
     if store.auth.get("token"):
         ws.cloud.watch(remote)
     try:

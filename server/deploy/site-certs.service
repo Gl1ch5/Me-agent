@@ -1,0 +1,7 @@
+[Unit]
+Description=me: certificates for published sites
+
+[Service]
+Type=oneshot
+Environment=ME_DATA=/var/lib/me-agent
+ExecStart=/opt/me-agent/server/deploy/site-certs.sh

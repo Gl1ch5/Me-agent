@@ -64,6 +64,7 @@ BEHAVIOR = {
     "subagents": (True, "use subagents for big separate jobs", "", ""),
     "memory": (True, "global memory across chats", "", ""),
     "skills": (True, "load matching skills before a task", "", ""),
+    "repo_map": (True, "show a project map (files and symbols) with the first task", "", ""),
     "suggest": (True, "suggest the next message (tab to accept)", "", ""),
     "comments": (False, "comment the code it writes",
                  "Add short comments to code you write wherever the why is not obvious; keep the project's comment style.", ""),
@@ -76,8 +77,10 @@ BEHAVIOR = {
 }
 
 
-NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app; "
-             "finish the work and tell the user which commands to run to check it.")
+NO_CHECKS = ("error: not run — the user turned self-testing off (/behavior). Do not test, build, lint or run the app on your own; "
+             "finish the work and tell the user which commands to run to check it (or that they can ask you to run it).")
+# the user's own request to run or check something lifts the self-testing switch for that request
+ASKED_RUN_RX = re.compile(r"(?:\b(?:run|start|launch|serve|test|build|lint|check|screenshot)\b|запус|тест|провер|собер|скрин|открой)", re.I)
 # what "checking your work" looks like on the command line: blocked outright when self-testing is off
 CHECK_RX = re.compile(r"(?:^|[\s;&|(])(?:pytest|py\.test|unittest|tox|nox|jest|vitest|mocha|karma|cypress|playwright|puppeteer|"
                       r"chromium(?:-browser)?|google-chrome|headless|screenshot|lighthouse|eslint|tsc|mypy|ruff|flake8|pylint|"
@@ -407,7 +410,7 @@ class Agent:
         start_idx = len(self.session["messages"])
         self._turn_gen = self.session.get("compactions", 0)
         content = text if not images else [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
-        hint = self.skill_hint(text)
+        hint = "\n\n".join(h for h in (self.map_hint(text), self.skill_hint(text)) if h)
         if hint:  # before the request, so the request stays the last thing the model reads
             self.session["messages"].append({"role": "user", "_aux": True, "_hint": True, "content": hint})
         self.session["messages"].append({"role": "user", "content": content})
@@ -492,8 +495,9 @@ class Agent:
                         self.session["messages"].append({"role": "user", "_aux": True, "content": ACT_NUDGE})
                         continue
                     open_steps = [i for i in self.session.get("todo") or [] if i["s"] != "done"]
-                    if todo_used and open_steps and not todo_nudged and self.depth == 0:
-                        todo_nudged = True  # the plan says work is left: finish it, or at least leave the checklist true
+                    left = [i.get("t") for i in open_steps]
+                    if todo_used and open_steps and not todo_nudged and self.depth == 0 and left != getattr(self, "_todo_left", None):
+                        todo_nudged, self._todo_left = True, left  # the plan says work is left: finish it, or leave the checklist true (once per set of open steps)
                         self.session["messages"].append({"role": "user", "_aux": True, "content": (
                             "[self-check] Your checklist still has open steps:\n" + todo_lines(self.session["todo"]) +
                             "\nMark finished ones done (todo done=[…]) and do the rest. If you stopped on purpose (blocked, or waiting "
@@ -695,6 +699,9 @@ class Agent:
         args = self.remap(args)
         if name in ("write", "edit"):
             self._snapshot(self.abspath(args.get("path", "")))
+        elif name == "bash":
+            for p in rm_targets(str(args.get("cmd", "")), self.cwd):
+                self._snapshot(p)
         try:
             return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
         except Cancelled:
@@ -704,7 +711,11 @@ class Agent:
 
     def _no_checks(self, cmd):
         cmd = re.sub(r"\b(?:which|command\s+-v|type|where)\s+[^;&|\n]*", "", str(cmd or ""))  # looking a tool up is not checking work
-        return not behavior(self.s.config["settings"])["tests"] and bool(CHECK_RX.search(cmd))
+        if behavior(self.s.config["settings"])["tests"] or not CHECK_RX.search(cmd):
+            return False
+        req = next((m for m in reversed(self.session["messages"]) if m["role"] == "user" and not m.get("_aux")), {}).get("content", "")
+        req = req if isinstance(req, str) else " ".join(x.get("text", "") for x in req if x.get("type") == "text")
+        return not ASKED_RUN_RX.search(req)
 
     def _cli(self, spec, args, temit):
         """An agent's own CLI tool: fill the template, stream the output as status lines, report exit code."""
@@ -1006,6 +1017,25 @@ class Agent:
         names = [n for n in skill_matches(text, self.skills.enabled()) if n not in used]
         return ("[skills that fit my next request: " + ", ".join(names) + ". If it is a task (not just a question), load the guide "
                 "with skill(name) first and follow it]") if names else ""
+
+    def map_hint(self, text):
+        """The first task in a chat about a real project: hand over a map of its files and symbols, so the model starts working
+        instead of exploring folder by folder (greetings and small talk get none)."""
+        if (self.depth or not behavior(self.s.config["settings"])["repo_map"] or len(text.split()) < 4
+                or any(m["role"] == "user" and not m.get("_aux") for m in self.session["messages"])):
+            return ""
+        cwd = os.path.abspath(self.cwd)
+        if cwd in (os.path.abspath(os.path.expanduser("~")), os.path.abspath(os.sep)):
+            return ""
+        srcs = 0
+        for f in walk_files(cwd, 3000):
+            srcs += os.path.splitext(f)[1].lower() in MAP_EXT
+            if srcs >= 6:
+                break
+        if srcs < 6:
+            return ""
+        return ("[map of this project (file: top-level symbols) — use it instead of exploring; read what the task needs]\n"
+                + repo_map(cwd, "", self.s.home, limit=3000))
 
     SUGGEST_PROMPT = ("Guess the user's next message in this chat with a coding agent: one short, natural request (at most 12 words), "
                       "in the user's language, that they would most likely send next. Reply with that message only, no quotes. "
