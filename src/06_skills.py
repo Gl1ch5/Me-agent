@@ -121,6 +121,42 @@ def parse_skill(path):
     return dict(meta, body=body.strip(), actions=actions, path=str(p))
 
 
+# request words in other languages (and loose synonyms) → words skill names and descriptions use; matched by stem
+SKILL_WORDS = {
+    "сайт": "website page landing frontend", "site": "website page frontend", "website": "page frontend",
+    "лендинг": "landing page frontend", "страниц": "page web", "веб": "web", "интерфейс": "ui frontend", "дизайн": "design ui",
+    "вёрстк": "frontend html css", "верстк": "frontend html css", "кнопк": "ui component", "компонент": "component ui",
+    "дашборд": "dashboard", "игр": "game", "тест": "test testing", "отлад": "debug debugging", "баг": "bug debug",
+    "ошибк": "error bug debug", "коммит": "commit", "план": "plan plans", "безопасн": "security threat", "уязвим": "security threat",
+    "телеграм": "telegram", "бот": "bot telegram", "навык": "skill", "скил": "skill", "годо": "godot", "мод": "mod mods",
+    "спрайт": "sprite", "3д": "3d threejs", "идеи": "brainstorming", "идею": "brainstorming",
+}
+SKILL_STOP = set("the and for with use any from that this into your you are not but all can how when what which via its it's one "
+                 "each also more than like make made tool tools file files path content code read write new add create run".split())
+
+
+def _stems(text):
+    out = set()
+    for w in re.findall(r"[a-zа-яё0-9]+", (text or "").lower()):
+        if len(w) > 2 and w not in SKILL_STOP:
+            out.add((w[:-1] if w.endswith("s") and len(w) > 4 else w)[:5])
+    return out
+
+
+def skill_matches(request, skills, limit=2):
+    """Skills whose name or description fits a request (any language, via SKILL_WORDS): a hint so the model loads them."""
+    words = (request or "").lower()
+    for k, v in SKILL_WORDS.items():
+        if k in words:
+            words += " " + v
+    want, scored = _stems(words), []
+    for name, sk in skills.items():
+        score = 3 * len(want & _stems(name.replace("-", " ").replace("_", " "))) + len(want & _stems(sk.get("description", "")))
+        if score >= 2:
+            scored.append((-score, name))
+    return [n for _, n in sorted(scored)[:limit]]
+
+
 class Skills:
     def __init__(self, store):
         self.s = store

@@ -379,6 +379,11 @@ const RU_D = {
   "ask when the request is unclear": "переспрашивает, если запрос неясен",
   "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач",
   "global memory across chats": "глобальная память между чатами",
+  "load matching skills before a task": "подбирает и загружает подходящие скиллы перед задачей",
+  "suggest the next message (tab to accept)": "подсказывает следующее сообщение (tab — принять)",
+  "comment the code it writes": "комментирует код, который пишет",
+  "watch for security issues": "следит за проблемами безопасности",
+  "end with a short recap and next steps": "в конце — краткий итог и следующие шаги",
   "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
   "another model already has this name": "модель с таким именем уже есть",
   "system prompt": "системный промпт", "Appended to me's tiny base prompt on every machine.": "Добавляется к короткому базовому промпту me на каждой машине.",
@@ -647,7 +652,9 @@ const BEHAVIOR = [["tests", true, "verify changes itself (tests, build, run)", "
   ["agents_md", true, "offer to create AGENTS.md in new projects", ""],
   ["minimal_diff", false, "change only what the task needs", "no refactors or cleanups of code you did not ask about"],
   ["no_new_deps", false, "ask before adding dependencies", ""], ["ask_unclear", false, "ask when the request is unclear", ""],
-  ["subagents", true, "use subagents for big separate jobs", ""], ["memory", true, "global memory across chats", ""]];
+  ["subagents", true, "use subagents for big separate jobs", ""], ["memory", true, "global memory across chats", ""],
+  ["skills", true, "load matching skills before a task", ""], ["suggest", true, "suggest the next message (tab to accept)", ""], ["comments", false, "comment the code it writes", ""],
+  ["security", false, "watch for security issues", ""], ["summary", false, "end with a short recap and next steps", ""]];
 function behaviorOn(k, d) { const b = cfg.settings.behavior || {}; return k in b ? !!b[k] : (k === "tests" && cfg.settings.no_verify ? false : d); }
 function renderBehavior() {
   $("behavior").innerHTML = BEHAVIOR.map(([k, d, l, h]) => `<label style="display:flex;gap:10px;align-items:flex-start;color:var(--fg);margin:8px 0">

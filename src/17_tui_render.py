@@ -373,10 +373,15 @@ class TUIRender:
                     l.add(" " + mode, rgb(TH["accent"]) + CSI + "1m").add(" › ", rgb(TH["faint"]))
                 else:
                     l.add(" " * pw)
-                if not self.input and i == 0:
+                gh = self.ghost() if i == 0 and len(in_rows) == 1 else ""
+                if not self.input and i == 0 and not gh:
                     l.add(T("ask anything, / for commands" if not busy else "queue a message…"), rgb(TH["faint"]))
                 else:
                     l.add(r, rgb(TH["fg"]))
+                    if gh:  # the suggested next message, greyed: tab or → takes it
+                        room = W - 2 - l.width() - 5
+                        if room > 3:
+                            l.add(gh if swidth(gh) <= room else gh[:room - 1] + "…", rgb(TH["faint"])).add("  tab", rgb(TH["faint"]))
                 l.add(" " * max(0, W - 1 - l.width())).add("│", bcol)
                 box.append(l)
             box.append(Line().add("╰" + "─" * (W - 2) + "╯", bcol))

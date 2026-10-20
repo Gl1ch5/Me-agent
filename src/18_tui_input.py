@@ -70,6 +70,8 @@ class TUIInput:
         elif k == "tab":
             if self.sugg:
                 self.accept_sugg()
+            elif self.ghost():
+                self.input, self.cur = self.next_hint, len(self.next_hint)
         elif k == "backspace":
             if self.cur:
                 self.input = self.input[: self.cur - 1] + self.input[self.cur:]
@@ -79,6 +81,8 @@ class TUIInput:
         elif k == "left":
             self.cur = max(0, self.cur - 1)
         elif k == "right":
+            if self.cur == len(self.input) and self.ghost():
+                self.input, self.cur = self.next_hint, len(self.next_hint)
             self.cur = min(len(self.input), self.cur + 1)
         elif k in ("home", "ctrl-a"):
             self.cur = self.input.rfind("\n", 0, self.cur) + 1
@@ -359,6 +363,13 @@ class TUIInput:
             elif isinstance(k, tuple):
                 s = k[1] if m["multiline"] else k[1].replace("\n", " ")
                 m["text"], m["cur"] = t[:c] + s + t[c:], c + len(s)
+
+    def ghost(self):
+        """The rest of the suggested next message still to type ("" when the input went another way)."""
+        h = getattr(self, "next_hint", "")
+        if not h or self.agent.busy or self.sugg or "\n" in self.input or not h.lower().startswith(self.input.lower()):
+            return ""
+        return h[len(self.input):]
 
     def expand_pastes(self, text):
         """[paste #n · N lines] markers → the pasted text."""

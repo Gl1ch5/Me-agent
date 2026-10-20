@@ -106,6 +106,7 @@ def run_rpc(store):
 
     ag = Agent(store, emit_sync, (lambda n, a: True) if yolo else (lambda n, a: (lambda r: "always" if r == "always" else bool(r))(wait("confirm", name=n, args=a))),
                lambda q, options=None: wait("ask", text=q, options=options) or "")
+    ag.suggest = True
     if os.environ.get("ME_WS_ID"):
         ag.session["ws"] = os.environ["ME_WS_ID"]
     store.on_change = cloud.autosync  # every checkpoint reaches other devices within ~1s
