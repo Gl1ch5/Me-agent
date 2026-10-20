@@ -17,7 +17,7 @@ def build():
     html = html.replace("/*CSS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.css"))))
     html = html.replace("/*JS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.js"))))
     assert PLACEHOLDER in code, "WEBUI placeholder missing in src"
-    code = code.replace(PLACEHOLDER, "WEBUI = " + json.dumps(html))
+    code = code.replace(PLACEHOLDER, "WEBUI = " + json.dumps(html, ensure_ascii=False))
     ast.parse(code)
     return code
 

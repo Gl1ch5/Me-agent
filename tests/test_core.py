@@ -746,6 +746,10 @@ def test_tests_off_drops_checking_steps():
     assert len(ag.session["todo"]) == 2  # self-testing on: kept
 
 
+def test_webui_encodes():
+    me.WEBUI.encode("utf-8")  # emoji must not turn into lone surrogates (the server could not send the page)
+
+
 def test_github_mode_prompt():
     os.environ.update(ME_GIT_REPO="octo/app", ME_GIT_BASE="dev")
     try:
