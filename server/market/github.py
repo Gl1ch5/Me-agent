@@ -7,7 +7,7 @@ env: GITHUB_TOKEN
 ---
 Needs secret GITHUB_TOKEN (/secret). repo is "owner/name".
 Use list_* before acting; comment/create need user intent.
-git clone/push to github.com work in bash with the same token (no setup needed). Flow: clone → branch → commit → git push -u origin <branch> → open_pr.
+git clone/push to github.com work in bash with the same token (no setup needed). Flow: clone → branch → commit → git push -u origin <branch> → open_pr → pr_checks (fix CI failures) → merge_pr when the user asks.
 """
 API = "https://api.github.com"
 
@@ -54,3 +54,18 @@ def repos(ctx, query=""):
     "Your repositories (most recently pushed first)"
     rs = ctx.http.get(f"{API}/user/repos?sort=pushed&per_page=50", _h(ctx))
     return [{"repo": r["full_name"], "private": r["private"], "pushed": r["pushed_at"][:10]} for r in rs if query.lower() in r["full_name"].lower()]
+
+
+@action
+def pr_checks(ctx, repo: str, number: int):
+    "CI status of a PR: every check run on its head commit, and whether it can merge"
+    pr = ctx.http.get(f"{API}/repos/{repo}/pulls/{number}", _h(ctx))
+    runs = ctx.http.get(f"{API}/repos/{repo}/commits/{pr['head']['sha']}/check-runs?per_page=100", _h(ctx)).get("check_runs", [])
+    return {"state": pr["state"], "merged": pr.get("merged"), "mergeable": pr.get("mergeable"),
+            "checks": [{"name": c["name"], "status": c["status"], "result": c.get("conclusion"), "url": c.get("html_url")} for c in runs]}
+
+
+@action(confirm=True)
+def merge_pr(ctx, repo: str, number: int, method="merge"):
+    "Merge a PR (method: merge, squash or rebase) — only when the user asked for it"
+    return ctx.http.put(f"{API}/repos/{repo}/pulls/{number}/merge", {"merge_method": method}, _h(ctx)).get("message", "merged")

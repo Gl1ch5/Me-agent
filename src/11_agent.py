@@ -194,6 +194,14 @@ def todo_parse(x, st=None):
     return [(t.strip(), st)] if t.strip() else []
 
 
+# self-testing off: plan steps that only check the work (the user does that) are dropped unless the request asked for them
+CHECK_STEP_RX = re.compile(r"^\W*(?:(?:run |write |add |прогнать |запустить |написать )?(?:tests?|testing|unit[- ]tests?|smoke[- ]test|qa|тест\w*|протестир\w*)\b"
+                           r"|(?:verify|verification|validate|check|final check|проверк\w*|провер(?:ить|яем|яю)|убедиться)\b(?:\W+\w+){0,2}\W*$"
+                           r"|(?:verify|verification|validate|check|проверк\w*|провер(?:ить|яем|яю)|убедиться)\b.*\b(?:works?|working|result|everything|all|"
+                           r"the app|build|browser|lint|работ\w*|результат\w*|всё|все|сборк\w*|приложени\w*|браузер\w*|запуск\w*))", re.I)
+ASKS_CHECK_RX = re.compile(r"test|тест|провер|verif|check|lint|линт", re.I)
+
+
 def todo_lines(items):
     return "\n".join(f"{n}. [{'x' if i['s'] == 'done' else '>' if i['s'] == 'doing' else ' '}] {i['t']}" for n, i in enumerate(items, 1))
 
@@ -263,6 +271,14 @@ class Agent:
         elif bh["agents_md"]:
             project += ("\n\nNo AGENTS.md here yet. Only during real multi-step work on a code project (not for questions or small tasks), "
                         "you may offer to create a concise AGENTS.md (purpose, stack, run/test commands, structure, conventions).")
+        repo = os.environ.get("ME_GIT_REPO")
+        if repo:
+            base = os.environ.get("ME_GIT_BASE") or "main"
+            project += (f"\n\nGitHub mode: this folder is a clone of {repo} (base branch {base}); git push works with the user's token. "
+                        "Do the whole job yourself: if .me/setup.sh exists, run it once before the first build or test. "
+                        f"For a change: git fetch origin, then work on a branch me/<short-topic> from origin/{base} (keep it for follow-ups in this chat), "
+                        "commit in clear steps, git push -u origin <branch>, open a PR with the github skill (open_pr) and give its link. "
+                        f"Then check CI (pr_checks) and fix failures. Never push to {base} or force-push; merge (merge_pr) only when the user asks.")
         pr = self.preset()
         if pr.get("prompt"):
             project += "\n\n" + pr["prompt"].replace("{home}", str(self.s.home))
@@ -288,6 +304,8 @@ class Agent:
         base = SYSTEM
         if not bh["tests"]:
             base = base.replace("- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.\n", "")
+            base = base.replace("how you verified it", "how the user can check it")
+            project = re.sub(r", (?:verify|rerun to prove it)(?=\.)", "", project)
         if not bh["todo"]:
             base = base.replace("- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.\n", "")
         return base.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
@@ -787,13 +805,31 @@ class Agent:
                     i["s"] = "doing"
                 elif i["s"] == "doing" and doing:
                     i["s"] = "done" if n < doing else "todo"  # moving on to a later step finishes the one in progress
+        tests = behavior(self.s.config["settings"])["tests"]
+        dropped = [i["t"] for i in items if CHECK_STEP_RX.search(i["t"])] if not tests and not ASKS_CHECK_RX.search(self.request()) else []
+        if dropped and len(dropped) < len(items):
+            items = [i for i in items if i["t"] not in dropped]
+        else:
+            dropped = []
         self.session["todo"] = items[:50]
         self.emit({"type": "todo", "items": self.session["todo"]})
         n = sum(1 for i in items if i["s"] == "done")
         now = next((i["t"] for i in items if i["s"] == "doing"), None)
         nxt = next((i["t"] for i in items if i["s"] != "done"), None)
-        return True, (f"todo: {n}/{len(items)} done" + (f"; {'now' if now else 'next'}: {now or nxt} — mark each step done right after finishing it" if nxt
-                                                          else "; all done — verify, then report")), None
+        out = (f"todo: {n}/{len(items)} done" + (f"; {'now' if now else 'next'}: {now or nxt} — mark each step done right after finishing it" if nxt
+                                                 else "; all done — " + ("verify, then report" if tests else "report, with the steps for the user to check it")))
+        if dropped:
+            out += ("\nRemoved checking steps (self-testing is off — the user checks): " + "; ".join(dropped) +
+                    ". Do not run checks. The list is now:\n" + todo_lines(items))
+        return True, out, None
+
+    def request(self):
+        """The user's latest real message (not a self-check or reminder)."""
+        for m in reversed(self.session["messages"]):
+            if m.get("role") == "user" and not m.get("_aux"):
+                c = m.get("content")
+                return c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if isinstance(x, dict)) if isinstance(c, list) else ""
+        return ""
 
     def goal(self, objective, max_rounds=None):
         """/goal: work autonomously until the objective is verifiably met or blocked. Binary result."""

@@ -472,7 +472,7 @@ def test_new_session_picks_project(tmp=None):
         b.worker(4, 1)
         b.handle(msg(4, "/new"))
         kb = b.out[-1][2]["reply_markup"]["inline_keyboard"]
-        assert [r[0]["callback_data"] for r in kb] == ["n:f1-mods", "n:site-2", "n:cloud-1", "n:+"] and kb[0][0]["text"] == "● f1 mods", kb
+        assert [r[0]["callback_data"] for r in kb] == ["n:f1-mods", "n:site-2", "n:cloud-1", "n:+", "n:gh"] and kb[0][0]["text"] == "● f1 mods", kb
         b.handle({"callback_query": {"id": "q", "data": "n:site-2", "message": {"chat": {"id": 4}, "message_id": 9}}})
         assert b.st(4, 0)["ws"] == "site-2" and "worker" not in b.st(4, 0), b.state
         b.topics = True

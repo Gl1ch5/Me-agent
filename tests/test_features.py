@@ -71,6 +71,28 @@ def main():
         assert "abcdef123456" not in json.dumps(recs) and not any(r.get("path") == "/api/clientlog" for r in recs)
         print("ok   account debug log records requests, agent steps and web errors")
 
+        # GitHub: no OAuth app → token only; a repo session gets (and later reuses) a workspace marked with the repo
+        g = c.req("GET", "/api/github")
+        assert g == {"connected": False, "oauth": False}, g
+        try:
+            c.req("POST", "/api/github/oauth", {})
+            raise AssertionError("oauth without an app")
+        except me.CloudError:
+            pass
+        import cloud
+        saved = features._gh, features._clone, features._gh_token
+        features._gh = lambda tok, path, *a, **k: {"default_branch": "dev"}
+        features._clone = lambda uid, wid, url, branch: (cloud.ws_root(uid, wid) / ".git").mkdir(parents=True)
+        features._gh_token = lambda uid: "t"
+        try:
+            r1 = features.repo_ws(1, "octo/app")
+            r2 = features.repo_ws(1, "octo/app")
+        finally:
+            features._gh, features._clone, features._gh_token = saved
+        assert r1 == r2 and r1["base"] == "dev" and r1["name"] == "octo/app", (r1, r2)
+        assert next(w for w in c.req("GET", "/api/ws") if w["id"] == r1["ws"])["repo"] == "octo/app"
+        print("ok   GitHub repo session: one workspace per repo, base branch recorded")
+
         # scheduled job: next fire time computed, can be toggled and run now
         s = c.req("POST", "/api/jobs", {"prompt": "hi", "cron": "0 9 * * 1-5", "tz": 180, "name": "daily"})
         assert s["next"] > time.time() and s["enabled"]

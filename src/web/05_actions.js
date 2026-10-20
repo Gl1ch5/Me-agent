@@ -62,12 +62,42 @@ async function newChatIn(cwd) {  // a new chat inside a given project folder (si
 async function newChat(pick = true) {  // pick: choose the project — this one, the ones of the latest chats, or a new one
   const local = MODE === "local", cur = local ? state.cwd : state.ws;
   let ps = [...new Set([cur, ...(state.sessions || []).map(s => local ? s.cwd : s.ws)].filter(Boolean))];
-  if (!pick || !ps.length) return startChat(cur);
-  const wss = local ? [] : await api("/api/ws").catch(() => null);
+  if (!pick || (!ps.length && local)) return startChat(cur);
+  const [wss, gh] = local ? [[], null] : await Promise.all([api("/api/ws").catch(() => null), api("/api/github").catch(() => ({}))]);
   if (wss) ps = ps.filter(k => local || wss.some(w => w.id === k));
   const name = k => local ? (k.split(/[\\/]/).filter(Boolean).pop() || k) : (wss?.find(w => w.id === k)?.name || k);
-  popupList([...ps.slice(0, 5).map(k => [k, name(k), k === cur ? t("current project") : local ? "…/" + k.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : "", k === cur]), ["+", "+ " + t("new project"), "", false]],
-    k => k === "+" ? newProject() : startChat(k));
+  const desc = k => k === cur ? t("current project") : local ? "…/" + k.split(/[\\/]/).filter(Boolean).slice(-2).join("/") : (wss?.find(w => w.id === k)?.repo ? "GitHub" : "");
+  const rows = [...ps.slice(0, 5).map(k => [k, name(k), desc(k), k === cur]), ["+", "+ " + t("new project"), t("without GitHub"), false]];
+  if (gh) rows.push(["gh", "⎇ " + t("GitHub repository…"), gh.connected ? gh.login || "" : t("sign in with GitHub"), false]);
+  popupList(rows, k => k === "+" ? newProject() : k === "gh" ? pickRepo(gh) : startChat(k));
+}
+function ghSignIn(gh) {  // a popup: GitHub asks for access, then the window closes itself and the picker continues
+  if (!gh.oauth) { note(t("Connect GitHub in your account (cloud → github)"), "warn"); return setTimeout(() => location.href = "/account#cloud", 1200), null; }
+  const win = open("about:blank", "gh", "width=640,height=760");  // opened inside the click: popup blockers allow it
+  return new Promise((ok, no) => {
+    api("/api/github/oauth", {}).then(r => { if (win) win.location = r.url; else location.href = r.url; }).catch(e => { win?.close(); no(e); });
+    const on = e => { if (e.data && "github" in e.data) { removeEventListener("message", on); e.data.github ? ok() : no(new Error(t("GitHub sign-in failed"))); } };
+    addEventListener("message", on);
+  });
+}
+async function pickRepo(gh) {
+  if (!gh.connected) { const p = ghSignIn(gh); if (!p) return; try { await p; } catch (e) { return note(e.message, "err"); } note(t("GitHub connected"), "ok"); }
+  $("pbody").innerHTML = `<input class="psearch" id="rsearch" placeholder="${esc(t("search repositories…"))}" autocomplete="off" spellcheck="false"><div id="rlist"><p class="phint">${esc(t("loading…"))}</p></div>`;
+  $("popup").classList.remove("hidden");
+  let repos = [];
+  try { repos = await api("/api/github/repos"); } catch (e) { $("rlist").innerHTML = `<p class="phint">${esc(e.message)}</p>`; return; }
+  const draw = () => {
+    const q = $("rsearch").value.trim().toLowerCase(), hit = repos.filter(r => r.repo.toLowerCase().includes(q));
+    $("rlist").innerHTML = hit.slice(0, 30).map(r => `<button data-r="${esc(r.repo)}"><span>${r.private ? "🔒" : "○"}</span><b>${esc(r.repo)}</b><span class="d">${esc(r.desc || r.branch)}</span></button>`).join("")
+      || (/^[\w.-]+\/[\w.-]+$/.test(q) ? `<button data-r="${esc(q)}"><span>○</span><b>${esc(q)}</b></button>` : `<p class="phint">${esc(t("nothing found"))}</p>`);
+  };
+  $("rlist").onclick = e => { const b = e.target.closest("button[data-r]"); if (b) { $("popup").classList.add("hidden"); startRepo(b.dataset.r); } };
+  $("rsearch").oninput = draw; $("rsearch").onkeydown = e => { if (e.key === "Enter") $("rlist").querySelector("button")?.click(); };
+  draw(); $("rsearch").focus();
+}
+async function startRepo(repo) {
+  note(t("cloning") + " " + repo + "…");
+  try { const r = await api("/api/github/session", {repo}); await startChat(r.ws); note("⎇ " + repo + " · " + r.base, "ok"); } catch (e) { note(e.message, "err"); }
 }
 async function startChat(k) {
   if (MODE === "local" && k && k !== state.cwd) return newChatIn(k);
