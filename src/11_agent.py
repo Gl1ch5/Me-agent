@@ -371,7 +371,7 @@ class Agent:
             allowed.discard("memory")
         out = [t for t in TOOLS if t["name"] in allowed]
         if self.s.auth.get("token"):
-            out += [NOTIFY_TOOL] + ([PUBLISH_TOOL] if bh["publish"] else [])
+            out += [NOTIFY_TOOL, LATER_TOOL] + ([PUBLISH_TOOL] if bh["publish"] else [])
         if self.s.config.get("mcp"):
             out.append(MCP_TOOL)
         pr = self.preset()
@@ -698,6 +698,8 @@ class Agent:
             return self._todo(args)
         if name == "memory":
             return self._memory(args)
+        if name == "later":
+            return self._later(args)
         if name == "task":
             return self._task(args, temit)
         cli = (pr.get("cli") or {}).get(name)
@@ -775,6 +777,36 @@ class Agent:
             return True, f"remembered ({mid}) — it will be in every future chat", None
         except ValueError as e:
             return False, f"error: {e}", None
+
+    def _later(self, a):
+        """A reminder in the me cloud: at the time it continues this very chat in a sandbox (see jobs in server/features.py)."""
+        cloud = Cloud(self.s)
+        if not cloud.online:
+            return False, "error: not logged in to the me cloud (/login), so reminders are not available", None
+        sid = self.session["id"]
+        try:
+            if a.get("cancel"):
+                cloud.req("DELETE", f"/api/jobs/{int(str(a['cancel']).lstrip('#'))}")
+                return True, f"cancelled #{a['cancel']}", None
+            if not str(a.get("text") or "").strip():
+                js = [j for j in cloud.req("GET", "/api/jobs?session=" + urllib.parse.quote(sid)) if j.get("enabled")]
+                return True, "\n".join(f"#{j['id']} {j['cron'] or 'once'} · next {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(j['next']))}"
+                                       f"{' · new chat' if j.get('fresh') else ''} · {j['name']}" for j in js) or "no reminders in this chat", None
+            if not a.get("cron") and not float(a.get("minutes") or 0) > 0:
+                return False, "error: give minutes (once) or cron (repeat)", None
+            self.s.save_session(self.session)
+            cloud.sync()  # the sandbox that wakes up loads this chat from the cloud
+            off = time.localtime().tm_gmtoff // 60
+            tz = int(float(a["tz"]) * 60) if a.get("tz") not in (None, "") else (off or None)
+            j = cloud.req("POST", "/api/jobs", {"prompt": str(a["text"]), "session": sid, "cron": str(a.get("cron") or ""),
+                                                "minutes": float(a.get("minutes") or 0), "tz": tz,
+                                                "fresh": a.get("new") in (True, "true", 1)})
+        except Exception as e:
+            return False, f"error: {e}", None
+        tzs = "UTC%+g" % (j["tz"] / 60)
+        when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(j["next"] + j["tz"] * 60))
+        return True, f"#{j['id']} set: {'repeats ' + j['cron'] if j['cron'] else 'once'}, next {when} ({tzs}), " \
+                     f"{'in a new chat of this project' if j.get('fresh') else 'continuing this chat'}. It runs in the me cloud and notifies the user.", None
 
     # ─── todo / goal ───
     def _todo(self, a):

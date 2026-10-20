@@ -63,6 +63,22 @@ def main():
         assert not j["enabled"], "one-off job stays disabled after running"
         print("ok   background job ran in the cloud and recorded its result")
 
+        # `later`: a reminder continues the same chat (not a new one); only for chats the cloud has
+        try:
+            c.req("POST", "/api/jobs", {"prompt": "x", "session": "nope", "minutes": 5})
+            raise AssertionError("unsynced chat accepted")
+        except me.CloudError:
+            pass
+        r = c.req("POST", "/api/jobs", {"prompt": 'tool:write {"path":"later.txt","content":"again"}', "session": j["session"], "minutes": 0})
+        assert r["chat"] == j["session"] and r["ws"] == ws and r["tz"] == 180, r
+        assert [x["id"] for x in c.req("GET", "/api/jobs?session=" + j["session"])] == [r["id"]]
+        r = wait_job(c, r["id"])
+        assert r["status"] == "done" and r["session"] == j["session"], r
+        assert c.req("POST", f"/api/ws/{ws}/get", {"paths": ["later.txt"]})["files"], "the reminder ran in the chat's workspace"
+        f = wait_job(c, c.req("POST", "/api/jobs", {"prompt": "hi", "session": j["session"], "fresh": True})["id"])
+        assert f["status"] == "done" and f["session"] and f["session"] != j["session"] and f["ws"] == ws and f["chat"] == j["session"], f
+        print("ok   later: a scheduled message continues the same chat in its workspace, or a fresh chat in the same project")
+
         # account debug log (ME_TRACE=1: the first account): requests, agent tool calls, web errors; keys are masked
         c.req("POST", "/api/clientlog", {"msg": "boom tvly-abcdef123456", "where": "app.js:1"})
         recs = [json.loads(x) for x in open(T.Path(T.env["ME_DATA"]) / "logs" / "1.jsonl", encoding="utf-8")]
@@ -149,6 +165,16 @@ def main():
         cur, seen = until("goal", cur)
         assert seen[-1]["status"] == "done", seen[-1]
         print("ok   undo and /goal work in the cloud sandbox")
+
+        # the agent's `later` tool from inside the sandbox: syncs the chat, then the server holds a reminder for it
+        c.req("POST", f"/api/cloud/{w['id']}/prompt", {"text": 'tool:later {"text":"check the logs","cron":"0 9 * * *","tz":3}'})
+        cur, seen = until("turn_end", cur)
+        te = next(e for e in seen if e["type"] == "tool_end")
+        assert te["ok"] and "set: repeats 0 9 * * *" in te["output"] and "UTC+3" in te["output"], te
+        js = [x for x in c.req("GET", "/api/jobs") if x["name"] == "check the logs"]
+        assert len(js) == 1 and js[0]["chat"] and js[0]["cron"] == "0 9 * * *" and js[0]["tz"] == 180, js
+        c.req("DELETE", f"/api/jobs/{js[0]['id']}")
+        print("ok   later tool: a reminder for this chat is scheduled from inside the sandbox")
 
         # marketplace: publish v1 → install → publish v2 auto-updates; rating
         skill = '"""\nname: tmpskill\ndescription: v1\n---\nguide\n"""\n'

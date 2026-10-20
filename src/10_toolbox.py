@@ -28,8 +28,8 @@ class ToolBox:
             return f"{len(done) or sum(1 for i in a['items'] if str(i).lstrip().startswith(('x ', '[x]', 'X ')))}/{len(a['items'])} done"
         if name == "mcp":
             return a.get("server", "") + (f" · {a['tool']}" if a.get("tool") else "")
-        if name == "notify":
-            return a.get("text", "")[:80]
+        if name in ("notify", "later"):
+            return (f"[{a.get('cron') or a.get('minutes')}] " if name == "later" and (a.get("cron") or a.get("minutes")) else "") + str(a.get("text") or a.get("cancel") or "")[:80]
         if name == "publish":
             return f"{a.get('name', '')} ← {a.get('path', '')}"
         if name in ("ls", "grep"):

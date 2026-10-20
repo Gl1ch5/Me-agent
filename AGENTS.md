@@ -73,6 +73,7 @@
 - Cloud web: each chat runs in a sandbox worker. A new chat while the worker is busy starts a new worker (`A.newChat` in `02_transport.js`).
 - Live eval: `ME_HOME=~/.me python3 tests/eval_live.py --model NAME [--only a,b]` runs real models on 14 small repo tasks (needs API keys; copies the config, never syncs). Each task dir keeps `.eval.log`.
 - Agent nudges (`_aux` user messages): VERIFY, ACT (code pasted instead of written), todo reminder/self-check, LOOP; `looping()` in the provider stops a reply that repeats itself. `todo_parse` accepts the many item shapes models send — add a case there, don't tighten the schema.
+- `later` tool (only when logged in): a reminder or cron job that continues this chat. It is a `jobs` row with `chat` = session id, and `run_job` resumes that session in the cloud. With `fresh=1` it starts a new chat in the same workspace instead.
 - `@path[:a-b]` in a message attaches the file (`Agent.mentions`). The web UI in an iframe (`?embed=vscode`) talks to the VS Code extension via `postMessage` (`meOut` up, `insert`/`send`/`new` down).
 - CLI: `me "task"`, `me -c` (continue the newest chat in this folder), `me -m NAME`, piped stdin joins a `-p` task; `-p` piped prints only the final answer to stdout.
 - `NEXT_STEPS.md` holds the older roadmap/handoff notes. `CHANGELOG.md` is user-facing and written in Russian.

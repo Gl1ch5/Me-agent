@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS tg_bots(user_id INTEGER PRIMARY KEY, token TEXT, user
 CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, prompt TEXT, cron TEXT, tz INTEGER DEFAULT 0, ws TEXT,
   next REAL, last REAL, status TEXT DEFAULT '', result TEXT DEFAULT '', session TEXT DEFAULT '', enabled INTEGER DEFAULT 1, created REAL);
 """)
+_cols = [r[1] for r in conn.execute("PRAGMA table_info(jobs)")]
+if "chat" not in _cols:  # the agent's `later`: the chat that set it; `fresh` runs a new chat in its project instead of continuing it
+    conn.execute("ALTER TABLE jobs ADD COLUMN chat TEXT DEFAULT ''")
+    conn.execute("ALTER TABLE jobs ADD COLUMN fresh INTEGER DEFAULT 0")
 
 
 def b64u(b):
@@ -368,8 +372,11 @@ class Job(BaseModel):
     prompt: str
     name: str = ""
     cron: str = ""
-    tz: int = 0  # minutes east of UTC (browser: -new Date().getTimezoneOffset())
+    tz: int | None = None  # minutes east of UTC (browser: -new Date().getTimezoneOffset()); none → the user's last one, else Moscow
     ws: str = ""
+    session: str = ""  # continue this chat instead of starting a new one (the agent's `later` tool)
+    minutes: float = 0  # once, this many minutes from now
+    fresh: bool = False  # with session: a new chat in that chat's project, without its context
 
 
 def _job(r):
@@ -379,8 +386,10 @@ def _job(r):
 
 
 @app.get("/api/jobs")
-def jobs_list(u=Depends(user)):
-    return [_job(r) for r in conn.execute("SELECT * FROM jobs WHERE user_id=? ORDER BY created DESC", (u["id"],))]
+def jobs_list(session: str = "", u=Depends(user)):
+    q, a = ("SELECT * FROM jobs WHERE user_id=? AND chat=? ORDER BY created DESC", (u["id"], session)) if session else \
+        ("SELECT * FROM jobs WHERE user_id=? ORDER BY created DESC", (u["id"],))
+    return [_job(r) for r in conn.execute(q, a)]
 
 
 @app.post("/api/jobs")
@@ -389,16 +398,28 @@ def jobs_add(j: Job, u=Depends(user)):
         raise HTTPException(400, "prompt is empty")
     if conn.execute("SELECT COUNT(*) FROM jobs WHERE user_id=?", (u["id"],)).fetchone()[0] >= 50:
         raise HTTPException(400, "50 jobs max — delete some")
-    nxt = time.time()
+    if j.tz is None:
+        last = conn.execute("SELECT tz FROM jobs WHERE user_id=? AND tz<>0 ORDER BY created DESC LIMIT 1", (u["id"],)).fetchone()
+        j.tz = last[0] if last else 180
+    nxt = time.time() + max(0.0, j.minutes) * 60
     if j.cron.strip():
         try:
             nxt = cron_next(j.cron.strip(), time.time(), j.tz)
         except ValueError as e:
             raise HTTPException(400, f"cron: {e}")
+    if j.session:
+        d = conn.execute("SELECT content FROM docs WHERE user_id=? AND key=? AND deleted=0", (u["id"], "session/" + j.session)).fetchone()
+        if not d:
+            raise HTTPException(404, "this chat is not synced to the me cloud yet")
+        try:
+            j.ws = j.ws or json.loads(d[0]).get("ws") or ""
+        except ValueError:
+            pass
     if j.ws and not cloud.ws_exists(u["id"], j.ws):
         raise HTTPException(404, "no such workspace")
-    cur = conn.execute("INSERT INTO jobs(user_id,name,prompt,cron,tz,ws,next,created) VALUES(?,?,?,?,?,?,?,?)",
-                       (u["id"], (j.name or j.prompt.split("\n")[0])[:80], j.prompt[:20000], j.cron.strip(), j.tz, j.ws, nxt, time.time()))
+    cur = conn.execute("INSERT INTO jobs(user_id,name,prompt,cron,tz,ws,next,chat,fresh,session,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       (u["id"], (j.name or j.prompt.split("\n")[0])[:80], j.prompt[:20000], j.cron.strip(), j.tz, j.ws, nxt, j.session,
+                        int(j.fresh), "" if j.fresh else j.session, time.time()))
     _wake.set()
     return _job(conn.execute("SELECT * FROM jobs WHERE id=?", (cur.lastrowid,)).fetchone())
 
@@ -428,22 +449,29 @@ def jobs_action(jid: int, action: str, u=Depends(user)):
 
 JOB_SUFFIX = ("\n\n(This runs as a background task: nobody is watching. Do not ask questions — decide sensibly, verify your work, "
               "and end with a short report of the result.)")
+LATER_NOTE = "\n\n(You scheduled this earlier in this chat with `later`.)"
 
 
 def run_job(r):
     u = _users(r["user_id"])
+    chat = "" if r["fresh"] else r["chat"]
+    if chat:  # continue that chat; if it is busy right now, try again in a minute
+        w = next((w for w in cloud.runner.of_user(u["id"]) if w.session == chat), None)
+        if w and w.busy:
+            conn.execute("UPDATE jobs SET next=? WHERE id=?", (time.time() + 60, r["id"]))
+            return
     conn.execute("UPDATE jobs SET status='running', last=?, next=? WHERE id=?",
                  (time.time(), cron_next(r["cron"], time.time(), r["tz"]) if r["cron"] else 0, r["id"]))
     if not r["cron"]:
         conn.execute("UPDATE jobs SET enabled=0 WHERE id=?", (r["id"],))
     try:
-        w = cloud.runner.start(u["id"], u["username"], lambda: runner_token(u["id"]), wid=r["ws"] or None)
+        w = cloud.runner.start(u["id"], u["username"], lambda: runner_token(u["id"]), wid=r["ws"] or None, session=chat or None)
     except RuntimeError as e:
         conn.execute("UPDATE jobs SET status='error', result=? WHERE id=?", (str(e), r["id"]))
         return
     w.job = r["id"]
     w.watched = 0
-    w.prompt(r["prompt"] + JOB_SUFFIX)
+    w.prompt(r["prompt"] + (LATER_NOTE if chat else "") + JOB_SUFFIX)
 
 
 def job_finished(w, e, text):
