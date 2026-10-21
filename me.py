@@ -3779,6 +3779,8 @@ class Agent:
                 imgs = []
                 for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
+                    if ok and name in ("read", "write", "edit") and isinstance((tc_args(tc) or {}).get("path"), str):
+                        self.__dict__.setdefault("_seen_files", set()).add(self.abspath(tc_args(tc)["path"]))
                     if ok and name in ("write", "edit") and not re.search(DOC_EXT, str((tc_args(tc) or {}).get("path", "")), re.I):
                         wrote, ran = True, False  # docs/config prose needs no test run: nudging there only burned a model call
                     elif name == "bash" or name == "task":
@@ -3939,6 +3941,17 @@ class Agent:
                            f"Tools: {', '.join(sorted(getattr(self, '_tool_names', None) or ()))}"), None
         if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
+        if name == "write" and isinstance(args.get("path"), str):  # overwriting a file it never looked at loses work: ask it to look first
+            p = self.abspath(args["path"])
+            seen = self.__dict__.setdefault("_seen_files", set())
+            if os.path.isfile(p) and p not in seen and p not in self.snap:
+                seen.add(p)  # once: a second write of the same file goes through
+                try:
+                    n = sum(1 for _ in open(p, "rb"))
+                except OSError:
+                    n = 0
+                return False, (f"error: {args['path']} already exists ({n} lines) and you have not read it in this chat. Read it first "
+                               "and change it with edit, or call write again if replacing it whole is really intended."), None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None

@@ -77,6 +77,22 @@ def test_edit_write_bash(tmp=Path(tempfile.mkdtemp())):
     assert "hi-there" in [e for e in ev if e["type"] == "tool_end"][0]["output"]
 
 
+def test_write_asks_to_read_an_unread_file_first(tmp=Path(tempfile.mkdtemp())):
+    f = tmp / "keep.py"
+    f.write_text("important = 1\n")
+    s = make()
+    ag = me.Agent(s, lambda e: None)
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "x = 0\n"}))
+    assert f.read_text() == "important = 1\n"  # refused: never read in this chat
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "x = 0\n"}))
+    assert f.read_text() == "x = 0\n"  # asked again on purpose: goes through
+    g = tmp / "seen.py"
+    g.write_text("a = 1\n")
+    ag.run("tool:read " + json.dumps({"path": str(g)}))
+    ag.run("tool:write " + json.dumps({"path": str(g), "content": "a = 2\n"}))
+    assert g.read_text() == "a = 2\n"
+
+
 def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
     s = make()
     s.config["settings"]["yolo"] = False
@@ -568,7 +584,9 @@ def test_edit_keeps_line_endings_and_encoding(tmp=Path(tempfile.mkdtemp())):
     assert h.read_bytes() == b"\xef\xbb\xbfa = 2\n"
     w = tmp / "w.txt"
     w.write_bytes(b"a\r\nb\r\n")
-    run(s, "tool:write " + json.dumps({"path": str(w), "content": "c\nd\n"}))
+    ag = me.Agent(s, lambda e: None)
+    ag.run("tool:read " + json.dumps({"path": str(w)}))  # an unread file is not overwritten unasked
+    ag.run("tool:write " + json.dumps({"path": str(w), "content": "c\nd\n"}))
     assert w.read_bytes() == b"c\r\nd\r\n"
 
 

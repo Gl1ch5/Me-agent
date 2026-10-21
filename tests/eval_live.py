@@ -317,11 +317,12 @@ def _(d, out):
         return False, "no canvas or game.js not loaded"
     if not NODE:
         return True, "files ok (no node to test logic)"
-    Path(d, ".t.js").write_text(
-        "global.document = new Proxy({}, {get: () => () => ({getContext: () => new Proxy({}, {get: () => () => {}}), addEventListener() {}, style: {}})});\n"
-        "global.window = {addEventListener() {}, requestAnimationFrame() {}}; global.requestAnimationFrame = () => {}; global.addEventListener = () => {};\n"
-        "global.setInterval = () => 0; global.setTimeout = () => 0;\n"
-        "const g = require('./game.js'); let s = g.newGame(); const h0 = {...s.snake[0]}, n0 = s.snake.length, sc = s.score;\n"
+    Path(d, ".t.js").write_text(  # any DOM access at load time hits a stub that answers everything
+        "const S = new Proxy(function () {}, {get: (t, k) => k === Symbol.toPrimitive ? () => 0 : k === 'then' ? undefined : S, "
+        "apply: () => S, construct: () => S, set: () => true});\n"
+        "for (const k of ['document', 'window', 'localStorage', 'Image', 'Audio', 'navigator']) global[k] = S;\n"
+        "global.requestAnimationFrame = global.setInterval = global.setTimeout = () => 0; global.addEventListener = () => {};\n"
+        "const g = require('./game.js'); let s = g.newGame(); if (!s.dir.x && !s.dir.y) s.dir = {x: 1, y: 0}; const h0 = {...s.snake[0]}, n0 = s.snake.length, sc = s.score;\n"
         "s.food = {x: h0.x + s.dir.x, y: h0.y + s.dir.y}; s = g.step(s) || s;\n"
         "if (s.snake[0].x !== h0.x + s.dir.x || s.snake[0].y !== h0.y + s.dir.y) throw 'head did not move';\n"
         "if (!(s.score > sc) || s.snake.length !== n0 + 1) throw 'eating food: no score/growth';\n"
