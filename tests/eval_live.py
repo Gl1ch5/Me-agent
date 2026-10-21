@@ -254,6 +254,83 @@ def _(d, out):
     return not bad, ", ".join(bad) or "ok"
 
 
+# ── the owner's everyday jobs: a Telegram bot, a website, a game (run with --only tgbot,site,game) ──
+NODE = shutil.which("node")
+
+
+@task("tgbot", {}, "Напиши Telegram-бота в bot.py только на стандартной библиотеке Python (urllib, long polling через getUpdates). "
+      "Токен бери из переменной окружения BOT_TOKEN. Команды: /start — приветствие, /echo ТЕКСТ — отвечает этим текстом, "
+      "/sum 2 3 4 — сумма чисел, любой другой текст — «Длина: N» (N — число символов). Вынеси логику ответа в функцию "
+      "handle(text) -> str, а запуск бота — под if __name__ == '__main__'.")
+def _(d, out):
+    if not Path(d, "bot.py").is_file():
+        return False, "no bot.py"
+    code = ("import bot\n"
+            "assert bot.handle('/start').strip(), 'start'\n"
+            "assert bot.handle('/echo привет мир').strip() == 'привет мир', bot.handle('/echo привет мир')\n"
+            "assert '9' in bot.handle('/sum 2 3 4'), bot.handle('/sum 2 3 4')\n"
+            "assert '5' in bot.handle('abcde'), bot.handle('abcde')\n"
+            "src = open('bot.py', encoding='utf-8').read()\n"
+            "assert 'BOT_TOKEN' in src and 'getUpdates' in src, 'token/polling'\n"
+            "assert not any(m in src for m in ('import telebot', 'import aiogram', 'from telegram')), 'third-party lib'\n")
+    rc, o = sh(f"{PY} -c \"{code}\"", d)
+    return rc == 0, "handle() works" if rc == 0 else o[-300:]
+
+
+@task("site", {}, "Сделай одностраничный сайт кофейни «Bean There»: index.html, styles.css, script.js. Нужны: шапка с меню-навигацией, "
+      "блок меню минимум из 4 напитков с ценами в рублях (₽), форма обратной связи (имя, email, сообщение) с проверкой на JS — "
+      "при неверном email показать ошибку и не отправлять форму. Сайт должен нормально выглядеть на телефоне (360px).")
+def _(d, out):
+    p = {n: Path(d, n) for n in ("index.html", "styles.css", "script.js")}
+    miss = [n for n, f in p.items() if not f.is_file()]
+    if miss:
+        return False, "missing " + ", ".join(miss)
+    h, c, j = (p[n].read_text("utf-8", "replace") for n in ("index.html", "styles.css", "script.js"))
+    probs = []
+    if "Bean There" not in h:
+        probs.append("no name")
+    if "styles.css" not in h or "script.js" not in h:
+        probs.append("css/js not linked")
+    if len(re.findall(r"\d+\s*(?:₽|руб)", h + j)) < 4:
+        probs.append("fewer than 4 prices")
+    if not re.search(r"<form", h, re.I) or not re.search(r'type=["\']?email', h, re.I):
+        probs.append("no form/email field")
+    if "@media" not in c and "viewport" not in h:
+        probs.append("not responsive")
+    if not re.search(r"preventDefault|return false", j):
+        probs.append("form not stopped on error")
+    if NODE and sh(f"{NODE} --check script.js", d)[0]:
+        probs.append("script.js has a syntax error")
+    return not probs, "; ".join(probs) or "site ok"
+
+
+@task("game", {}, "Сделай браузерную игру «Змейка»: index.html и game.js, canvas, управление стрелками, счёт на экране, конец игры при "
+      "ударе о стену или себя, рестарт пробелом. Логику держи в чистых функциях: newGame() возвращает состояние "
+      "{snake: [{x, y}, …] (голова первая), dir: {x, y}, food: {x, y}, score, over}, step(state) делает один ход и возвращает "
+      "новое состояние. Чтобы логику можно было проверить в Node, в конце game.js: "
+      "if (typeof module !== 'undefined') module.exports = {newGame, step};")
+def _(d, out):
+    if not Path(d, "game.js").is_file() or not Path(d, "index.html").is_file():
+        return False, "missing files"
+    h = Path(d, "index.html").read_text("utf-8", "replace")
+    if "<canvas" not in h or "game.js" not in h:
+        return False, "no canvas or game.js not loaded"
+    if not NODE:
+        return True, "files ok (no node to test logic)"
+    Path(d, ".t.js").write_text(
+        "global.document = new Proxy({}, {get: () => () => ({getContext: () => new Proxy({}, {get: () => () => {}}), addEventListener() {}, style: {}})});\n"
+        "global.window = {addEventListener() {}, requestAnimationFrame() {}}; global.requestAnimationFrame = () => {}; global.addEventListener = () => {};\n"
+        "global.setInterval = () => 0; global.setTimeout = () => 0;\n"
+        "const g = require('./game.js'); let s = g.newGame(); const h0 = {...s.snake[0]}, n0 = s.snake.length, sc = s.score;\n"
+        "s.food = {x: h0.x + s.dir.x, y: h0.y + s.dir.y}; s = g.step(s) || s;\n"
+        "if (s.snake[0].x !== h0.x + s.dir.x || s.snake[0].y !== h0.y + s.dir.y) throw 'head did not move';\n"
+        "if (!(s.score > sc) || s.snake.length !== n0 + 1) throw 'eating food: no score/growth';\n"
+        "for (let i = 0; i < 300 && !s.over; i++) { s.food = {x: -99, y: -99}; s = g.step(s) || s; }\n"
+        "if (!s.over) throw 'no game over at the wall'; console.log('ok');\n")
+    rc, o = sh(f"{NODE} .t.js", d)
+    return rc == 0, "logic ok" if rc == 0 else o[-300:]
+
+
 def run_one(name, home, agent, timeout):
     files, prompt, check = T[name]
     d = tempfile.mkdtemp(prefix=f"eval-{name}-")
