@@ -4006,6 +4006,10 @@ class Agent:
 
     def _no_checks(self, cmd):
         cmd = re.sub(r"\b(?:which|command\s+-v|type|where)\s+[^;&|\n]*", "", str(cmd or ""))  # looking a tool up is not checking work
+        # text a command only carries (a heredoc writing a CI file, a grep pattern, python -c "import playwright") runs nothing
+        cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n\1\b", " ", cmd, flags=re.S)
+        cmd = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", " ", cmd)
+        cmd = re.sub(r"\|\s*(?:grep|rg|head|tail|sort|wc)\b[^;&|\n]*", " ", cmd)
         if behavior(self.s.config["settings"])["tests"] or not CHECK_RX.search(cmd):
             return False
         req = next((m for m in reversed(self.session["messages"]) if m["role"] == "user" and not m.get("_aux")), {}).get("content", "")
@@ -4167,6 +4171,8 @@ class Agent:
     # ─── subagents ───
     def _task(self, a, temit):
         name = a.get("agent") or "code"
+        if name not in presets(self.s) and re.fullmatch(r"(?i)general(?:[-_ ]purpose)?|default|coder|coding|agent|sub-?agent|worker|code[-_ ]?agent", name):
+            name = "code"  # Claude Code's subagent names: models ask for them by habit
         if name not in presets(self.s):
             return False, f"error: no agent '{name}'. agents: {', '.join(presets(self.s))}", None
         report = {"text": ""}
