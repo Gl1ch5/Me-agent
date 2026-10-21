@@ -1431,7 +1431,8 @@ def _stems(text):
 ACT_WORDS = re.compile(r"\b(?:сдела|созда|напиш|добав|исправ|почин|переде|сверста|разраб|постро|реализ|запил|улучш|оформ|make|create|build|write|add|fix|"
                        r"implement|design|redesign|refactor|generate|develop|improve)", re.I)
 QUESTION = re.compile(r"\?\s*$|^\s*(?:что|как|почему|зачем|где|когда|кто|какой|какая|какие|какое|сколько|чей|можно ли|есть ли|объясни|расскажи|"
-                      r"what|why|how|where|when|who|which|is|are|does|do|can|could|explain|tell me)\b", re.I)
+                      r"what|why|how|where|when|who|which|is|are|does|do|can|could|explain|tell me)\b"
+                      r"|(?:^|\s)(?:почему|зачем|отчего|why)\b", re.I)  # "ты с сайта брал, почему прицелы не меняются" asks, mid-sentence
 
 
 def is_question(text):
