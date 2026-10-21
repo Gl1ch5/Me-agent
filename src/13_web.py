@@ -80,7 +80,10 @@ class WebSession:
             self.cond.notify_all()
         if e["type"] == "turn_end" and self.cloud.online:
             def after():
-                self.cloud.sync()
+                try:
+                    self.cloud.sync()
+                except Exception:  # offline or the server hiccuped: the next turn or the watcher syncs again
+                    log_error("sync after turn")
                 if self.agent.session.get("ws"):
                     try:
                         self.ws.sync(self.agent.session["ws"])

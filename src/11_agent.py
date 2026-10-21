@@ -330,6 +330,8 @@ class Agent:
         if os.environ.get("ME_PREVIEW"):
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
+        if self.depth or (self.session.get("goal") or {}).get("status") == "working":  # nobody is there to answer questions
+            bh = dict(bh, questions=False, ask_unclear=False, plan_first=False)
         prefs = [BEHAVIOR[k][2 if on else 3] for k, on in bh.items() if BEHAVIOR[k][2 if on else 3]]
         if prefs:
             extra += "\nUser's settings (they override the rules above):\n" + "\n".join("- " + x for x in prefs)
@@ -458,6 +460,9 @@ class Agent:
                 log_error("turn")
             with self._inbox_lock:
                 if not self.inbox or self.cancel.is_set():
+                    if self.inbox:  # stopped with messages still waiting: say so, never drop them silently
+                        self.emit({"type": "queued_dropped", "texts": [t for t, _ in self.inbox]})
+                        self.emit({"type": "notice", "text": "stopped — queued messages were not sent; send them again to run them"})
                     self.inbox, self._driving = [], False
                     return
                 text, images = self.inbox.pop(0)

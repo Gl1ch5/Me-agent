@@ -6,6 +6,9 @@
 UI_LANG = {"v": "en"}
 
 RU = {
+    "stopped — queued messages were not sent; send them again to run them": "остановлено — сообщения из очереди не отправлены; отправьте их снова",
+    "stopped the reply: the model kept repeating itself": "ответ остановлен: модель начала повторяться", "no earlier chat in this folder": "в этой папке ещё нет чатов",
+    "no model configured — use /provider then /models": "модель не настроена — используйте /provider, затем /models",
     "web search keys: Tavily (free), Exa, Brave": "ключи веб-поиска: Tavily (бесплатно), Exa, Brave",
     "Tavily key (tvly-…), empty to skip": "ключ Tavily (tvly-…), пусто — пропустить",
     "Web search works much better with a free Tavily key (1000 searches a month): sign up at https://app.tavily.com, copy the key and send /searchkey tvly-… — add several keys and they are used in turn. Exa and Brave work too: /searchkey exa KEY":

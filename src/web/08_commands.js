@@ -73,7 +73,7 @@ const CMDS = {
     if (!a) return searchStatus() ? note(searchStatus(), "ok") : say(t(SEARCH_ASK));
     await cfgSet("searchkey", a); note(searchStatus(), "ok");
   }],
-  help: ["show commands & keys", "", () => say("## " + t("Commands") + "\n" + Object.entries(CMDS).map(([n, c]) => `- \`/${n}${c[1] ? " " + c[1] : ""}\` ${t(c[0])}`).join("\n")
+  help: ["show commands & keys", "", () => say("## " + t("Commands") + "\n" + Object.entries(CMDS).filter(([n]) => n !== "clear" && n !== "quit").map(([n, c]) => `- \`/${n}${c[1] ? " " + c[1] : ""}\` ${t(c[0])}`).join("\n")
     + "\n\n`enter` send · `shift+enter` newline · `esc` stop · `/` commands")],
   agent: ["switch agent", "[name]", a => { const x = (state.agents || []).find(g => g.name === a); x ? setAgent(x.name) : (a ? note(t("unknown command") + ": " + a, "err") : pickAgent()); }],
   init: ["create or update AGENTS.md", "", () => A.prompt("Create or update AGENTS.md for this project. Explore it first (structure, manifests, scripts, README, tests). Write a concise file: purpose; stack; exact verified commands to install/run/test/build; folder map; conventions; gotchas. It is loaded into every session, so keep it short and accurate.").then(() => { userMsg("/init"); busy = true; turnT0 = Date.now(); setBusy(); cur.echo = true; })],
@@ -137,8 +137,8 @@ const CMDS = {
     const show = () => popupList(Object.keys(B).map(n => [n, t(BEHAVIOR_LABELS[n] || n), n, state.behavior[n]]), async n => { await go(n, !state.behavior[n]); show(); });
     show();
   }],
-  perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) ? setPerm(a) : pickPerm()],
-  yolo: ["full access on/off", "", () => setPerm(state.perm === "full" ? "ask" : "full")],
+  perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) && state.perm !== "sandbox" ? setPerm(a) : pickPerm()],  // cloud: the synced setting is the local agent's
+  yolo: ["full access on/off", "", () => state.perm === "sandbox" ? pickPerm() : setPerm(state.perm === "full" ? "ask" : "full")],
   cost: ["spending", "", () => {
     const u = state.session?.usage || {};
     say(`## ${t("Spending")}\n- ${t("session")}: **${money(u.cost || 0)}** · ↑${human(u.in || 0)} ↓${human(u.out || 0)}\n- ${t("today")}: **${money(state.day_cost || 0)}**`);
