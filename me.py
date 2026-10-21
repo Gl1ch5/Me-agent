@@ -1566,7 +1566,7 @@ TOOLS = [
     {"name": "web_fetch", "description": "Fetch a URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
     {"name": "skill", "description": "Use a skill (no action = its guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
     {"name": "todo", "description": "Plan checklist the user sees live. items = the whole list ('x ' done, '> ' doing); "
-                                    "done=[n] / doing=n mark steps by number — do it as each step ends.",
+                                    "done=[n] / doing=n mark steps by number — send it alongside the next step's call, not alone.",
      "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}, "done": {"type": "array", "items": {"type": "integer"}},
                          "doing": "integer"}, [])},
     {"name": "memory", "description": "Global memory across chats: text adds a note, forget=id removes one.",
@@ -3190,7 +3190,7 @@ Tools:
 Work:
 - Never guess what code, an API or a command does: check it. Find the root cause before fixing; read errors fully.
 - A failed approach: say what you learned and change it; never repeat the same failing call.
-- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.
+- 3+ steps: write a todo first. Mark a step done in the same message as your next call (todo done=[n] doing=n+1 together with the write/bash), not as a call of its own. The user watches it live.
 - Match the project's style; no hacks, no needless deps.
 - After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
@@ -3508,7 +3508,7 @@ class Agent:
             base = base.replace("how you verified it", "how the user can check it")
             project = re.sub(r", (?:verify|rerun to prove it)(?=\.)", "", project)
         if not bh["todo"]:
-            base = base.replace("- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.\n", "")
+            base = base.replace("- 3+ steps: write a todo first. Mark a step done in the same message as your next call (todo done=[n] doing=n+1 together with the write/bash), not as a call of its own. The user watches it live.\n", "")
         return base.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              shell=shell_note(self.s.config["settings"].get("shell")),
                              extra=extra, skills=skills, project=project, user=user)

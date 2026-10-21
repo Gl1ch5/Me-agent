@@ -35,7 +35,7 @@ TOOLS = [
     {"name": "web_fetch", "description": "Fetch a URL as text.", "parameters": _obj({"url": "string"}, ["url"])},
     {"name": "skill", "description": "Use a skill (no action = its guide).", "parameters": _obj({"name": "string", "action": "string", "args": "object"}, ["name"])},
     {"name": "todo", "description": "Plan checklist the user sees live. items = the whole list ('x ' done, '> ' doing); "
-                                    "done=[n] / doing=n mark steps by number — do it as each step ends.",
+                                    "done=[n] / doing=n mark steps by number — send it alongside the next step's call, not alone.",
      "parameters": _obj({"items": {"type": "array", "items": {"type": "string"}}, "done": {"type": "array", "items": {"type": "integer"}},
                          "doing": "integer"}, [])},
     {"name": "memory", "description": "Global memory across chats: text adds a note, forget=id removes one.",

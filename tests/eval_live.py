@@ -293,7 +293,7 @@ def _(d, out):
         probs.append("css/js not linked")
     if len(re.findall(r"\d+\s*(?:₽|руб)", h + j)) < 4:
         probs.append("fewer than 4 prices")
-    if not re.search(r"<form", h, re.I) or not re.search(r'type=["\']?email', h, re.I):
+    if not re.search(r"<form", h, re.I) or not re.search(r'(?:type|name|id)=["\']?[\w-]*email', h, re.I):
         probs.append("no form/email field")
     if "@media" not in c and "viewport" not in h:
         probs.append("not responsive")
@@ -368,6 +368,7 @@ def main():
     ap.add_argument("--only", default="")
     ap.add_argument("-j", type=int, default=3)
     ap.add_argument("--timeout", type=int, default=600)
+    ap.add_argument("--reps", type=int, default=1, help="run each task N times (models are noisy)")
     a = ap.parse_args()
     src = Path(os.environ.get("ME_HOME") or Path.home() / ".me")
     home = tempfile.mkdtemp(prefix="eval-home-")
@@ -381,13 +382,18 @@ def main():
     for sub in ("skills", "agents", "plugins"):
         if (src / sub).is_dir():
             shutil.copytree(src / sub, Path(home) / sub)
-    names = [n for n in T if not a.only or n in a.only.split(",")]
+    names = [n for n in T if not a.only or n in a.only.split(",")] * a.reps
     print(f"model {cfg['model']} · agent {a.agent or 'code'} · {len(names)} tasks")
     with ThreadPoolExecutor(a.j) as ex:
         res = list(ex.map(lambda n: run_one(n, home, a.agent, a.timeout), names))
     for r in res:
         print(f"{'PASS' if r['ok'] else 'FAIL'} {r['task']:16} {r['sec']:4}s {r['steps']:3} steps {r['tok']:16} {r['note'][:90]}  {r['dir']}")
     print(f"{sum(r['ok'] for r in res)}/{len(res)} passed")
+    if a.reps > 1:  # averages per task: steps and time say how efficiently it got there
+        for n in dict.fromkeys(names):
+            rs = [r for r in res if r["task"] == n]
+            print(f"  {n:16} {sum(r['ok'] for r in rs)}/{len(rs)} ok · {sum(r['steps'] for r in rs) / len(rs):.1f} steps · "
+                  f"{sum(r['sec'] for r in rs) / len(rs):.0f}s avg")
 
 
 if __name__ == "__main__":
