@@ -694,6 +694,16 @@ def looping(text, n=5, size=100):
     return end + 1 if end > first else second
 
 
+def harness_text(m):
+    """A harness note (nudge, reminder, hint) as the model sees it: tagged as not the user's words — models trained on Claude Code
+    and opencode follow <system-reminder> quietly, while a bare bracketed user turn reads as a new request. The user's own
+    messages queued mid-task stay plain."""
+    c = m.get("content")
+    if not m.get("_aux") or not isinstance(c, str) or c.startswith(("[message from the user", "[interrupted")):
+        return c
+    return f"<system-reminder>\n{c}\n</system-reminder>"
+
+
 def no_images(messages, note="[image: this model cannot see images]"):
     """Messages with every image part replaced by a text note (copies; the originals stay)."""
     return [dict(m, content=[x if x.get("type") != "image_url" else {"type": "text", "text": note} for x in m["content"]])
@@ -889,6 +899,8 @@ class Provider:
         for i, m in enumerate(messages):
             mine = m.get("role") == "assistant" and m.get("_model") == mid
             w = {k: v for k, v in m.items() if not k.startswith("_") and k not in ("reasoning_content", "reasoning_details", "reasoning_items")}
+            if m.get("_aux"):
+                w["content"] = harness_text(m)
             if mine and i > last:
                 for k in ("reasoning_content", "reasoning_details"):
                     if m.get(k):
@@ -1003,7 +1015,7 @@ class Provider:
                     items.append({"type": "function_call", "call_id": tc["id"], "name": tc["function"]["name"],
                                   "arguments": tc["function"]["arguments"]})
             else:
-                c = m["content"]
+                c = harness_text(m)
                 if isinstance(c, list):
                     c = [{"type": "input_text", "text": x["text"]} if x["type"] == "text" else
                          {"type": "input_image", "image_url": x["image_url"]["url"]} for x in c]
@@ -2216,7 +2228,7 @@ class ToolBox:
                 return False, msg, None
             write_text_file(p, new, fmt)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
-            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new), None
+            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new) + changed_excerpt(text, new), None
         if name == "bash":
             env, pref = shell_env(self.s.config.get("secrets")), self.s.config["settings"].get("shell")
             if a.get("background") in (True, "true", 1):
@@ -2497,7 +2509,38 @@ def _replace_one(text, old, new, all_):
                 repl = _reindent(news, lines[i:i + len(olds)], olds) if how == "indentation" else news
                 lines[i:i + len(olds)] = repl
             return "\n".join(lines), f"{len(hits)} replacement{'s' if len(hits) > 1 else ''}, line {hits[0] + 1} (matched ignoring {how})"
+    full = [x for x in old.split("\n") if x.strip()]
+    if full and all(LINE_NO_RX.match(x) for x in full):  # the `N│` prefix of read output copied into old (and maybe new)
+        strip = lambda s: "\n".join(LINE_NO_RX.sub("", x, 1) for x in s.split("\n"))
+        nn = [x for x in new.split("\n") if x.strip()]
+        r = _replace_one(text, strip(old), strip(new) if nn and all(LINE_NO_RX.match(x) for x in nn) else new, all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (line-number prefixes removed)"
+    if re.search(r'\\[nt"]', old) and "\n" not in old:  # JSON-escaped twice: \n and \" arrived literally
+        un = lambda s: s.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        r = _replace_one(text, un(old), un(new), all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (unescaped \\n / \\\")"
     return None, "error: old text not found." + _closest(text, old)
+
+
+LINE_NO_RX = re.compile(r"^\s*\d+\s?(?:│|:|→|\|)\s?")
+
+
+def changed_excerpt(old, new, ctx=2, cap=20):
+    """The edited region of the file as it is now, numbered like read: the model sees the result without reading it again."""
+    a, b = old.split("\n"), new.split("\n")
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    j = 0
+    while j < min(len(a), len(b)) - i and a[-1 - j] == b[-1 - j]:
+        j += 1
+    lo, hi = max(0, i - ctx), min(len(b), len(b) - j + ctx)
+    if hi - lo > cap or hi <= lo:
+        return ""
+    w = len(str(hi))
+    return "\n" + "\n".join(f"{k + 1:>{w}}│{b[k]}" for k in range(lo, hi))
 
 
 EDIT_ALIASES = (("old", ("old_string", "oldText", "old_str", "oldString", "search")), ("new", ("new_string", "newText", "new_str", "newString", "replace")),
@@ -2524,6 +2567,14 @@ def syntax_note(path, text):
             compile(text, str(path), "exec", dont_inherit=True)
         elif ext == ".json":
             json.loads(text)
+        elif ext in (".js", ".mjs", ".cjs", ".sh") and Path(path).is_file():  # a quick parse check, no project tooling needed
+            tool = shutil.which("node") if ext != ".sh" else (shutil.which("bash") if not WIN else None)
+            if tool:
+                r = subprocess.run([tool, "--check" if ext != ".sh" else "-n", str(path)], capture_output=True, text=True, timeout=5,
+                                   encoding="utf-8", errors="replace", **NO_WINDOW)
+                err = next((l for l in (r.stderr or "").splitlines() if re.search(r"Error|error|line \d+", l)), "")
+                if r.returncode and err:
+                    return f"\nwarning: syntax check failed — {err.strip()[:300]}. Fix it now."
     except SyntaxError as e:
         return f"\nwarning: the file no longer parses — line {e.lineno}: {e.msg}. Fix it now."
     except ValueError as e:
@@ -3120,8 +3171,9 @@ def mcp_describe(tools):
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
+Keep going until the task is fully done: act with tools, don't stop at a plan, an announcement or a half-fix; if a call fails, fix the cause and go on.
 
-Scope (most important):
+Scope:
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
 - No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
@@ -3133,7 +3185,7 @@ Tools:
 - Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, short but unique; several changes to one file in one call (edits=[…]). If an edit fails, read that part again first. write only for new files or full rewrites.
 - bash is non-interactive (pass -y / --yes, CI=1); servers and watchers need background=true.
 - Never undo or delete work you did not make; no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked; confirm anything irreversible.
-- [Bracketed] "user" lines mid-task come from me (self-check, reminder, a queued user message).
+- <system-reminder> text comes from the harness, not the user: follow it, don't reply to it or mention it.
 
 Work:
 - Never guess what code, an API or a command does: check it. Find the root cause before fixing; read errors fully.
@@ -3256,7 +3308,8 @@ DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
 
 
 ARG_ALIASES = {  # names other agents use for the same argument: models trained on them send these
-    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd"},
+    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd", "cwd": "workdir", "dir": "workdir", "directory": "workdir"},
+    "todo": {"todos": "items", "plan": "items", "steps": "items", "tasks": "items", "list": "items"},
     "read": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "start_line": "offset", "line_start": "offset", "from_line": "offset"},
     "write": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "text": "content", "contents": "content"},
     "edit": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "old_string": "old", "new_string": "new",
@@ -3265,6 +3318,13 @@ ARG_ALIASES = {  # names other agents use for the same argument: models trained 
     "ls": {"path": "pattern", "glob": "pattern", "dir": "pattern", "directory": "pattern"},
     "web_search": {"q": "query", "search": "query"},
     "web_fetch": {"link": "url", "href": "url"},
+}
+TOOL_ALIASES = {  # tool names from Claude Code, Codex, opencode and others: models trained there call them by habit
+    "shell": "bash", "exec_command": "bash", "run_command": "bash", "run_shell_command": "bash", "terminal": "bash", "execute": "bash",
+    "read_file": "read", "view": "read", "cat": "read", "open_file": "read",
+    "write_file": "write", "create_file": "write", "str_replace": "edit", "str_replace_editor": "edit", "multiedit": "edit",
+    "replace": "edit", "edit_file": "edit", "glob": "ls", "find": "ls", "list_files": "ls", "list_dir": "ls", "search": "grep",
+    "search_files": "grep", "todowrite": "todo", "update_plan": "todo", "update_todos": "todo", "write_todos": "todo",
 }
 
 
@@ -3281,8 +3341,12 @@ def fix_args(name, args, schema):
                 args["limit"] = max(1, int(end) - int(args.get("offset") or 1) + 1)
         except (TypeError, ValueError):
             pass
-    if name == "bash" and isinstance(args.get("cmd"), list):
-        args["cmd"] = " && ".join(map(str, args["cmd"]))
+    if name == "bash" and isinstance(args.get("cmd"), list):  # Codex sends argv: ["bash", "-lc", "npm test"]
+        argv = [str(x) for x in args["cmd"]]
+        if len(argv) >= 3 and os.path.basename(argv[0]) in ("bash", "sh", "zsh") and argv[1] in ("-c", "-lc"):
+            args["cmd"] = argv[-1]
+        else:
+            args["cmd"] = " ".join(x if re.fullmatch(r"[\w@%+=:,./-]+", x) else shlex.quote(x) for x in argv)
     req = [r for r in ((schema or {}).get("parameters") or {}).get("required", []) if args.get(r) in (None, "")]
     if req:
         props = list(((schema or {}).get("parameters") or {}).get("properties", {}))
@@ -3804,6 +3868,9 @@ class Agent:
         prepared = []
         for tc in calls:
             name = tc["function"]["name"]
+            if name not in (getattr(self, "_tool_names", None) or ()):
+                k = re.sub(r"[^a-z_]", "", name.lower())
+                name = tc["function"]["name"] = TOOL_ALIASES.get(k, k if k in (getattr(self, "_tool_names", None) or ()) else name)
             args = parse_args(tc["function"]["arguments"])
             if args is None and cut:
                 args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
@@ -3868,7 +3935,8 @@ class Agent:
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
-            return False, f"error: tool {name} is not available in the {pr['name']} agent", None
+            return False, (f"error: tool {name} is not available in the {pr['name']} agent. "
+                           f"Tools: {', '.join(sorted(getattr(self, '_tool_names', None) or ()))}"), None
         if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
@@ -3910,8 +3978,13 @@ class Agent:
         elif name == "bash":
             for p in rm_targets(str(args.get("cmd", "")), self.cwd):
                 self._snapshot(p)
+        cwd = self.cwd
+        if name == "bash" and args.get("workdir"):  # a subfolder for this one command (Codex and opencode pass one)
+            cwd = self.abspath(args.pop("workdir"))
+            if not os.path.isdir(cwd):
+                return False, f"error: workdir {cwd} does not exist", None
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
+            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=cwd)
         except Cancelled:
             raise
         except Exception as e:

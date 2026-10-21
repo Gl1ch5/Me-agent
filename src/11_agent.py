@@ -2,8 +2,9 @@
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
+Keep going until the task is fully done: act with tools, don't stop at a plan, an announcement or a half-fix; if a call fails, fix the cause and go on.
 
-Scope (most important):
+Scope:
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
 - No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
@@ -15,7 +16,7 @@ Tools:
 - Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, short but unique; several changes to one file in one call (edits=[…]). If an edit fails, read that part again first. write only for new files or full rewrites.
 - bash is non-interactive (pass -y / --yes, CI=1); servers and watchers need background=true.
 - Never undo or delete work you did not make; no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked; confirm anything irreversible.
-- [Bracketed] "user" lines mid-task come from me (self-check, reminder, a queued user message).
+- <system-reminder> text comes from the harness, not the user: follow it, don't reply to it or mention it.
 
 Work:
 - Never guess what code, an API or a command does: check it. Find the root cause before fixing; read errors fully.
@@ -138,7 +139,8 @@ DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
 
 
 ARG_ALIASES = {  # names other agents use for the same argument: models trained on them send these
-    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd"},
+    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd", "cwd": "workdir", "dir": "workdir", "directory": "workdir"},
+    "todo": {"todos": "items", "plan": "items", "steps": "items", "tasks": "items", "list": "items"},
     "read": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "start_line": "offset", "line_start": "offset", "from_line": "offset"},
     "write": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "text": "content", "contents": "content"},
     "edit": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "old_string": "old", "new_string": "new",
@@ -147,6 +149,13 @@ ARG_ALIASES = {  # names other agents use for the same argument: models trained 
     "ls": {"path": "pattern", "glob": "pattern", "dir": "pattern", "directory": "pattern"},
     "web_search": {"q": "query", "search": "query"},
     "web_fetch": {"link": "url", "href": "url"},
+}
+TOOL_ALIASES = {  # tool names from Claude Code, Codex, opencode and others: models trained there call them by habit
+    "shell": "bash", "exec_command": "bash", "run_command": "bash", "run_shell_command": "bash", "terminal": "bash", "execute": "bash",
+    "read_file": "read", "view": "read", "cat": "read", "open_file": "read",
+    "write_file": "write", "create_file": "write", "str_replace": "edit", "str_replace_editor": "edit", "multiedit": "edit",
+    "replace": "edit", "edit_file": "edit", "glob": "ls", "find": "ls", "list_files": "ls", "list_dir": "ls", "search": "grep",
+    "search_files": "grep", "todowrite": "todo", "update_plan": "todo", "update_todos": "todo", "write_todos": "todo",
 }
 
 
@@ -163,8 +172,12 @@ def fix_args(name, args, schema):
                 args["limit"] = max(1, int(end) - int(args.get("offset") or 1) + 1)
         except (TypeError, ValueError):
             pass
-    if name == "bash" and isinstance(args.get("cmd"), list):
-        args["cmd"] = " && ".join(map(str, args["cmd"]))
+    if name == "bash" and isinstance(args.get("cmd"), list):  # Codex sends argv: ["bash", "-lc", "npm test"]
+        argv = [str(x) for x in args["cmd"]]
+        if len(argv) >= 3 and os.path.basename(argv[0]) in ("bash", "sh", "zsh") and argv[1] in ("-c", "-lc"):
+            args["cmd"] = argv[-1]
+        else:
+            args["cmd"] = " ".join(x if re.fullmatch(r"[\w@%+=:,./-]+", x) else shlex.quote(x) for x in argv)
     req = [r for r in ((schema or {}).get("parameters") or {}).get("required", []) if args.get(r) in (None, "")]
     if req:
         props = list(((schema or {}).get("parameters") or {}).get("properties", {}))
@@ -686,6 +699,9 @@ class Agent:
         prepared = []
         for tc in calls:
             name = tc["function"]["name"]
+            if name not in (getattr(self, "_tool_names", None) or ()):
+                k = re.sub(r"[^a-z_]", "", name.lower())
+                name = tc["function"]["name"] = TOOL_ALIASES.get(k, k if k in (getattr(self, "_tool_names", None) or ()) else name)
             args = parse_args(tc["function"]["arguments"])
             if args is None and cut:
                 args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
@@ -750,7 +766,8 @@ class Agent:
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
-            return False, f"error: tool {name} is not available in the {pr['name']} agent", None
+            return False, (f"error: tool {name} is not available in the {pr['name']} agent. "
+                           f"Tools: {', '.join(sorted(getattr(self, '_tool_names', None) or ()))}"), None
         if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
         veto = PLUGINS.emit("before_tool", name, args)
@@ -792,8 +809,13 @@ class Agent:
         elif name == "bash":
             for p in rm_targets(str(args.get("cmd", "")), self.cwd):
                 self._snapshot(p)
+        cwd = self.cwd
+        if name == "bash" and args.get("workdir"):  # a subfolder for this one command (Codex and opencode pass one)
+            cwd = self.abspath(args.pop("workdir"))
+            if not os.path.isdir(cwd):
+                return False, f"error: workdir {cwd} does not exist", None
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
+            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=cwd)
         except Cancelled:
             raise
         except Exception as e:

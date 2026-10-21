@@ -89,7 +89,7 @@ class ToolBox:
                 return False, msg, None
             write_text_file(p, new, fmt)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
-            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new), None
+            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new) + changed_excerpt(text, new), None
         if name == "bash":
             env, pref = shell_env(self.s.config.get("secrets")), self.s.config["settings"].get("shell")
             if a.get("background") in (True, "true", 1):
@@ -370,7 +370,38 @@ def _replace_one(text, old, new, all_):
                 repl = _reindent(news, lines[i:i + len(olds)], olds) if how == "indentation" else news
                 lines[i:i + len(olds)] = repl
             return "\n".join(lines), f"{len(hits)} replacement{'s' if len(hits) > 1 else ''}, line {hits[0] + 1} (matched ignoring {how})"
+    full = [x for x in old.split("\n") if x.strip()]
+    if full and all(LINE_NO_RX.match(x) for x in full):  # the `N│` prefix of read output copied into old (and maybe new)
+        strip = lambda s: "\n".join(LINE_NO_RX.sub("", x, 1) for x in s.split("\n"))
+        nn = [x for x in new.split("\n") if x.strip()]
+        r = _replace_one(text, strip(old), strip(new) if nn and all(LINE_NO_RX.match(x) for x in nn) else new, all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (line-number prefixes removed)"
+    if re.search(r'\\[nt"]', old) and "\n" not in old:  # JSON-escaped twice: \n and \" arrived literally
+        un = lambda s: s.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        r = _replace_one(text, un(old), un(new), all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (unescaped \\n / \\\")"
     return None, "error: old text not found." + _closest(text, old)
+
+
+LINE_NO_RX = re.compile(r"^\s*\d+\s?(?:│|:|→|\|)\s?")
+
+
+def changed_excerpt(old, new, ctx=2, cap=20):
+    """The edited region of the file as it is now, numbered like read: the model sees the result without reading it again."""
+    a, b = old.split("\n"), new.split("\n")
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    j = 0
+    while j < min(len(a), len(b)) - i and a[-1 - j] == b[-1 - j]:
+        j += 1
+    lo, hi = max(0, i - ctx), min(len(b), len(b) - j + ctx)
+    if hi - lo > cap or hi <= lo:
+        return ""
+    w = len(str(hi))
+    return "\n" + "\n".join(f"{k + 1:>{w}}│{b[k]}" for k in range(lo, hi))
 
 
 EDIT_ALIASES = (("old", ("old_string", "oldText", "old_str", "oldString", "search")), ("new", ("new_string", "newText", "new_str", "newString", "replace")),
@@ -397,6 +428,14 @@ def syntax_note(path, text):
             compile(text, str(path), "exec", dont_inherit=True)
         elif ext == ".json":
             json.loads(text)
+        elif ext in (".js", ".mjs", ".cjs", ".sh") and Path(path).is_file():  # a quick parse check, no project tooling needed
+            tool = shutil.which("node") if ext != ".sh" else (shutil.which("bash") if not WIN else None)
+            if tool:
+                r = subprocess.run([tool, "--check" if ext != ".sh" else "-n", str(path)], capture_output=True, text=True, timeout=5,
+                                   encoding="utf-8", errors="replace", **NO_WINDOW)
+                err = next((l for l in (r.stderr or "").splitlines() if re.search(r"Error|error|line \d+", l)), "")
+                if r.returncode and err:
+                    return f"\nwarning: syntax check failed — {err.strip()[:300]}. Fix it now."
     except SyntaxError as e:
         return f"\nwarning: the file no longer parses — line {e.lineno}: {e.msg}. Fix it now."
     except ValueError as e:

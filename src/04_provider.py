@@ -17,6 +17,16 @@ def looping(text, n=5, size=100):
     return end + 1 if end > first else second
 
 
+def harness_text(m):
+    """A harness note (nudge, reminder, hint) as the model sees it: tagged as not the user's words — models trained on Claude Code
+    and opencode follow <system-reminder> quietly, while a bare bracketed user turn reads as a new request. The user's own
+    messages queued mid-task stay plain."""
+    c = m.get("content")
+    if not m.get("_aux") or not isinstance(c, str) or c.startswith(("[message from the user", "[interrupted")):
+        return c
+    return f"<system-reminder>\n{c}\n</system-reminder>"
+
+
 def no_images(messages, note="[image: this model cannot see images]"):
     """Messages with every image part replaced by a text note (copies; the originals stay)."""
     return [dict(m, content=[x if x.get("type") != "image_url" else {"type": "text", "text": note} for x in m["content"]])
@@ -212,6 +222,8 @@ class Provider:
         for i, m in enumerate(messages):
             mine = m.get("role") == "assistant" and m.get("_model") == mid
             w = {k: v for k, v in m.items() if not k.startswith("_") and k not in ("reasoning_content", "reasoning_details", "reasoning_items")}
+            if m.get("_aux"):
+                w["content"] = harness_text(m)
             if mine and i > last:
                 for k in ("reasoning_content", "reasoning_details"):
                     if m.get(k):
@@ -326,7 +338,7 @@ class Provider:
                     items.append({"type": "function_call", "call_id": tc["id"], "name": tc["function"]["name"],
                                   "arguments": tc["function"]["arguments"]})
             else:
-                c = m["content"]
+                c = harness_text(m)
                 if isinstance(c, list):
                     c = [{"type": "input_text", "text": x["text"]} if x["type"] == "text" else
                          {"type": "input_image", "image_url": x["image_url"]["url"]} for x in c]
