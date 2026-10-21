@@ -95,7 +95,7 @@ class TUIRender:
         head.pre = 4
         head.end = head.width()
         if b.done:
-            head.add(f"  {dur(b.elapsed)}", rgb(TH["faint"]))
+            head.add(f"  {dur(b.elapsed)}", rgb(TH["faint_t"]))
         out = [head]
         if b.data.get("diff"):
             for dl in b.data["diff"].split("\n")[: (8 if b.collapsed else 40)]:
@@ -109,7 +109,7 @@ class TUIRender:
                 for l in lines[:show]:
                     out.append(gutter("    │ ", rgb(TH["faint"])).add(l[: W - 8], rgb(TH["dim"] if b.ok else TH["err"])))
                 if len(lines) > show:
-                    out.append(gutter("    └ ", rgb(TH["faint"])).add(T(f"{len(lines) - show} more lines"), rgb(TH["faint"])))
+                    out.append(gutter("    └ ", rgb(TH["faint"])).add(T(f"{len(lines) - show} more lines"), rgb(TH["faint_t"])))
             else:
                 for l in lines[:200]:
                     out.append(gutter("    │ ", rgb(TH["faint"])).add(l[: W - 8], dim))
@@ -153,7 +153,7 @@ class TUIRender:
             mark = ("✓", rgb(TH["ok"])) if b.ok else ("✗", rgb(TH["err"]))
             summary = (b.data.get("output") or "").strip().split("\n")[0][: W - 40] if b.ok else (b.data.get("output") or "").split("\n")[0][: W - 40]
             head = Line().add("  ").add(mark[0] + " ", mark[1]).add(f"{icon} ", rgb(color)).add(name, rgb(color) + CSI + "1m") \
-                .add(" · ", rgb(TH["dim"])).add(act, rgb(TH["fg"])).add(f"  {t}", rgb(TH["faint"])) \
+                .add(" · ", rgb(TH["dim"])).add(act, rgb(TH["fg"])).add(f"  {t}", rgb(TH["faint_t"])) \
                 .add(("  " + summary) if summary else "", rgb(TH["dim"]))
             head.pre = 4
             return [head] + [gutter("    │ ", rgb(color)).add(pl[: W - 8], rgb(TH["fg"])) for pl in b.data.get("panel", [])[:40]]
@@ -256,7 +256,7 @@ class TUIRender:
             sym, col = {"done": ("✓", TH["ok"]), "doing": ("▸", TH["accent"])}.get(i["s"], ("○", TH["faint"]))
             out.append(Line().add("  " + sym + " ", rgb(col)).add(i["t"][: W - 6], rgb(TH["dim"] if i["s"] == "done" else TH["fg"])))
         if len(items) > lo + cap:
-            out.append(Line().add(T(f"    … {len(items) - lo - cap} more"), rgb(TH["faint"])))
+            out.append(Line().add(T(f"    … {len(items) - lo - cap} more"), rgb(TH["faint_t"])))
         return out
 
     def status_line(self, W):
@@ -291,7 +291,7 @@ class TUIRender:
         if ctxf:
             right.add("◆ " + " ".join(ctxf) + "  ", rgb(TH["ok"]))
         else:
-            right.add(T("◇ no AGENTS.md (/init)") + "  ", rgb(TH["faint"]))
+            right.add(T("◇ no AGENTS.md (/init)") + "  ", rgb(TH["faint_t"]))
         for segs in PLUGINS.collect("status", self):
             for t, c in segs:
                 right.add(t, rgb(TH.get(c, c) if not str(c).startswith("#") else c))
@@ -375,13 +375,13 @@ class TUIRender:
                     l.add(" " * pw)
                 gh = self.ghost() if i == 0 and len(in_rows) == 1 else ""
                 if not self.input and i == 0 and not gh:
-                    l.add(T("ask anything, / for commands" if not busy else "queue a message…"), rgb(TH["faint"]))
+                    l.add(T("ask anything, / for commands" if not busy else "queue a message…"), rgb(TH["faint_t"]))
                 else:
                     l.add(r, rgb(TH["fg"]))
                     if gh:  # the suggested next message, greyed: tab or → takes it
                         room = W - 2 - l.width() - 5
                         if room > 3:
-                            l.add(gh if swidth(gh) <= room else gh[:room - 1] + "…", rgb(TH["faint"])).add("  tab", rgb(TH["faint"]))
+                            l.add(gh if swidth(gh) <= room else gh[:room - 1] + "…", rgb(TH["faint_t"])).add("  tab", rgb(TH["faint_t"]))
                 l.add(" " * max(0, W - 1 - l.width())).add("│", bcol)
                 box.append(l)
             box.append(Line().add("╰" + "─" * (W - 2) + "╯", bcol))
@@ -395,7 +395,7 @@ class TUIRender:
                 act.add(f"  {dur(el)}", rgb(TH["dim"]))
                 if any(self.turn_tokens):
                     act.add(f"  ↑{human(self.turn_tokens[0])} ↓{human(self.turn_tokens[1])}", rgb(TH["dim"]))
-                act.add("   " + T("esc to interrupt"), rgb(TH["faint"]))
+                act.add("   " + T("esc to interrupt"), rgb(TH["faint_t"]))
             else:
                 msg = self.notice
                 if msg[0] and time.time() - msg[1] < 4:
@@ -483,7 +483,7 @@ class TUIRender:
             m["_visible"] = items
             m["sel"] = max(0, min(m["sel"], len(items) - 1))
             rows.append(Line().add(" " + title, rgb(TH["fg"]) + CSI + "1m"))
-            rows.append(Line().add(" ⌕ ", rgb(TH["accent"])).add(m["filter"] or T("type to filter"), rgb(TH["fg"] if m["filter"] else TH["faint"])))
+            rows.append(Line().add(" ⌕ ", rgb(TH["accent"])).add(m["filter"] or T("type to filter"), rgb(TH["fg"] if m["filter"] else TH["faint_t"])))
             rows.append(Line())
             maxn = max(3, H - 12)
             start = max(0, min(m["sel"] - maxn // 2, len(items) - maxn))
@@ -505,7 +505,7 @@ class TUIRender:
             if not items:
                 rows.append(Line().add("   " + T("no matches"), rgb(TH["dim"])))
             rows.append(Line())
-            rows.append(Line().add(" " + T("↑↓ select · enter confirm · esc cancel") + (" · " + m["hint"] if m.get("hint") else ""), rgb(TH["faint"])))
+            rows.append(Line().add(" " + T("↑↓ select · enter confirm · esc cancel") + (" · " + m["hint"] if m.get("hint") else ""), rgb(TH["faint_t"])))
         elif m["kind"] == "confirm":
             rows.append(Line().add(" " + T("⚠ allow") + " ", rgb(TH["warn"]) + CSI + "1m").add(title[: mw - 12], rgb(TH["fg"])))
             if m.get("detail"):
@@ -519,7 +519,7 @@ class TUIRender:
                 st = rgb(TH["sel"], True) if selected else ""
                 rows.append(Line().add((" ▸ " if selected else "   ") + f"{i + 1}. {lab}", st + rgb(TH["accent"] if selected else TH["fg"])))
             rows.append(Line())
-            rows.append(Line().add(" " + T("y/n · ↑↓ enter · esc deny"), rgb(TH["faint"])))
+            rows.append(Line().add(" " + T("y/n · ↑↓ enter · esc deny"), rgb(TH["faint_t"])))
         elif m["kind"] == "input":
             rows.append(Line().add(" " + title, rgb(TH["fg"]) + CSI + "1m"))
             if m.get("hint"):
@@ -543,7 +543,7 @@ class TUIRender:
                 if i + first == crow:
                     m["_cur"] = (len(rows) - 1, 3 + ccol - off)
             rows.append(Line())
-            rows.append(Line().add(" " + T("enter newline · ctrl+s save · esc cancel" if m["multiline"] else "enter confirm · esc cancel"), rgb(TH["faint"])))
+            rows.append(Line().add(" " + T("enter newline · ctrl+s save · esc cancel" if m["multiline"] else "enter confirm · esc cancel"), rgb(TH["faint_t"])))
         h = len(rows) + 2
         y = max(1, (H - h) // 2)
         out = [f"{CSI}{y};{x}H" + Line().add("╭" + "─" * (mw - 2) + "╮", bc).render(mw, mbg)]

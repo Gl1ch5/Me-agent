@@ -12,11 +12,11 @@
   "dim": "#657b83",
   "faint": "#b5ae98",
   "accent": "#268bd2",
-  "accent2": "#2aa198",
-  "ok": "#859900",
+  "accent2": "#1f7f78",
+  "ok": "#6c7a00",
   "err": "#dc322f",
   "warn": "#cb4b16",
-  "user": "#b58900",
+  "user": "#8f6c00",
   "code_bg": "#eee8d5",
   "sel": "#e3dcc4"
  }

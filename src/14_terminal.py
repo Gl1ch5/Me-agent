@@ -5,9 +5,20 @@ CSI = ESC + "["
 RESET = CSI + "0m"
 
 
+# Terminal.app (before macOS 26) and ME_COLORS=256 get the xterm-256 palette: 24-bit codes there show wrong colors
+COLORS256 = os.environ.get("ME_COLORS") == "256" or (os.environ.get("TERM_PROGRAM") == "Apple_Terminal"
+                                                    and os.environ.get("COLORTERM") not in ("truecolor", "24bit"))
+
+
 def rgb(h, bg=False):
     h = h.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    if COLORS256:
+        q = lambda v: 0 if v < 48 else 1 if v < 115 else (v - 35) // 40
+        n = 16 + 36 * q(r) + 6 * q(g) + q(b)
+        if abs(r - g) < 10 and abs(g - b) < 10 and not (r < 5 or r > 250):  # greys: the 24-step ramp is finer than the cube
+            n = 232 + min(23, max(0, (r - 8) // 10))
+        return f"{CSI}{48 if bg else 38};5;{n}m"
     return f"{CSI}{48 if bg else 38};2;{r};{g};{b}m"
 
 
@@ -19,10 +30,20 @@ def mix(a, b, t):
 TH = {  # theme
     "bg": "#0e0f13", "fg": "#d8dae3", "dim": "#6b6f80", "faint": "#3a3d4a", "accent": "#8b7cff", "accent2": "#4fd1c5",
     "user": "#e7c66b", "ok": "#5ad18a", "err": "#ff6b7a", "warn": "#ffb454", "code_bg": "#16181f", "sel": "#262a38",
-    "add": "#5ad18a", "del": "#ff6b7a",
+    "add": "#5ad18a", "del": "#ff6b7a", "faint_t": "#555867",
 }
 SKILL_COLORS = {"red": "#ff6b7a", "green": "#5ad18a", "blue": "#6ba6ff", "magenta": "#d27cff", "cyan": "#4fd1c5", "yellow": "#e7c66b",
                 "orange": "#ffb454", "purple": "#8b7cff", "pink": "#ff8fc7"}
+
+
+def skill_color(c, fallback):
+    """A skill/CLI color name or hex as it reads on the current theme: the pastel set is made for dark backgrounds."""
+    h = SKILL_COLORS.get(c) or (c if re.fullmatch(r"#[0-9a-fA-F]{6}", str(c or "")) else fallback)
+    bg = TH["bg"].lstrip("#")
+    light = sum(int(bg[i:i + 2], 16) for i in (0, 2, 4)) > 384
+    return mix(h, "#000000", .4) if light else h
+
+
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 BAR = " ▏▎▍▌▋▊▉█"
 

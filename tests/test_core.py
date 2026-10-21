@@ -1042,7 +1042,9 @@ def test_act_nudge():
 def test_output_loop_stopped():
     s = make()
     ag, ev = run(s, "loop: go")
-    assert ag.session["messages"][-1]["content"] == "Intro. The b method is called when b is created.", ag.session["messages"][-1]
+    msgs = [m.get("content") for m in ag.session["messages"]]
+    assert "Intro. The b method is called when b is created." in msgs, msgs
+    assert msgs.count(me.REPEAT_NUDGE) == 1  # a reply cut for repeating itself does not end the task
     assert any(e["type"] == "notice" and "repeating" in e["text"] for e in ev)
 
 

@@ -210,8 +210,7 @@ class WebSession:
                     self.ws.sync(wid)
                 except CloudError:
                     pass
-                os.chdir(local)
-                a.relocate(local)
+                a.relocate(local)  # this chat only: other chats in this process keep their folders
             return self.state()
         if path == "/compact":
             if a.busy:
@@ -412,7 +411,7 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
     def remote(n):
         store.config.update(jload(store.cfg_path) or {})
         for w in lanes.list:
-            if not w.agent.busy and w.agent.refresh_from_disk(os.getcwd()):
+            if not w.agent.busy and w.agent.refresh_from_disk():
                 w.push({"type": "reload"})
     if store.auth.get("token"):
         ws.cloud.watch(remote)

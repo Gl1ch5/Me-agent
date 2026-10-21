@@ -523,6 +523,13 @@ def market_publish(p: Publish, u=Depends(user)):
     ext = "md" if p.ext == "md" else "py"
     kind = meta.get("kind") if meta.get("kind") in ("plugin", "theme", "agent") else "skill"
     ext = {"theme": "json", "agent": "md", "plugin": "py"}.get(kind, ext)
+    if kind == "theme":  # its colors go into other people's pages as CSS: hex colors only
+        try:
+            cols = json.loads(p.content).get("colors")
+        except (ValueError, AttributeError):
+            cols = None
+        if not isinstance(cols, dict) or any(not re.fullmatch(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?", str(v)) for v in cols.values()):
+            raise HTTPException(400, "a theme needs \"colors\": {name: \"#rrggbb\"} with hex colors only")
     cur = conn.execute("SELECT user_id FROM market WHERE name=?", (name,)).fetchone()
     if cur and cur["user_id"] != u["id"] and not u["admin"]:
         raise HTTPException(409, "name taken by another author")

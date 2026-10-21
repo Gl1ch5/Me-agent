@@ -72,18 +72,26 @@ class Provider:
         try:
             return urllib.request.urlopen(r, timeout=600)
         except urllib.error.HTTPError as e:
-            text = e.read().decode("utf-8", "replace")[:1500]
-            try:  # the readable part of {"error": {"message": …}}
+            raw = e.read().decode("utf-8", "replace")
+            text = raw[:1500]
+            try:  # the readable part of {"error": {"message": …}} (Gemini wraps it in a list)
                 j = json.loads(text)
+                j = j[0] if isinstance(j, list) and j else j
                 err = j.get("error") if isinstance(j, dict) else None
                 text = (err.get("message") if isinstance(err, dict) else err) or j.get("message") or text
             except (ValueError, AttributeError):
                 pass
             text = str(text)[:800]
-            if e.code in (400, 404) and "model" not in text.lower() and body.get("model"):  # a proxy that drops the reason: the id is the usual suspect
-                text += f" (if this repeats, check the model id {body['model']!r} in /models or pick another model)"
-            raise ProviderError(f"HTTP {e.code}: {text}", e.code, _retry_after(e.headers),
-                                e.code in RETRY_STATUS or bool(RETRY_RX.search(str(text)) and e.code >= 500))
+            if (e.code == 404 or (e.code == 400 and len(text) < 40)) and "model" not in text.lower() and body.get("model"):
+                text += f" (if this repeats, check the model id {body['model']!r} in /models or pick another model)"  # a proxy that drops the reason
+            ra = _retry_after(e.headers)
+            mt = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', raw)  # Gemini puts the wait in the body, not in Retry-After
+            if ra is None and mt:
+                ra = min(60.0, float(mt.group(1)))
+            retryable = e.code in RETRY_STATUS or bool(RETRY_RX.search(str(text)) and e.code >= 500)
+            if e.code == 429 and re.search(r"per.?day|daily", raw, re.I):  # a daily quota: waiting a minute cannot help
+                retryable = False
+            raise ProviderError(f"HTTP {e.code}: {text}", e.code, ra, retryable)
 
     @staticmethod
     def _sse(resp, cancel):
@@ -264,11 +272,16 @@ class Provider:
                         if cut:
                             text, finish = text[:cut], "loop"
                 for j, tc in enumerate(d.get("tool_calls") or []):
-                    c = calls.setdefault(tc.get("index", j), {"id": "", "name": "", "args": ""})
-                    c["id"] = tc.get("id") or c["id"]
                     f = tc.get("function") or {}
+                    k = tc.get("index", j)
+                    c = calls.get(k)
+                    if c and c["args"] and (f.get("name") or (tc.get("id") and c["id"] and tc["id"] != c["id"])):
+                        k = max(calls) + 1  # Gemini sends whole calls one per chunk with no index (or index 0 again): a new call
+                    c = calls.setdefault(k, {"id": "", "name": "", "args": ""})
+                    c["id"] = c["id"] or tc.get("id") or ""
                     c["name"] += f.get("name") or ""
-                    c["args"] += f.get("arguments") or ""
+                    a = f.get("arguments") or ""
+                    c["args"] += a if isinstance(a, str) else json.dumps(a)  # some proxies send the arguments as an object
                     if tc.get("extra_content"):  # Gemini thought signature: must come back with this call
                         c["extra"] = tc["extra_content"]
             if finish == "loop":
@@ -286,12 +299,17 @@ class Provider:
             msg["_finish"] = finish
         if calls:
             msg["tool_calls"] = []
+            ids = set()
             for _, c in sorted(calls.items()):
-                tc = {"id": c["id"] or "call_" + uuid.uuid4().hex[:8], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
+                if not c["id"] or c["id"] in ids:  # results are matched by id: two calls must never share one
+                    c["id"] = "call_" + uuid.uuid4().hex[:8]
+                ids.add(c["id"])
+                tc = {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                 if c.get("extra"):
                     tc["extra_content"] = c["extra"]
                 msg["tool_calls"].append(tc)
-        return msg, {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0), "cached": self._cached(usage)}
+        out = max(usage.get("completion_tokens") or 0, (usage.get("total_tokens") or 0) - (usage.get("prompt_tokens") or 0))  # Gemini: thinking is only in the total
+        return msg, {"in": usage.get("prompt_tokens", 0), "out": out, "cached": self._cached(usage)}
 
     def _responses(self, system, messages, tools, emit, cancel, cache_key=None):
         mid = self.m.get("id")

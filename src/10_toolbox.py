@@ -51,8 +51,8 @@ class ToolBox:
         if name in ("write", "edit"):
             if mode == "read":
                 return "read-only mode: file changes are off. Describe the change instead."
-            root = os.path.normcase(os.path.abspath(cwd or os.getcwd()))
-            p = os.path.normcase(os.path.abspath(os.path.join(cwd or os.getcwd(), os.path.expanduser(a.get("path", "")))))
+            root = os.path.normcase(os.path.realpath(cwd or os.getcwd()))  # realpath: a symlink inside must not lead outside unasked
+            p = os.path.normcase(os.path.realpath(tool_path(cwd or os.getcwd(), a.get("path", ""))))
             return not (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
         if name in PLUGINS.tools:
             c = PLUGINS.tools[name].get("confirm", False)
@@ -65,7 +65,7 @@ class ToolBox:
     def run(self, name, a, emit, cancel, ask=None, cwd=None):
         """Returns (ok, text, image_data_url|None). Relative paths are relative to the session's folder (`cwd`)."""
         cwd = cwd or os.getcwd()
-        at = lambda x: Path(cwd, os.path.expanduser(str(x)))
+        at = lambda x: Path(tool_path(cwd, x))
         if name == "read":
             out, img = read_any(at(a["path"]), a.get("offset", 1), a.get("limit", 2000))
             return not out.startswith("error"), out, img
@@ -106,11 +106,11 @@ class ToolBox:
         if name == "skill":
             return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
-            return self._notify(a)
+            return self._notify(dict(a, file=str(at(a["file"]))) if a.get("file") else a)
         if name == "publish":
             return self._publish(at(a.get("path") or "."), str(a.get("name") or ""))
         if name == "mcp":
-            return self._mcp(a, emit)
+            return self._mcp(a, emit, cwd)
         if name == "web_search":
             emit({"t": "status", "text": "searching"})
             return web_search(self.s.config, a["query"], cancel)
@@ -118,7 +118,7 @@ class ToolBox:
             return web_fetch(a["url"])
         tool = PLUGINS.tools.get(name)
         if tool:
-            r = tool["fn"](a, PluginCtx(emit, cancel, ask))
+            r = tool["fn"](a, PluginCtx(emit, cancel, ask, cwd))
             return (True, r, None) if isinstance(r, str) else (bool(r[0]), r[1], None)
         return False, f"unknown tool {name}", None
 
@@ -168,9 +168,9 @@ class ToolBox:
             return False, "error: " + str(r.get("detail") or r), None
         return True, f"published {r['files']} files: {r['url']}", None
 
-    def _mcp(self, a, emit):
+    def _mcp(self, a, emit, cwd=None):
         try:
-            c = mcp_client(self.s, a.get("server", ""))
+            c = mcp_client(self.s, a.get("server", ""), cwd)
         except KeyError:
             return False, f"no MCP server '{a.get('server')}'. configured: {', '.join(self.s.config.get('mcp') or {}) or 'none'}", None
         try:
@@ -247,7 +247,8 @@ class ToolBox:
 
 def list_glob(cwd, pat):
     """ls tool: a folder lists itself; otherwise a glob over the project (heavy folders skipped unless named), newest first."""
-    p = Path(cwd, os.path.expanduser(pat))
+    pat = os.path.expanduser(pat)
+    p = Path(cwd, pat)
     if not re.search(r"[*?\[{]", pat):
         if p.is_dir():
             return read_any(p)[0]

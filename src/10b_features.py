@@ -265,7 +265,7 @@ def money(x):
 # settings.allow: command patterns that never ask, e.g. "git status*", "npm test*". Legacy settings.yolo = full.
 
 PERMS = {"read": "read-only", "ask": "workspace-write (ask for commands)", "full": "full access"}
-DEFAULT_ALLOW = ["git status*", "git diff*", "git log*", "git show*", "ls*", "pwd", "cat *", "head *", "tail *", "wc *", "which *",
+DEFAULT_ALLOW = ["git status*", "git diff*", "git log*", "git show*", "ls", "ls *", "pwd", "cat *", "head *", "tail *", "wc *", "which *",
                  "python3 -m pytest*", "pytest*", "npm test*", "npm run test*", "npm run build*", "npm run lint*", "go test*", "cargo test*",
                  "node --check *", "python3 -m py_compile *"]
 
@@ -278,6 +278,8 @@ def cmd_allowed(cmd, patterns):
     cmd = cmd.strip()
     if not cmd or re.search(r"[;&|`<>\n]|\$\(", cmd):  # chained / redirected commands always ask
         return False
+    if re.search(r"(?:^|\s)(?:--output|--out-file)|(?:^|\s)['\"]?(?:~|/|\\|\.\.|[A-Za-z]:)", cmd):
+        return False  # an allow-listed command still asks when it names a path outside the project or writes a file
     return any(fnmatch.fnmatchcase(cmd, p) for p in patterns)
 
 
@@ -302,7 +304,7 @@ class MCPClient:
             env = dict(os.environ, **{k: str(v) for k, v in (self.spec.get("env") or {}).items()})
             self.proc = subprocess.Popen([self.spec["command"], *self.spec.get("args", [])], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                         **NO_WINDOW)
+                                         cwd=getattr(self, "cwd", None) if os.path.isdir(getattr(self, "cwd", None) or "") else None, **NO_WINDOW)
             self._init()
         self.proc.stdin.write(json.dumps(msg) + "\n")
         self.proc.stdin.flush()
@@ -384,15 +386,18 @@ class MCPClient:
 MCP_CLIENTS = {}
 
 
-def mcp_client(store, name):
+def mcp_client(store, name, cwd=None):
+    """One client per server and project folder: a stdio server started for one chat's folder must not serve another's."""
     spec = (store.config.get("mcp") or {}).get(name)
     if not spec:
         raise KeyError(name)
-    c = MCP_CLIENTS.get(name)
+    key = name if spec.get("url") or not cwd else (name, os.path.normcase(os.path.abspath(cwd)))
+    c = MCP_CLIENTS.get(key)
     if not c or c.spec != spec:
         if c:
             c.close()
-        c = MCP_CLIENTS[name] = MCPClient(name, spec)
+        c = MCP_CLIENTS[key] = MCPClient(name, spec)
+        c.cwd = cwd
     return c
 
 

@@ -42,8 +42,16 @@ def theme(store, name=None):
     ts = themes(store)
     t = ts.get(name or store.config.get("theme") or "me-dark") or ts["me-dark"]
     colors = dict(BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
-    colors.update({k: v for k, v in t["colors"].items() if isinstance(v, str) and v.startswith("#")})
+    colors.update({k: h for k, h in ((k, hex6(v)) for k, v in t["colors"].items()) if h})
     return dict(t, colors=colors)
+
+
+def hex6(v):
+    """"#abc" → "#aabbcc"; anything that is not a hex color → None (a bad synced theme must not break every frame)."""
+    v = str(v or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{3}", v):
+        v = "#" + "".join(c * 2 for c in v[1:])
+    return v.lower() if re.fullmatch(r"#[0-9a-fA-F]{6}", v) else None
 
 
 def apply_theme(store, name=None):
@@ -51,4 +59,5 @@ def apply_theme(store, name=None):
     c = theme(store, name)["colors"]
     TH.update(c)
     TH["add"], TH["del"] = c["ok"], c["err"]
+    TH["faint_t"] = mix(c["faint"], c["dim"], .6)  # faint is tuned for rules and borders: text in it is barely readable
     return c

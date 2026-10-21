@@ -3,6 +3,18 @@
 IMAGE_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
 
 
+def tool_path(cwd, path):
+    """A tool path as the model meant it: relative to the project, ~ expanded. "/src/x.py" (or "\\src\\x.py" on Windows)
+    that does not exist while src/ is in the project means the project's src/, not the filesystem root."""
+    p = os.path.expanduser(str(path or ""))
+    full = os.path.abspath(os.path.join(cwd, p))
+    if p[:1] in "/\\" and not os.path.exists(full) and not os.path.isdir(os.path.dirname(full)):
+        top = p.replace("\\", "/").lstrip("/").split("/")[0]
+        if top and os.path.exists(os.path.join(cwd, top)):
+            return os.path.abspath(os.path.join(cwd, p.lstrip("/\\")))
+    return full
+
+
 def _xml_text(data):
     data = re.sub(rb"</(w:p|a:p|text:p|row)>", b"\n", data)
     data = re.sub(rb"</(w:tc|c)>", b"\t", data)

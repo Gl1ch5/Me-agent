@@ -97,10 +97,8 @@ class Task:
         s = self.agent.session
         s["cwd"], s["title"] = meta["cwd"], s.get("title") or meta["title"]
         for k in ("model", "effort"):
-            if meta.get(k):
+            if meta.get(k):  # no choice in the task: keep the model the chat was pinned to on its first turn
                 s[k] = meta[k]
-            else:
-                s.pop(k, None)
         self.agent.take_queued = self.take_queued
         self.thread = None
 
@@ -320,7 +318,13 @@ class Studio:
         cwd = m["wt"] if m["mode"] == "worktree" else (git_root(m["cwd"]) or "")
         if not cwd:
             raise ValueError("not a git repository")
-        stage(cwd)
+        if m["mode"] == "worktree":
+            stage(cwd)
+        else:  # local mode shares the repo with the user and other tasks: commit only the files this task changed
+            files = {p for cp in me.Checkpoints(self.store, self.task(tid).agent.session["id"]).load() for p in cp.get("files", {})}
+            if not files:
+                return "nothing to commit"
+            git(cwd, "add", "-A", "--", *sorted(files))
         if not git(cwd, "diff", "--cached", "--name-only").strip():
             return "nothing to commit"
         who = [] if git(cwd, "config", "user.email", check=False).strip() else ["-c", "user.name=me", "-c", "user.email=me@localhost"]
@@ -626,7 +630,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
   background: var(--bg3); border-radius: 9px; white-space: nowrap; transition: border-color .12s, background .12s; }
 .btn:hover:not(:disabled) { border-color: var(--faint); }
 .btn:disabled { opacity: .45; cursor: default; }
-.btn.pri { background: var(--a); border-color: var(--a); color: #fff; font-weight: 600; }
+.btn.pri { background: var(--a); border-color: var(--a); color: var(--on-a, #fff); font-weight: 600; }
 .btn.pri:hover:not(:disabled) { filter: brightness(1.08); }
 .btn.ghost { background: none; border-color: transparent; color: var(--dim); }
 .btn.ghost:hover:not(:disabled) { background: var(--bg3); color: var(--fg); }
@@ -723,7 +727,7 @@ kbd { font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line); 
 .seg button { border: 0; background: none; border-radius: 6px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; color: var(--dim); font-size: 13px; }
 .seg button.on { background: var(--sel); color: var(--fg); }
 .seg button:disabled { opacity: .4; cursor: default; }
-.send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--a); color: #fff; display: grid; place-items: center; }
+.send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--a); color: var(--on-a, #fff); display: grid; place-items: center; }
 .send:disabled { opacity: .4; cursor: default; }
 .send.stop { background: var(--fg); color: var(--bg); }
 .hint { color: var(--faint); font-size: 12px; margin: 8px 4px 0; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -1067,6 +1071,8 @@ function applyTheme() {
   const r = document.documentElement.style, c = S.colors || {};
   for (const [k, v] of Object.entries(c)) if (COLOR_VARS[k]) r.setProperty(COLOR_VARS[k], v);
   const a = c.accent || "#8b7cff", w = c.warn || "#ffb454", ok = c.ok || "#5ad18a", er = c.err || "#ff6b7a";
+  const lum = (/^#?([\da-f]{6})/i.exec(a) || [0, "8b7cff"])[1].match(/../g).map(x => { x = parseInt(x, 16) / 255; return x <= .03928 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; });
+  r.setProperty("--on-a", .2126 * lum[0] + .7152 * lum[1] + .0722 * lum[2] > .35 ? "#0a0a0a" : "#ffffff");  // text on accent buttons: whichever reads
   for (const [n, v] of Object.entries({"--a10": rgba(a, .1), "--a14": rgba(a, .14), "--a30": rgba(a, .3), "--a45": rgba(a, .45), "--w8": rgba(w, .08), "--w45": rgba(w, .45),
     "--w25": rgba(w, .25), "--ok10": rgba(ok, .1), "--err10": rgba(er, .1), "--ok35": rgba(ok, .35), "--err35": rgba(er, .35)})) r.setProperty(n, v);
   document.documentElement.style.colorScheme = S.dark ? "dark" : "light";

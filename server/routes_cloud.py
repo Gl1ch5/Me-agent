@@ -265,7 +265,8 @@ def user_themes(u=Depends(user)):
     full = []
     for n, t in out.items():
         base = dict(cloud.me.BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
-        base.update(t.get("colors", {}))
+        cols = t.get("colors") if isinstance(t.get("colors"), dict) else {}
+        base.update({k: cloud.me.hex6(v) for k, v in cols.items() if cloud.me.hex6(v)})  # only real colors reach the page's CSS
         full.append(dict(t, name=n, colors=base))
     return {"current": cfg.get("theme") or "me-dark", "themes": full}
 

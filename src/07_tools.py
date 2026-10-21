@@ -21,7 +21,7 @@ TOOLS = [
      "parameters": _obj({"path": "string", "old": "string", "new": "string", "all": "boolean", "lines": "string",
                          "edits": {"type": "array", "items": {"type": "object", "properties": {"old": {"type": "string"}, "new": {"type": "string"}}}}},
                         ["path"])},
-    {"name": "bash", "description": "Run a shell command in the project folder (shell named in the system prompt). Output is cut to its "
+    {"name": "bash", "description": "Run a shell command in the project folder (shell named in the system prompt); each call starts there again (cd does not carry over). Output is cut to its "
                                     "start and end when long. timeout in seconds (default 120). background=true for servers and watchers: "
                                     "returns at once with the pid and a log file.",
      "parameters": _obj({"cmd": "string", "timeout": "integer", "background": "boolean"}, ["cmd"])},
@@ -178,7 +178,7 @@ SHELL_NOTES = {
 def shell_note(pref=None):
     kind, path = find_shell(pref)
     if WIN and kind == "bash":
-        return "Git Bash (bash on Windows: POSIX tools, paths like /c/Users/x or C:/Users/x; Windows programs such as python, node, npm, git work)"
+        return "Git Bash (bash on Windows: POSIX tools, paths like /c/Users/x or C:/Users/x; Windows programs such as python, node, npm, git work; powershell -Command '…' in single quotes, or bash eats its $vars)"
     return SHELL_NOTES.get(kind, kind)
 
 

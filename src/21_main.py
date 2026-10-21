@@ -1,8 +1,19 @@
 # ───────────────────────────── main ─────────────────────────────
 
 
+def system_dir(d):
+    """C:\\Windows\\System32 and the like: where Windows starts a program run as admin or from a shortcut. Never a project."""
+    sr = os.environ.get("SystemRoot") or os.environ.get("windir")
+    if not (WIN and sr):
+        return False
+    a, b = os.path.normcase(os.path.abspath(d)), os.path.normcase(os.path.abspath(sr))
+    return a == b or a.startswith(b + os.sep)
+
+
 def main():
     args, cont, yolo, want = parse_flags(sys.argv[1:])
+    if system_dir(os.getcwd()):  # the agent would write configs into System32 and map it as "the project"
+        os.chdir(Path.home())
     store = Store()
     if args and args[0] in ("-p", "--print", "--rpc", "web", "--web"):
         # one-shot and server modes need the account's config before the first turn; the TUI syncs in the background instead
