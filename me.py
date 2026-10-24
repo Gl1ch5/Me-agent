@@ -3196,7 +3196,7 @@ Work:
 - A failed approach: say what you learned and change it; never repeat the same failing call.
 - 3+ steps: write a todo first. Mark a step done in the same message as your next call (todo done=[n] doing=n+1 together with the write/bash), not as a call of its own. The user watches it live.
 - Match the project's style; no hacks, no needless deps.
-- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.
+- After changing code, verify it (tests, build, lint or run it) with what is already installed — don't hunt for or install browsers and tools just to check — and fix failures. Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
 UI work: no emoji; SVG icons; neutral palette + one accent; light+dark; empty/loading/error states; responsive.
 Reply: in the user's language, concise. After changes: what changed, how you verified it, and anything left undone.{extra}{skills}{project}{user}"""
@@ -3510,7 +3510,7 @@ class Agent:
             extra += "\nUser's settings (they override the rules above):\n" + "\n".join("- " + x for x in prefs)
         base = SYSTEM
         if not bh["tests"]:
-            base = base.replace("- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.\n", "")
+            base = base.replace("- After changing code, verify it (tests, build, lint or run it) with what is already installed — don't hunt for or install browsers and tools just to check — and fix failures. Never claim untested success.\n", "")
             base = base.replace("how you verified it", "how the user can check it")
             project = re.sub(r", (?:verify|rerun to prove it)(?=\.)", "", project)
         if not bh["todo"]:
