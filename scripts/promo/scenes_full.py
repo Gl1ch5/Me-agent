@@ -23,7 +23,7 @@ def one_file(out, stand, work, S, cfg, total):
     t.type(S["p_task"], cps=11)
     t.pump(0.4)
     t.key("enter", 0.3)
-    t.wait_for("wrote index.html", timeout=90)
+    t.wait_for("✓ write index.html", timeout=90)
     t.pump(1.5)
     t.finish(total)
     return t
@@ -48,7 +48,7 @@ def themes(out, stand, work, S, cfg, total):
     t.key("enter", 1.0)
     t.type(S["p_design"], cps=10)
     t.key("enter", 0.3)
-    t.wait_for("wrote index.html", timeout=90)
+    t.wait_for("✓ write index.html", timeout=90)
     t.pump(1.2)
     t.finish(total)
     return t

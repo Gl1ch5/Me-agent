@@ -102,7 +102,7 @@ def themes_and_modes(out, stand, work, total=18.0):
     t.key("enter", 0.5)
     t.type("сделай дизайн и страницу кофейни", cps=26)
     t.key("enter", 0.2)
-    t.wait_for("wrote index.html", timeout=60)  # DESIGN.md is written first, then the page
+    t.wait_for("✓ write index.html", timeout=60)  # DESIGN.md is written first, then the page
     t.finish(total)
     return t
 
