@@ -87,6 +87,8 @@ def themes_and_modes(out, stand, work, total=18.0):
     """Scene 3, terminal part: /theme with live preview → /agent design → DESIGN.md and the page in one turn."""
     home = _home(work, "themes", stand)
     preinstall(home, stand)
+    (home / ".me" / "agents").mkdir(parents=True, exist_ok=True)  # /agent design needs the preset installed, or it opens the picker
+    shutil.copy(ROOT / "server" / "market" / "agent-design.md", home / ".me" / "agents" / "design.md")
     t = _shell(out, "terminal-themes-modes", home, stand, cols=100, rows=30)
     t.pump(0.4)
     t.type("me", cps=24)
@@ -102,7 +104,7 @@ def themes_and_modes(out, stand, work, total=18.0):
     t.key("enter", 0.5)
     t.type("сделай дизайн и страницу кофейни", cps=26)
     t.key("enter", 0.2)
-    t.wait_for("wrote index.html", timeout=60)  # DESIGN.md is written first, then the page
+    t.wait_for("✓ write index.html", timeout=60)  # DESIGN.md is written first, then the page
     t.finish(total)
     return t
 

@@ -4,8 +4,9 @@
 class PluginCtx:
     """What a plugin tool receives: live UI events + cancellation."""
 
-    def __init__(self, emit, cancel, ask=None):
+    def __init__(self, emit, cancel, ask=None, cwd=None):
         self.emit, self.cancel, self._ask = emit, cancel, ask
+        self.cwd = cwd or os.getcwd()  # the chat's project folder: join relative paths with it (me web runs chats in many folders)
 
     def log(self, text):
         self.emit({"t": "log", "text": str(text)})

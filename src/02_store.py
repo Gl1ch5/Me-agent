@@ -14,6 +14,25 @@ DEFAULT_CONFIG = {
 }
 
 
+_GONE = object()
+
+
+def _merge_cfg(base, ours, disk, depth=0):
+    """Three-way merge of config dicts: a key we changed since `base` keeps our value, any other key takes the file's."""
+    out = dict(disk)
+    for k in set(base) | set(ours):
+        o, b = ours.get(k, _GONE), base.get(k, _GONE)
+        if o == b:
+            continue  # untouched here: whatever the file has now wins
+        if depth == 0 and k == "settings" and isinstance(o, dict) and isinstance(b, dict) and isinstance(disk.get(k), dict):
+            out[k] = _merge_cfg(b, o, disk[k], 1)
+        elif o is _GONE:
+            out.pop(k, None)
+        else:
+            out[k] = o
+    return out
+
+
 class Store:
     def __init__(self, home=HOME):
         self.home = Path(home)
@@ -32,9 +51,16 @@ class Store:
             st["mouse"], st["mouse_rev"] = True, 2
         self.auth = jload(self.home / "auth.json", {}) or {}
         self.on_change = None
+        self._base = json.loads(json.dumps(self.config))
 
     def save(self):
+        """Write config.json, keeping what other `me` processes (other folders, the web UI, studio) changed since we read it:
+        only the keys this process changed are ours; every other key is taken from the file as it is now."""
+        disk, base = jload(self.cfg_path), getattr(self, "_base", None)
+        if isinstance(disk, dict) and isinstance(base, dict) and disk != base:
+            self.config = _merge_cfg(base, self.config, disk)
         jsave(self.cfg_path, self.config)
+        self._base = json.loads(json.dumps(self.config))
         if self.on_change:
             self.on_change()
 
@@ -98,7 +124,7 @@ class Store:
                     continue
                 hit = cache[p.name] = ((st.st_mtime_ns, st.st_size), {
                     "id": d["id"], "title": d.get("title", ""), "updated": d.get("updated", 0), "created": d.get("created", 0),
-                    "cwd": d.get("cwd", ""), "ws": d.get("ws"), "n": len(d.get("messages", [])), "usage": d.get("usage", {}),
+                    "cwd": d.get("cwd", ""), "roots": d.get("roots") or [], "ws": d.get("ws"), "n": len(d.get("messages", [])), "usage": d.get("usage", {}),
                     "agent": d.get("agent", ""), "pinned": d.get("pinned", False), "archived": d.get("archived", False)})
             out.append(hit[1])
         for k in set(cache) - seen:
@@ -109,7 +135,7 @@ class Store:
         """id of the newest chat started in `cwd` (me -c), or None."""
         key = lambda p: os.path.normcase(os.path.realpath(str(p)))  # realpath: macOS /var is /private/var
         here = key(cwd)
-        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n") and key(x.get("cwd") or "/") == here), None)
+        return next((x["id"] for x in self.sessions() if not x.get("archived") and x.get("n") and here in [key(r) for r in [x.get("cwd") or "/"] + x.get("roots", [])]), None)  # roots: it was continued in the cloud since
 
     def search(self, q, limit=40):
         """Chats whose title or messages contain every word of `q` (any case), newest first: [(index entry, snippet)]."""

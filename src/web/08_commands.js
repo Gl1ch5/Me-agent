@@ -12,7 +12,7 @@ Object.assign(RU, {
   "verify changes itself (tests, build, run)": "сам проверяет изменения (тесты, сборка, запуск)", "keep a todo checklist on multi-step tasks": "ведёт todo-список в многошаговых задачах",
   "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
   "very short replies": "очень короткие ответы", "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
-  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "change only what the task needs": "меняет только то, что нужно для задачи", "ask before adding dependencies": "спрашивает перед добавлением зависимостей", "ask when the request is unclear": "переспрашивает, если запрос неясен", "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач", "global memory across chats": "глобальная память между чатами", "load matching skills before a task": "подбирает и загружает подходящие скиллы перед задачей", "show a project map (files and symbols) with the first task": "даёт карту проекта (файлы и функции) с первой задачей", "suggest the next message (tab to accept)": "подсказывает следующее сообщение (tab — принять)", "comment the code it writes": "комментирует код, который пишет", "watch for security issues": "следит за проблемами безопасности", "end with a short recap and next steps": "в конце — краткий итог и следующие шаги", "publish static sites at a public link (me cloud)": "публикует статические сайты по публичной ссылке (облако me)", "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
+  "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "change only what the task needs": "меняет только то, что нужно для задачи", "ask before adding dependencies": "спрашивает перед добавлением зависимостей", "ask when the request is unclear": "переспрашивает, если запрос неясен", "ask all the questions it needs before starting": "режим вопросов: задаёт все нужные вопросы перед началом", "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач", "global memory across chats": "глобальная память между чатами", "load matching skills before a task": "подбирает и загружает подходящие скиллы перед задачей", "show a project map (files and symbols) with the first task": "даёт карту проекта (файлы и функции) с первой задачей", "suggest the next message (tab to accept)": "подсказывает следующее сообщение (tab — принять)", "comment the code it writes": "комментирует код, который пишет", "watch for security issues": "следит за проблемами безопасности", "end with a short recap and next steps": "в конце — краткий итог и следующие шаги", "publish static sites at a public link (me cloud)": "публикует статические сайты по публичной ссылке (облако me)", "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
   "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -21,9 +21,9 @@ const say = txt => el(`<div class="msg md">${md(txt)}</div>`);
 const BEHAVIOR_LABELS = {tests: "verify changes itself (tests, build, run)", todo: "keep a todo checklist on multi-step tasks", web: "search the web for current facts and docs", stay_in_project: "stay in the project folder unless asked",
   plan_first: "show a plan and wait for a go before big changes", brief: "very short replies", explain: "explain the why (learning mode)",
   commit: "git commit each finished task", agents_md: "offer to create AGENTS.md in new projects", minimal_diff: "change only what the task needs",
-  no_new_deps: "ask before adding dependencies", ask_unclear: "ask when the request is unclear", subagents: "use subagents for big separate jobs", memory: "global memory across chats",
+  no_new_deps: "ask before adding dependencies", ask_unclear: "ask when the request is unclear", questions: "ask all the questions it needs before starting", subagents: "use subagents for big separate jobs", memory: "global memory across chats",
   skills: "load matching skills before a task", repo_map: "show a project map (files and symbols) with the first task", suggest: "suggest the next message (tab to accept)", comments: "comment the code it writes", security: "watch for security issues", summary: "end with a short recap and next steps", publish: "publish static sites at a public link (me cloud)"};
-const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true, minimal_diff: false, no_new_deps: false, ask_unclear: false, subagents: true, memory: true, skills: true, repo_map: true, suggest: true, comments: false, security: false, summary: false, publish: false};
+const BEHAVIOR_DEFAULTS = {tests: true, todo: true, web: true, stay_in_project: true, plan_first: false, brief: false, explain: false, commit: false, agents_md: true, minimal_diff: false, no_new_deps: false, ask_unclear: false, questions: false, subagents: true, memory: true, skills: true, repo_map: true, suggest: true, comments: false, security: false, summary: false, publish: false};
 function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the agent, for the cloud config doc
   cfg.settings = cfg.settings || {};
   if (key === "lang") { cfg.settings.lang = ["en", "ru"].includes(v) ? v : ""; return; }
@@ -31,6 +31,7 @@ function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));
   else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === (model || cfg.model)); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
+  else if (key === "cost_turn" || key === "cost_day") cfg.settings[key === "cost_turn" ? "max_turn_cost" : "max_day_cost"] = Math.max(0, parseFloat(v) || 0);
   else if (key === "searchkey") searchKey(cfg, String(v || ""));
   else if (key === "search_asked") cfg.settings.search_asked = [...new Set([...(cfg.settings.search_asked || []), String(v)])].sort();
   else if (key.startsWith("skill:")) { const d = new Set(cfg.settings.disabled_skills || []); v ? d.delete(key.slice(6)) : d.add(key.slice(6)); cfg.settings.disabled_skills = [...d].sort(); }
@@ -73,7 +74,7 @@ const CMDS = {
     if (!a) return searchStatus() ? note(searchStatus(), "ok") : say(t(SEARCH_ASK));
     await cfgSet("searchkey", a); note(searchStatus(), "ok");
   }],
-  help: ["show commands & keys", "", () => say("## " + t("Commands") + "\n" + Object.entries(CMDS).map(([n, c]) => `- \`/${n}${c[1] ? " " + c[1] : ""}\` ${t(c[0])}`).join("\n")
+  help: ["show commands & keys", "", () => say("## " + t("Commands") + "\n" + Object.entries(CMDS).filter(([n]) => n !== "clear" && n !== "quit").map(([n, c]) => `- \`/${n}${c[1] ? " " + c[1] : ""}\` ${t(c[0])}`).join("\n")
     + "\n\n`enter` send · `shift+enter` newline · `esc` stop · `/` commands")],
   agent: ["switch agent", "[name]", a => { const x = (state.agents || []).find(g => g.name === a); x ? setAgent(x.name) : (a ? note(t("unknown command") + ": " + a, "err") : pickAgent()); }],
   init: ["create or update AGENTS.md", "", () => A.prompt("Create or update AGENTS.md for this project. Explore it first (structure, manifests, scripts, README, tests). Write a concise file: purpose; stack; exact verified commands to install/run/test/build; folder map; conventions; gotchas. It is loaded into every session, so keep it short and accurate.").then(() => { userMsg("/init"); busy = true; turnT0 = Date.now(); setBusy(); cur.echo = true; })],
@@ -114,6 +115,7 @@ const CMDS = {
   retry: ["take back the last request and run it again", "", async () => {
     const ms = state.session?.messages || [], i = ms.map(m => m.role === "user" && !m._aux).lastIndexOf(true);
     if (i < 0) return note(t("nothing to retry"), "warn");
+    if (busy) return note(t("busy"), "warn");  // the sandbox would queue it while the view already dropped the turn
     const c = ms[i].content, text = Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : c;
     await api(base + "/retry", {});
     state.session = {...state.session, messages: ms.slice(0, i)}; renderHistory(state.session);
@@ -137,12 +139,25 @@ const CMDS = {
     const show = () => popupList(Object.keys(B).map(n => [n, t(BEHAVIOR_LABELS[n] || n), n, state.behavior[n]]), async n => { await go(n, !state.behavior[n]); show(); });
     show();
   }],
-  perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) ? setPerm(a) : pickPerm()],
-  yolo: ["full access on/off", "", () => setPerm(state.perm === "full" ? "ask" : "full")],
-  cost: ["spending", "", () => {
+  perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) && state.perm !== "sandbox" ? setPerm(a) : pickPerm()],  // cloud: the synced setting is the local agent's
+  yolo: ["full access on/off", "", () => state.perm === "sandbox" ? pickPerm() : setPerm(state.perm === "full" ? "ask" : "full")],
+  cost: ["spending; /cost turn 0.5 · /cost day 3 set limits (0 = off)", "[turn|day $]", async a => {
+    const [k, v] = (a || "").split(/\s+/);
+    if (k === "turn" || k === "day") { await cfgSet("cost_" + k, v || 0); return note(`${k} ${parseFloat(v) ? "$" + parseFloat(v) : t("off")}`, "ok"); }
     const u = state.session?.usage || {};
     say(`## ${t("Spending")}\n- ${t("session")}: **${money(u.cost || 0)}** · ↑${human(u.in || 0)} ↓${human(u.out || 0)}\n- ${t("today")}: **${money(state.day_cost || 0)}**`);
   }],
+  rename: ["rename this chat", "[name]", async a => { const n = a || prompt(t("Chat name"), state.session?.title || ""); if (n && n.trim()) await A.cmd("rename", {text: n.trim()}); }],
+  fork: ["continue in a copy of this chat", "", () => busy ? note(t("busy"), "warn") : A.cmd("fork")],
+  btw: ["a side question: not added to the chat", "[question]", a => a ? A.cmd("btw", {text: a}) : note("/btw " + t("question"), "warn")],
+  rewind: ["go back to before an earlier request (files restored)", "", () => {
+    if (busy) return note(t("busy"), "warn");
+    const ms = state.session?.messages || [], txt = c => typeof c === "string" ? c : (c || []).filter(x => x.type === "text").map(x => x.text).join(" ");
+    const reqs = ms.map((m, i) => [i, m]).filter(([, m]) => m.role === "user" && !m._aux && !m._shell && !txt(m.content).startsWith("[Summary"));
+    if (!reqs.length) return note(t("nothing to rewind"), "warn");
+    popupList(reqs.reverse().map(([i, m], n) => [i, txt(m.content).replace(/\s+/g, " ").slice(0, 90) || "…", "#" + (reqs.length - n), false]), i => A.cmd("rewind", {i}));
+  }],
+  lang: ["interface language", "[en|ru|auto]", async a => { const v = ["en", "ru", "auto"].includes(a) ? a : (LANG === "ru" ? "en" : "ru"); await cfgSet("lang", v === "auto" ? "" : v); setLang(v === "auto" ? (navigator.language || "en").slice(0, 2) === "ru" ? "ru" : "en" : v); }],
   todo: ["the agent's checklist", "", () => { const it = state.session?.todo || []; it.length ? say(it.map(i => `- [${i.s === "done" ? "x" : " "}] ${i.t}`).join("\n")) : note("—"); }],
   theme: ["color theme", "[name]", a => { const x = themeList.find(th => th.name === a); x ? setTheme(x.name) : pickTheme(); }],
   sync: ["sync now", "", () => MODE === "cloud" ? api(base + "/sync", {}).then(() => note(t("saved"), "ok")) : note("local", "warn")],

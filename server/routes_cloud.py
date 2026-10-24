@@ -170,6 +170,20 @@ def cloud_model(wid: str, p: ModelPick, u=Depends(user)):
     return {"ok": True}
 
 
+class ChatCmd(BaseModel):
+    type: str
+    text: str = ""
+    i: int = -1
+
+
+@app.post("/api/cloud/{wid}/cmd")
+def cloud_cmd(wid: str, p: ChatCmd, u=Depends(user)):
+    if p.type not in ("rename", "fork", "btw", "rewind"):
+        raise HTTPException(404)
+    _worker(u, wid).send({"type": p.type, "text": p.text[:4000], "i": p.i})
+    return {"ok": True}
+
+
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
     if action not in ("cancel", "new", "sync", "compact", "undo", "retry"):
@@ -265,7 +279,8 @@ def user_themes(u=Depends(user)):
     full = []
     for n, t in out.items():
         base = dict(cloud.me.BUILTIN_THEMES["me-dark" if t.get("dark", True) else "me-light"]["colors"])
-        base.update(t.get("colors", {}))
+        cols = t.get("colors") if isinstance(t.get("colors"), dict) else {}
+        base.update({k: cloud.me.hex6(v) for k, v in cols.items() if cloud.me.hex6(v)})  # only real colors reach the page's CSS
         full.append(dict(t, name=n, colors=base))
     return {"current": cfg.get("theme") or "me-dark", "themes": full}
 

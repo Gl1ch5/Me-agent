@@ -43,6 +43,8 @@ def apply_setting(cfg, key, value, model=None):
         if not m:
             raise ValueError("no model")
         m["effort"] = "" if value in ("none", "", None) else str(value)
+    elif key in ("cost_turn", "cost_day"):  # spending limits in $: 0 = off
+        st["max_turn_cost" if key == "cost_turn" else "max_day_cost"] = max(0.0, float(value or 0))
     elif key == "searchkey":
         return search_key(cfg, str(value or ""))
     elif key == "search_asked":  # the "add a search key" note was shown on this surface (tui / web / tg)
@@ -80,7 +82,10 @@ class WebSession:
             self.cond.notify_all()
         if e["type"] == "turn_end" and self.cloud.online:
             def after():
-                self.cloud.sync()
+                try:
+                    self.cloud.sync()
+                except Exception:  # offline or the server hiccuped: the next turn or the watcher syncs again
+                    log_error("sync after turn")
                 if self.agent.session.get("ws"):
                     try:
                         self.ws.sync(self.agent.session["ws"])
@@ -210,14 +215,15 @@ class WebSession:
                     self.ws.sync(wid)
                 except CloudError:
                     pass
-                os.chdir(local)
-                a.relocate(local)
+                a.relocate(local)  # this chat only: other chats in this process keep their folders
             return self.state()
+        if path == "/cmd":  # /rename /fork /btw /rewind: results arrive as events, as from a cloud sandbox
+            threading.Thread(target=lambda: (lambda ev: ev and self.push(ev))(a.chat_command(body)), daemon=True).start()
+            return {"ok": True}
         if path == "/compact":
             if a.busy:
                 raise ValueError("busy")
-            threading.Thread(target=lambda: a.compact(reason="manual") or self.push({"type": "error", "text": "nothing to compact yet"}),
-                             daemon=True).start()
+            threading.Thread(target=a.compact_now, daemon=True).start()
             return {"ok": True}
         if path == "/agent":
             self.s.config["agent"] = body["name"]
@@ -412,7 +418,7 @@ def run_web(store, host="127.0.0.1", port=8080, open_browser=True):
     def remote(n):
         store.config.update(jload(store.cfg_path) or {})
         for w in lanes.list:
-            if not w.agent.busy and w.agent.refresh_from_disk(os.getcwd()):
+            if not w.agent.busy and w.agent.refresh_from_disk():
                 w.push({"type": "reload"})
     if store.auth.get("token"):
         ws.cloud.watch(remote)

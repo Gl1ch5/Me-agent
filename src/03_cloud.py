@@ -162,15 +162,18 @@ class Cloud:
         """Background thread: long-polls the server and syncs the moment anything changes elsewhere.
         Never blocks the caller; survives network errors."""
         def loop():
-            wscur, pause = -1, 10
+            wscur, pause, dead = -1, 10, None
             while True:
-                if not self.online:
+                if not self.online or self.s.auth.get("token") == dead:  # a revoked token waits for /login, it is never retried
                     time.sleep(5)
                     continue
                 cur = (jload(self.state_path, {}) or {}).get("cursor", 0)
                 try:
                     r = self.req("GET", f"/api/changes?cursor={cur}&ws={wscur}&wait=25", timeout=40)
-                except CloudError:
+                except CloudError as e:
+                    if str(e) == "invalid token":
+                        dead = self.s.auth.get("token")
+                        continue
                     time.sleep(pause)  # back off: a revoked token or a server that is down is not hammered every 10 s
                     pause = min(pause * 2, 300)
                     continue

@@ -86,8 +86,9 @@ class Frame:
                 d.text((left, y), line, font=self.mono, fill=TH["fg"])
                 y += int(c["font"] * 1.45)
         elif int(t * 2) % 2 == 0:  # caret while typing
-            last = self.wrap(shown, inner - 40)[-1]
-            cy = y0 + 96 + (len(self.wrap(shown, inner - 40)) - 1) * int(c["font"] * 1.45)
+            wrapped = self.wrap(shown, inner - 40) or [""]  # nothing typed yet: the caret sits at the start
+            last = wrapped[-1]
+            cy = y0 + 96 + (len(wrapped) - 1) * int(c["font"] * 1.45)
             cx = left + 36 + self.mono.getlength(last)
             d.rectangle((cx, cy, cx + 3, cy + c["font"]), fill=TH["accent"])
         # 4 ── footer: what this is

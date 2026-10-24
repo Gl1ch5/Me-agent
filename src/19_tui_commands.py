@@ -105,8 +105,10 @@ class TUICommands:
             m = {"kind": "pick", "title": T("Theme (↑↓ previews)"), "items": items, "sel": next((i for i, x in enumerate(items) if x[0] == cur), 0),
                  "filter": "", "hint": "", "preview": lambda v: v in ts and self.retheme(v)}
             name = self._modal(m)
-            if name == "+market":
-                return self.install_from_market("theme")
+            if name == "+market":  # the picker previewed themes on the way down: put the current one back, then use the new one
+                self.retheme(cur)
+                got = self.install_from_market("theme")
+                return self.cmd_theme(got) if isinstance(got, str) and got in themes(self.s) else got
             if not name:
                 return self.retheme(cur)
         self.s.config["theme"] = name
@@ -431,7 +433,8 @@ class TUICommands:
         if act == "del":
             mc.pop(k, None)
             self.s.save()
-            MCP_CLIENTS.pop(k, None)
+            for key in [x for x in MCP_CLIENTS if x == k or (isinstance(x, tuple) and x[0] == k)]:
+                MCP_CLIENTS.pop(key).close()
         elif act == "test":
             try:
                 self.add("assistant", text=f"## {k}\n" + mcp_describe(mcp_client(self.s, k).list_tools())).done = True

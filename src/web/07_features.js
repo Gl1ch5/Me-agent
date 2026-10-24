@@ -17,6 +17,8 @@ function goalEvent(g, history) {
 }
 function diffCard(files) {
   if (!files.length) return;
+  // undo reverts the newest turn: an older card's buttons would revert the wrong one
+  document.querySelectorAll(".review .btns").forEach(b => { if (b.querySelector("[data-a]")) b.innerHTML = `<span class="dim">${tt("a later turn changed files — /undo reverts the newest first")}</span>`; });
   const stat = d => { let a = 0, r = 0; d.split("\n").forEach(l => { if (l[0] === "+" && !l.startsWith("+++")) a++; else if (l[0] === "-" && !l.startsWith("---")) r++; }); return `<span class="add">+${a}</span> <span class="del">−${r}</span>`; };
   const c = el(`<div class="review"><div class="rv-h"><b>${tt("Changes in this turn")}</b><span class="d">${tt("{n} {files}", {n: files.length, files: pl(files.length, "file", "files")})}</span></div>${files.map(f =>
     `<details><summary><span class="rv-p">${esc(shortPath(f.path))}</span>${f.new ? `<span class="tag">${tt("new")}</span>` : ""}${stat(f.diff)}</summary><pre>${diffHtml(f.diff)}</pre></details>`).join("")}

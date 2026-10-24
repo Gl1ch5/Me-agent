@@ -51,8 +51,8 @@ class ToolBox:
         if name in ("write", "edit"):
             if mode == "read":
                 return "read-only mode: file changes are off. Describe the change instead."
-            root = os.path.normcase(os.path.abspath(cwd or os.getcwd()))
-            p = os.path.normcase(os.path.abspath(os.path.join(cwd or os.getcwd(), os.path.expanduser(a.get("path", "")))))
+            root = os.path.normcase(os.path.realpath(cwd or os.getcwd()))  # realpath: a symlink inside must not lead outside unasked
+            p = os.path.normcase(os.path.realpath(tool_path(cwd or os.getcwd(), a.get("path", ""))))
             return not (p == root or p.startswith(root.rstrip(os.sep) + os.sep))
         if name in PLUGINS.tools:
             c = PLUGINS.tools[name].get("confirm", False)
@@ -65,7 +65,7 @@ class ToolBox:
     def run(self, name, a, emit, cancel, ask=None, cwd=None):
         """Returns (ok, text, image_data_url|None). Relative paths are relative to the session's folder (`cwd`)."""
         cwd = cwd or os.getcwd()
-        at = lambda x: Path(cwd, os.path.expanduser(str(x)))
+        at = lambda x: Path(tool_path(cwd, x))
         if name == "read":
             out, img = read_any(at(a["path"]), a.get("offset", 1), a.get("limit", 2000))
             return not out.startswith("error"), out, img
@@ -89,7 +89,7 @@ class ToolBox:
                 return False, msg, None
             write_text_file(p, new, fmt)
             emit({"t": "diff", "text": self._diff(text, new, p.name)})
-            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new), None
+            return True, f"edited {a['path']} ({msg})" + syntax_note(p, new) + changed_excerpt(text, new), None
         if name == "bash":
             env, pref = shell_env(self.s.config.get("secrets")), self.s.config["settings"].get("shell")
             if a.get("background") in (True, "true", 1):
@@ -106,11 +106,11 @@ class ToolBox:
         if name == "skill":
             return self._skill(a, emit, cancel, ask, cwd)
         if name == "notify":
-            return self._notify(a)
+            return self._notify(dict(a, file=str(at(a["file"]))) if a.get("file") else a)
         if name == "publish":
             return self._publish(at(a.get("path") or "."), str(a.get("name") or ""))
         if name == "mcp":
-            return self._mcp(a, emit)
+            return self._mcp(a, emit, cwd)
         if name == "web_search":
             emit({"t": "status", "text": "searching"})
             return web_search(self.s.config, a["query"], cancel)
@@ -118,7 +118,7 @@ class ToolBox:
             return web_fetch(a["url"])
         tool = PLUGINS.tools.get(name)
         if tool:
-            r = tool["fn"](a, PluginCtx(emit, cancel, ask))
+            r = tool["fn"](a, PluginCtx(emit, cancel, ask, cwd))
             return (True, r, None) if isinstance(r, str) else (bool(r[0]), r[1], None)
         return False, f"unknown tool {name}", None
 
@@ -168,9 +168,9 @@ class ToolBox:
             return False, "error: " + str(r.get("detail") or r), None
         return True, f"published {r['files']} files: {r['url']}", None
 
-    def _mcp(self, a, emit):
+    def _mcp(self, a, emit, cwd=None):
         try:
-            c = mcp_client(self.s, a.get("server", ""))
+            c = mcp_client(self.s, a.get("server", ""), cwd)
         except KeyError:
             return False, f"no MCP server '{a.get('server')}'. configured: {', '.join(self.s.config.get('mcp') or {}) or 'none'}", None
         try:
@@ -247,7 +247,8 @@ class ToolBox:
 
 def list_glob(cwd, pat):
     """ls tool: a folder lists itself; otherwise a glob over the project (heavy folders skipped unless named), newest first."""
-    p = Path(cwd, os.path.expanduser(pat))
+    pat = os.path.expanduser(pat)
+    p = Path(cwd, pat)
     if not re.search(r"[*?\[{]", pat):
         if p.is_dir():
             return read_any(p)[0]
@@ -369,7 +370,66 @@ def _replace_one(text, old, new, all_):
                 repl = _reindent(news, lines[i:i + len(olds)], olds) if how == "indentation" else news
                 lines[i:i + len(olds)] = repl
             return "\n".join(lines), f"{len(hits)} replacement{'s' if len(hits) > 1 else ''}, line {hits[0] + 1} (matched ignoring {how})"
+    hit = _block_anchor(lines, olds) if not all_ else None
+    if hit is not None:  # first and last lines match exactly once, the middle was paraphrased: the block between them
+        i, n = hit
+        lines[i:i + n] = news
+        return "\n".join(lines), f"1 replacement, line {i + 1} (matched by its first and last lines; the middle differed)"
+    full = [x for x in old.split("\n") if x.strip()]
+    if full and all(LINE_NO_RX.match(x) for x in full):  # the `N│` prefix of read output copied into old (and maybe new)
+        strip = lambda s: "\n".join(LINE_NO_RX.sub("", x, 1) for x in s.split("\n"))
+        nn = [x for x in new.split("\n") if x.strip()]
+        r = _replace_one(text, strip(old), strip(new) if nn and all(LINE_NO_RX.match(x) for x in nn) else new, all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (line-number prefixes removed)"
+    if re.search(r'\\[nt"]', old) and "\n" not in old:  # JSON-escaped twice: \n and \" arrived literally
+        un = lambda s: s.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+        r = _replace_one(text, un(old), un(new), all_)
+        if r[0] is not None:
+            return r[0], r[1] + " (unescaped \\n / \\\")"
     return None, "error: old text not found." + _closest(text, old)
+
+
+def _block_anchor(lines, olds):
+    """(start, length) of the one block whose first and last lines equal old's (ignoring indentation), about as long as old
+    and similar enough in between — or None. Weak models often quote a long block's middle loosely (opencode does this too)."""
+    if len(olds) < 3 or not olds[0].strip() or not olds[-1].strip():
+        return None
+    first, last = olds[0].strip(), olds[-1].strip()
+    cands = []
+    for i, l in enumerate(lines):
+        if l.strip() != first:
+            continue
+        for j in range(i + 2, min(len(lines), i + int(len(olds) * 1.25) + 2)):
+            if lines[j].strip() == last:
+                n = j - i + 1
+                if abs(n - len(olds)) <= max(1, len(olds) // 4):
+                    cands.append((i, n))
+                break
+    if len(cands) != 1:
+        return None
+    i, n = cands[0]
+    mid = difflib.SequenceMatcher(None, "\n".join(x.strip() for x in lines[i + 1:i + n - 1]), "\n".join(x.strip() for x in olds[1:-1])).ratio()
+    return cands[0] if mid >= 0.6 else None
+
+
+LINE_NO_RX = re.compile(r"^\s*\d+\s?(?:│|:|→|\|)\s?")
+
+
+def changed_excerpt(old, new, ctx=2, cap=20):
+    """The edited region of the file as it is now, numbered like read: the model sees the result without reading it again."""
+    a, b = old.split("\n"), new.split("\n")
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    j = 0
+    while j < min(len(a), len(b)) - i and a[-1 - j] == b[-1 - j]:
+        j += 1
+    lo, hi = max(0, i - ctx), min(len(b), len(b) - j + ctx)
+    if hi - lo > cap or hi <= lo:
+        return ""
+    w = len(str(hi))
+    return "\n" + "\n".join(f"{k + 1:>{w}}│{b[k]}" for k in range(lo, hi))
 
 
 EDIT_ALIASES = (("old", ("old_string", "oldText", "old_str", "oldString", "search")), ("new", ("new_string", "newText", "new_str", "newString", "replace")),
@@ -396,6 +456,14 @@ def syntax_note(path, text):
             compile(text, str(path), "exec", dont_inherit=True)
         elif ext == ".json":
             json.loads(text)
+        elif ext in (".js", ".mjs", ".cjs", ".sh") and Path(path).is_file():  # a quick parse check, no project tooling needed
+            tool = shutil.which("node") if ext != ".sh" else (shutil.which("bash") if not WIN else None)
+            if tool:
+                r = subprocess.run([tool, "--check" if ext != ".sh" else "-n", str(path)], capture_output=True, text=True, timeout=5,
+                                   encoding="utf-8", errors="replace", **NO_WINDOW)
+                err = next((l for l in (r.stderr or "").splitlines() if re.search(r"Error|error|line \d+", l)), "")
+                if r.returncode and err:
+                    return f"\nwarning: syntax check failed — {err.strip()[:300]}. Fix it now."
     except SyntaxError as e:
         return f"\nwarning: the file no longer parses — line {e.lineno}: {e.msg}. Fix it now."
     except ValueError as e:

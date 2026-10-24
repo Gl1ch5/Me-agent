@@ -103,11 +103,11 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 b = self.add(kind, name=e["name"], args=e["args"], label=e["label"])
                 if cli:  # an agent's own CLI tool: a box with a colored status bar
                     c = cli.get("color") or "red"
-                    b.data.update(cli=True, color=SKILL_COLORS.get(c, c if str(c).startswith("#") else SKILL_COLORS["red"]), icon=cli.get("icon") or "▣",
+                    b.data.update(cli=True, color=skill_color(c, SKILL_COLORS["red"]), icon=cli.get("icon") or "▣",
                                   args={"name": cli["label"], "action": cli["agent"], "args": e["args"]})
                 elif kind == "skill":
                     sk = self.agent.skills.all().get(e["args"].get("name"), {})
-                    b.data["color"] = SKILL_COLORS.get(sk.get("color", ""), sk.get("color") if str(sk.get("color", "")).startswith("#") else TH["accent"])
+                    b.data["color"] = skill_color(sk.get("color", ""), TH["accent"])
                     b.data["icon"] = sk.get("icon", "◆")
                 self.tools_live[e["id"]] = b
             elif t == "tool_event":
@@ -182,7 +182,7 @@ class TUI(TUIRender, TUIInput, TUICommands):
                     self.add("info", text="Δ " + " · ".join(stats[:6]) + (f" · +{len(stats) - 6}" if len(stats) > 6 else "") + "   /undo",
                              color="dim")
             elif t == "notice":
-                self.add("info", text=("@ " if e.get("level") == "info" else "! ") + e["text"], color="dim" if e.get("level") == "info" else "warn")
+                self.add("info", text=("@ " if e.get("level") == "info" else "! ") + T(e["text"]), color="dim" if e.get("level") == "info" else "warn")
             elif t == "undone":
                 self.add("info", text="↶ " + e["text"], color="warn")
             elif t == "error":

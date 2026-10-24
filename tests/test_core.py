@@ -77,6 +77,59 @@ def test_edit_write_bash(tmp=Path(tempfile.mkdtemp())):
     assert "hi-there" in [e for e in ev if e["type"] == "tool_end"][0]["output"]
 
 
+def test_write_asks_to_read_an_unread_file_first(tmp=Path(tempfile.mkdtemp())):
+    f = tmp / "keep.py"
+    f.write_text("important = 1\n")
+    s = make()
+    ag = me.Agent(s, lambda e: None)
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "x = 0\n"}))
+    assert f.read_text() == "important = 1\n"  # refused: never read in this chat
+    ag.run("tool:write " + json.dumps({"path": str(f), "content": "x = 0\n"}))
+    assert f.read_text() == "x = 0\n"  # asked again on purpose: goes through
+    g = tmp / "seen.py"
+    g.write_text("a = 1\n")
+    ag.run("tool:read " + json.dumps({"path": str(g)}))
+    ag.run("tool:write " + json.dumps({"path": str(g), "content": "a = 2\n"}))
+    assert g.read_text() == "a = 2\n"
+
+
+def test_chat_commands_from_the_web():
+    s = make()
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.run("hi")
+    ag.run("second")
+    assert ag.chat_command({"type": "rename", "text": "  new name "})["type"] == "reload" and ag.session["title"] == "new name"
+    old = ag.session["id"]
+    r = ag.chat_command({"type": "fork"})
+    assert r["session"] == ag.session["id"] != old and ag.session["title"].endswith("· fork")
+    i = [n for n, _ in ag.requests()][-1]
+    r = ag.chat_command({"type": "rewind", "i": i})
+    assert r["draft"] == "second" and [t for _, t in ag.requests()] == ["hi"]
+    ag.chat_command({"type": "btw", "text": "what is 2+2"})
+    assert ev[-1]["type"] == "btw" and ev[-1]["q"] == "what is 2+2" and [t for _, t in ag.requests()] == ["hi"]
+    me.apply_setting(s.config, "cost_turn", "0.5")
+    me.apply_setting(s.config, "cost_day", 0)
+    assert s.config["settings"]["max_turn_cost"] == 0.5 and s.config["settings"]["max_day_cost"] == 0
+
+
+def test_step_limit_turns_tools_off_for_a_report():
+    s = make()
+    s.config["settings"]["max_steps"] = 1
+    ag, ev = run(s, "tool:bash " + json.dumps({"cmd": "echo one"}))
+    msgs = ag.session["messages"]
+    assert any(m.get("content") == me.MAX_STEPS_NOTE for m in msgs), [m.get("content") for m in msgs]
+    assert msgs[-1]["role"] == "assistant" and not msgs[-1].get("tool_calls")
+    assert any(e["type"] == "turn_end" for e in ev)
+
+
+def test_edit_block_anchor_match():
+    t = "def f(x):\n    a = x + 1\n    b = a * 2\n    return b\n\nprint(f(1))\n"
+    new, msg = me._replace_one(t, "def f(x):\n    a = x+1  # inc\n    b = a*2\n    return b", "def f(x):\n    return (x + 1) * 2", False)
+    assert new == "def f(x):\n    return (x + 1) * 2\n\nprint(f(1))\n" and "first and last" in msg
+    assert me._replace_one(t, "def f(x):\n    totally different\n    stuff here\n    return b", "X", False)[0] is None  # too different: no guess
+
+
 def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
     s = make()
     s.config["settings"]["yolo"] = False
@@ -568,7 +621,9 @@ def test_edit_keeps_line_endings_and_encoding(tmp=Path(tempfile.mkdtemp())):
     assert h.read_bytes() == b"\xef\xbb\xbfa = 2\n"
     w = tmp / "w.txt"
     w.write_bytes(b"a\r\nb\r\n")
-    run(s, "tool:write " + json.dumps({"path": str(w), "content": "c\nd\n"}))
+    ag = me.Agent(s, lambda e: None)
+    ag.run("tool:read " + json.dumps({"path": str(w)}))  # an unread file is not overwritten unasked
+    ag.run("tool:write " + json.dumps({"path": str(w), "content": "c\nd\n"}))
     assert w.read_bytes() == b"c\r\nd\r\n"
 
 
@@ -1042,7 +1097,9 @@ def test_act_nudge():
 def test_output_loop_stopped():
     s = make()
     ag, ev = run(s, "loop: go")
-    assert ag.session["messages"][-1]["content"] == "Intro. The b method is called when b is created.", ag.session["messages"][-1]
+    msgs = [m.get("content") for m in ag.session["messages"]]
+    assert "Intro. The b method is called when b is created." in msgs, msgs
+    assert msgs.count(me.REPEAT_NUDGE) == 1  # a reply cut for repeating itself does not end the task
     assert any(e["type"] == "notice" and "repeating" in e["text"] for e in ev)
 
 

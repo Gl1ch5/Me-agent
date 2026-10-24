@@ -17,7 +17,9 @@ def build():
     html = html.replace("/*CSS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.css"))))
     html = html.replace("/*JS*/", "\n".join(p.read_text("utf-8") for p in sorted(web.glob("*.js"))))
     assert PLACEHOLDER in code, "WEBUI placeholder missing in src"
-    code = code.replace(PLACEHOLDER, "WEBUI = " + json.dumps(html, ensure_ascii=False))
+    # ASCII only: Python < 3.10 reads a long source line in chunks and fails ("Non-UTF-8 code") when a chunk ends inside a
+    # multi-byte character, and WEBUI is one very long line
+    code = code.replace(PLACEHOLDER, "WEBUI = " + json.dumps(html, ensure_ascii=True))
     ast.parse(code)
     return code
 

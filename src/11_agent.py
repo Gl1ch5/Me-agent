@@ -2,8 +2,9 @@
 
 SYSTEM = """You are me, an expert software engineer working in the user's terminal.
 cwd: {cwd} | os: {os} | shell: {shell} | date: {date}
+Keep going until the task is fully done: act with tools, don't stop at a plan, an announcement or a half-fix; if a call fails, fix the cause and go on.
 
-Scope (most important):
+Scope:
 - Do exactly what was asked, nothing more. Match effort to the request: a question gets an answer, a greeting a short reply, a one-line fix a one-line edit.
 - Questions and chat need no tools unless the answer depends on files, commands or current facts. Never create, edit or delete files, install packages or run commands the request does not need.
 - No refactors, renames, features, docs or tests nobody asked for; mention worthwhile extras in one line.
@@ -15,14 +16,14 @@ Tools:
 - Read a file before editing it. edit: copy old exactly from read output without the `N│` prefix, short but unique; several changes to one file in one call (edits=[…]). If an edit fails, read that part again first. write only for new files or full rewrites.
 - bash is non-interactive (pass -y / --yes, CI=1); servers and watchers need background=true.
 - Never undo or delete work you did not make; no destructive commands (git reset --hard, rm -rf on broad paths, force push) unless asked; confirm anything irreversible.
-- [Bracketed] "user" lines mid-task come from me (self-check, reminder, a queued user message).
+- <system-reminder> text comes from the harness, not the user: follow it, don't reply to it or mention it.
 
 Work:
 - Never guess what code, an API or a command does: check it. Find the root cause before fixing; read errors fully.
 - A failed approach: say what you learned and change it; never repeat the same failing call.
-- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.
+- 3+ steps: write a todo first. Mark a step done in the same message as your next call (todo done=[n] doing=n+1 together with the write/bash), not as a call of its own. The user watches it live.
 - Match the project's style; no hacks, no needless deps.
-- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.
+- After changing code, verify it (tests, build, lint or run it) with what is already installed — don't hunt for or install browsers and tools just to check — and fix failures. Never claim untested success.
 - web_search for current facts, web_fetch for docs/URLs.
 UI work: no emoji; SVG icons; neutral palette + one accent; light+dark; empty/loading/error states; responsive.
 Reply: in the user's language, concise. After changes: what changed, how you verified it, and anything left undone.{extra}{skills}{project}{user}"""
@@ -61,6 +62,10 @@ BEHAVIOR = {
                     "standard library.", ""),
     "ask_unclear": (False, "ask when the request is unclear",
                     "If a request is ambiguous or misses a key detail, ask one short question before starting instead of guessing.", ""),
+    "questions": (False, "ask all the questions it needs before starting",
+                  "Questions mode: before starting a task, ask every question that matters — as many as it takes, numbered, each with "
+                  "your suggested default — and wait for the answers. Ask again when a new decision comes up. Never guess what the user "
+                  "can decide; small technical details you may choose yourself.", ""),
     "subagents": (True, "use subagents for big separate jobs", "", ""),
     "memory": (True, "global memory across chats", "", ""),
     "skills": (True, "load matching skills before a task", "", ""),
@@ -125,12 +130,20 @@ LOOP_NUDGE = ("[you made the same call three times and got the same result — i
               "or stop and tell the user what blocks you]")
 THINK_NUDGE = "[your reasoning used up the output token limit before you answered — think less and act or answer now]"
 CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue exactly where it stopped, without repeating]"
+MAX_STEPS_NOTE = ("[step limit reached (settings.max_steps): tools are off now. Reply with what is done, what is left and what to do next; "
+                  "the user can say \"continue\" to go on]")
+REPEAT_NUDGE = "[your reply started repeating itself and was stopped — do not repeat it; continue the task with tools, or give the final answer]"
+EMPTY_NUDGE = "[your last reply was empty — continue: call the next tool with valid JSON arguments, or answer]"
+INTENT_NUDGE = "[self-check] You said what you would do next but made no tool call, so nothing happened. Do it now, or say why you stopped."
+INTENT_RX = re.compile(r"(?:\b(?:let me(?! know)|let's|now i'll|next,? i'll|i'll now|i'm going to)\b|(?:^|\s)(?:давай(?:те)?|приступаю|"
+                       r"(?:сейчас|теперь|далее|затем)\s+(?:я\s+)?\w+(?:у|ю|ем|им)\b))[^\n]{0,160}$|[^\n]{8,}:\s*$", re.I)
 DOC_EXT = r"\.(md|markdown|txt|rst|adoc|csv)$"
 
 
 ARG_ALIASES = {  # names other agents use for the same argument: models trained on them send these
-    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd"},
-    "read": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "start_line": "offset"},
+    "bash": {"command": "cmd", "script": "cmd", "commands": "cmd", "shell": "cmd", "cwd": "workdir", "dir": "workdir", "directory": "workdir"},
+    "todo": {"todos": "items", "plan": "items", "steps": "items", "tasks": "items", "list": "items"},
+    "read": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "start_line": "offset", "line_start": "offset", "from_line": "offset"},
     "write": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "text": "content", "contents": "content"},
     "edit": {"file_path": "path", "filepath": "path", "file": "path", "filename": "path", "old_string": "old", "new_string": "new",
              "old_str": "old", "new_str": "new", "replace_all": "all", "old_text": "old", "new_text": "new"},
@@ -138,6 +151,13 @@ ARG_ALIASES = {  # names other agents use for the same argument: models trained 
     "ls": {"path": "pattern", "glob": "pattern", "dir": "pattern", "directory": "pattern"},
     "web_search": {"q": "query", "search": "query"},
     "web_fetch": {"link": "url", "href": "url"},
+}
+TOOL_ALIASES = {  # tool names from Claude Code, Codex, opencode and others: models trained there call them by habit
+    "shell": "bash", "exec_command": "bash", "run_command": "bash", "run_shell_command": "bash", "terminal": "bash", "execute": "bash",
+    "read_file": "read", "view": "read", "cat": "read", "open_file": "read",
+    "write_file": "write", "create_file": "write", "str_replace": "edit", "str_replace_editor": "edit", "multiedit": "edit",
+    "replace": "edit", "edit_file": "edit", "glob": "ls", "find": "ls", "list_files": "ls", "list_dir": "ls", "search": "grep",
+    "search_files": "grep", "todowrite": "todo", "update_plan": "todo", "update_todos": "todo", "write_todos": "todo",
 }
 
 
@@ -147,8 +167,19 @@ def fix_args(name, args, schema):
         args = next(iter(args.values()))  # {"input": {...}}: arguments wrapped one level too deep
     al = ARG_ALIASES.get(name) or {}
     args = {al.get(k, k) if al.get(k, k) not in args else k: v for k, v in args.items()}
-    if name == "bash" and isinstance(args.get("cmd"), list):
-        args["cmd"] = " && ".join(map(str, args["cmd"]))
+    if name == "read":  # end_line / line_end: read only up to there instead of 2000 lines
+        end = next((args.pop(k) for k in ("end_line", "line_end", "to_line", "end") if k in args), None)
+        try:
+            if end is not None and "limit" not in args:
+                args["limit"] = max(1, int(end) - int(args.get("offset") or 1) + 1)
+        except (TypeError, ValueError):
+            pass
+    if name == "bash" and isinstance(args.get("cmd"), list):  # Codex sends argv: ["bash", "-lc", "npm test"]
+        argv = [str(x) for x in args["cmd"]]
+        if len(argv) >= 3 and os.path.basename(argv[0]) in ("bash", "sh", "zsh") and argv[1] in ("-c", "-lc"):
+            args["cmd"] = argv[-1]
+        else:
+            args["cmd"] = " ".join(x if re.fullmatch(r"[\w@%+=:,./-]+", x) else shlex.quote(x) for x in argv)
     req = [r for r in ((schema or {}).get("parameters") or {}).get("required", []) if args.get(r) in (None, "")]
     if req:
         props = list(((schema or {}).get("parameters") or {}).get("properties", {}))
@@ -164,7 +195,9 @@ def tc_args(tc):
     return parse_args(tc["function"]["arguments"])
 
 
-TODO_EVERY = 4  # tool rounds without a todo update (while steps are open) before the checklist is shown again
+TODO_START = ("[reminder] This is a multi-step task and you have no checklist. Write it now with todo (items = the whole plan, "
+              "finished steps marked), then keep it current as each step ends.")
+TODO_EVERY = 8  # tool rounds without a todo update (while steps are open) before the checklist is shown again
 
 
 TODO_STATE = {"x": "done", "✓": "done", "done": "done", "completed": "done", "complete": "done", "finished": "done",
@@ -299,16 +332,18 @@ class Agent:
         if os.environ.get("ME_PREVIEW"):
             extra += (f"\nPreview for the user: files in cwd are served at {os.environ['ME_PREVIEW']}/<path>; "
                       f"a dev server on port $PORT ({os.environ.get('PORT')}) at {os.environ['ME_PREVIEW']}/port/. Give the user that link.")
+        if self.depth or (self.session.get("goal") or {}).get("status") == "working":  # nobody is there to answer questions
+            bh = dict(bh, questions=False, ask_unclear=False, plan_first=False)
         prefs = [BEHAVIOR[k][2 if on else 3] for k, on in bh.items() if BEHAVIOR[k][2 if on else 3]]
         if prefs:
             extra += "\nUser's settings (they override the rules above):\n" + "\n".join("- " + x for x in prefs)
         base = SYSTEM
         if not bh["tests"]:
-            base = base.replace("- After changing code, verify it (tests, build, lint or run it) and fix failures. Never claim untested success.\n", "")
+            base = base.replace("- After changing code, verify it (tests, build, lint or run it) with what is already installed — don't hunt for or install browsers and tools just to check — and fix failures. Never claim untested success.\n", "")
             base = base.replace("how you verified it", "how the user can check it")
             project = re.sub(r", (?:verify|rerun to prove it)(?=\.)", "", project)
         if not bh["todo"]:
-            base = base.replace("- 3+ steps: write a todo first, then mark each step done right after finishing it (todo done=[n]) and the next as doing. The user watches it live.\n", "")
+            base = base.replace("- 3+ steps: write a todo first. Mark a step done in the same message as your next call (todo done=[n] doing=n+1 together with the write/bash), not as a call of its own. The user watches it live.\n", "")
         return base.format(cwd=self.session["cwd"], os=f"{platform.system()} {platform.release()}", date=time.strftime("%Y-%m-%d"),
                              shell=shell_note(self.s.config["settings"].get("shell")),
                              extra=extra, skills=skills, project=project, user=user)
@@ -337,7 +372,7 @@ class Agent:
 
     def abspath(self, path):
         """A tool path as the model meant it: relative to the session's project folder, ~ expanded."""
-        return os.path.abspath(os.path.join(self.cwd, os.path.expanduser(str(path or ""))))
+        return tool_path(self.cwd, path)
 
     def context_files(self):
         """Project instructions: CONTEXT_FILES in cwd, plus AGENTS.md / CLAUDE.md of parent folders up to the repo root
@@ -427,6 +462,9 @@ class Agent:
                 log_error("turn")
             with self._inbox_lock:
                 if not self.inbox or self.cancel.is_set():
+                    if self.inbox:  # stopped with messages still waiting: say so, never drop them silently
+                        self.emit({"type": "queued_dropped", "texts": [t for t, _ in self.inbox]})
+                        self.emit({"type": "notice", "text": "stopped — queued messages were not sent; send them again to run them"})
                     self.inbox, self._driving = [], False
                     return
                 text, images = self.inbox.pop(0)
@@ -455,7 +493,8 @@ class Agent:
             self.emit({"type": "error", "text": "no model configured — use /provider then /models"})
             return
         self.busy = True
-        self.cancel.clear()
+        if not self.depth:  # a subagent shares its parent's stop: a stop pressed just before it started must hold
+            self.cancel.clear()
         self.snap = {}
         start_idx = len(self.session["messages"])
         self._turn_gen = self.session.get("compactions", 0)
@@ -473,8 +512,8 @@ class Agent:
         self._trim_history(start_idx)
         t0, tin, tout, tcached, steps, cost = time.time(), 0, 0, 0, 0, 0.0
         wrote, ran, nudged, acted = False, False, False, False
-        todo_used, todo_idle, todo_nudged = False, 0, False
-        squeezed, cutoffs, empties, seen = False, 0, 0, []
+        todo_used, todo_idle, todo_nudged, todo_started = False, 0, False, False
+        squeezed, cutoffs, empties, seen, loops, compact_failed = False, 0, 0, [], 0, False
         finished = False
         self.emit({"type": "turn_start", "agent": pr["name"], "context": self.context_files()})
         prov = Provider(m, self.s.provider(m))
@@ -482,9 +521,14 @@ class Agent:
         try:
             while True:
                 limit = self.compact_threshold(m)
-                if limit and self.ctx_used > limit:
-                    self.compact(reason="auto", model=m)
+                if limit and self.ctx_used > limit and not compact_failed:
+                    compact_failed = not self.compact(reason="auto", model=m)  # a failed summary is not retried on every step
                 schemas = self.tool_schemas()
+                cap = int(st.get("max_steps") or 200)
+                if self.depth == 0 and steps >= cap:  # the last step: no tools, the model reports instead of being cut off
+                    schemas = []
+                    if self.session["messages"][-1].get("content") != MAX_STEPS_NOTE:
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": MAX_STEPS_NOTE})
                 self._tool_names = {t["name"] for t in schemas}
                 system = self.system_prompt()
                 try:
@@ -527,18 +571,37 @@ class Agent:
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": THINK_NUDGE})
                         continue
-                    if empties < 1 and not cut:  # an empty reply (no text, no tool call): ask once more
+                    if msg.get("_finish") in ("content_filter", "safety", "SAFETY"):
+                        raise ProviderError("the provider blocked the reply (safety filter) — rephrase the request or pick another model")
+                    if empties < 2 and not cut:  # an empty reply (no text, no tool call; Gemini's malformed call): ask again, saying why
                         empties += 1
-                        self.emit({"type": "retry", "attempt": 1, "of": 1, "delay": 0, "error": "empty reply", "discard": True})
+                        self.emit({"type": "retry", "attempt": empties, "of": 2, "delay": 0, "error": "empty reply", "discard": True})
+                        if empties == 2 or self.session["messages"][-1].get("content") != EMPTY_NUDGE:
+                            self.session["messages"].append({"role": "user", "_aux": True, "content": EMPTY_NUDGE})
                         continue
                     raise ProviderError("the model ran out of output tokens before answering — raise max_out or lower effort in /models" if cut
                                         else "the model returned an empty reply — try again, or pick another model (/model)")
+                if not schemas and msg.get("tool_calls"):  # tools were off (step limit): calls anyway are not run
+                    msg.pop("tool_calls")
+                    msg["content"] = msg.get("content") or "(step limit reached — say \"continue\" to go on)"
                 self.session["messages"].append(msg)
                 self.checkpoint()
+                if not msg.get("tool_calls") and not schemas:
+                    finished = True
+                    break
                 if not msg.get("tool_calls"):
                     if cut and cutoffs < 2:  # the reply hit the output limit: let it carry on where it stopped
                         cutoffs += 1
                         self.session["messages"].append({"role": "user", "_aux": True, "content": CUTOFF_NUDGE})
+                        continue
+                    if msg.get("_finish") == "loop" and cutoffs < 2:  # cut for repeating itself: the task is not done
+                        cutoffs += 1
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": REPEAT_NUDGE})
+                        continue
+                    if (not acted and self.depth == 0 and self._tool_names and not self.cancel.is_set()
+                            and not (msg.get("content") or "").rstrip().endswith("?") and INTENT_RX.search((msg.get("content") or "").strip()[-220:])):
+                        acted = True  # "Now let me update the tests:" and the turn ends: weak models stop right after announcing a step
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": INTENT_NUDGE})
                         continue
                     if steps == 1 and not acted and self.depth == 0 and "write" in self._tool_names and should_have_acted(text, msg.get("content")):
                         acted = True  # weak models sometimes "answer" a coding task with a code block: send them back to do it
@@ -565,6 +628,8 @@ class Agent:
                 imgs = []
                 for tc, (ok, out, img) in results:
                     name = tc["function"]["name"]
+                    if ok and name in ("read", "write", "edit") and isinstance((tc_args(tc) or {}).get("path"), str):
+                        self.__dict__.setdefault("_seen_files", set()).add(self.abspath(tc_args(tc)["path"]))
                     if ok and name in ("write", "edit") and not re.search(DOC_EXT, str((tc_args(tc) or {}).get("path", "")), re.I):
                         wrote, ran = True, False  # docs/config prose needs no test run: nudging there only burned a model call
                     elif name == "bash" or name == "task":
@@ -575,7 +640,11 @@ class Agent:
                     raise Cancelled()
                 if any(tc["function"]["name"] == "todo" for tc, _ in results):
                     todo_used, todo_idle = True, 0
-                elif any(i["s"] != "done" for i in self.session.get("todo") or []):
+                elif (not todo_used and not todo_started and wrote and steps >= 4 and self.depth == 0 and "todo" in self._tool_names
+                      and behavior(st)["todo"] and not any(i["s"] != "done" for i in self.session.get("todo") or [])):
+                    todo_started = True  # models skip the checklist the prompt asks for: once per turn, once the work is clearly multi-step
+                    self.session["messages"].append({"role": "user", "_aux": True, "content": TODO_START})
+                elif todo_used and any(i["s"] != "done" for i in self.session.get("todo") or []):  # a list from an earlier task never nags
                     todo_idle += 1
                     if todo_idle >= TODO_EVERY and "todo" in self._tool_names:
                         todo_idle = 0  # models forget the checklist mid-task: show it again with what to do
@@ -585,7 +654,9 @@ class Agent:
                 sig = json.dumps([(tc["function"]["name"], tc["function"]["arguments"], r[1][:2000]) for tc, r in results])
                 seen = (seen + [sig])[-6:]
                 if seen.count(sig) >= 3:  # the same calls with the same results three times (also A-B-A-B-A): a loop
-                    seen = []
+                    seen, loops = [], loops + 1
+                    if loops >= 3:
+                        raise LimitHit("stopped: the model kept repeating the same calls with the same results — rephrase the task or pick another model")
                     self.session["messages"].append({"role": "user", "_aux": True, "content": LOOP_NUDGE})
                 if imgs and m.get("vision", True):
                     self.session["messages"].append({"role": "user", "_aux": True, "content": [{"type": "text", "text": "(images from read)"}] +
@@ -648,6 +719,9 @@ class Agent:
         prepared = []
         for tc in calls:
             name = tc["function"]["name"]
+            if name not in (getattr(self, "_tool_names", None) or ()):
+                k = re.sub(r"[^a-z_]", "", name.lower())
+                name = tc["function"]["name"] = TOOL_ALIASES.get(k, k if k in (getattr(self, "_tool_names", None) or ()) else name)
             args = parse_args(tc["function"]["arguments"])
             if args is None and cut:
                 args = TRUNCATED  # cut by the output limit mid-call: say so, or the model retries the same way
@@ -712,9 +786,21 @@ class Agent:
         if name in ("write", "edit", "read") and not isinstance(args.get("path"), str):
             return False, "error: path must be a string", None
         if name not in (getattr(self, "_tool_names", None) or {t["name"] for t in self.tool_schemas()}):
-            return False, f"error: tool {name} is not available in the {pr['name']} agent", None
+            return False, (f"error: tool {name} is not available in the {pr['name']} agent. "
+                           f"Tools: {', '.join(sorted(getattr(self, '_tool_names', None) or ()))}"), None
         if name in ("write", "edit") and not may_write(pr, relp(self.abspath(args.get("path", "")), self.cwd)):
             return False, f"error: the {pr['name']} agent may only write {pr.get('writes') or 'nothing'}", None
+        if name == "write" and isinstance(args.get("path"), str):  # overwriting a file it never looked at loses work: ask it to look first
+            p = self.abspath(args["path"])
+            seen = self.__dict__.setdefault("_seen_files", set())
+            if os.path.isfile(p) and p not in seen and p not in self.snap:
+                seen.add(p)  # once: a second write of the same file goes through
+                try:
+                    n = sum(1 for _ in open(p, "rb"))
+                except OSError:
+                    n = 0
+                return False, (f"error: {args['path']} already exists ({n} lines) and you have not read it in this chat. Read it first "
+                               "and change it with edit, or call write again if replacing it whole is really intended."), None
         veto = PLUGINS.emit("before_tool", name, args)
         if isinstance(veto, str):
             return False, veto, None
@@ -754,8 +840,13 @@ class Agent:
         elif name == "bash":
             for p in rm_targets(str(args.get("cmd", "")), self.cwd):
                 self._snapshot(p)
+        cwd = self.cwd
+        if name == "bash" and args.get("workdir"):  # a subfolder for this one command (Codex and opencode pass one)
+            cwd = self.abspath(args.pop("workdir"))
+            if not os.path.isdir(cwd):
+                return False, f"error: workdir {cwd} does not exist", None
         try:
-            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=self.cwd)
+            return self.tools.run(name, args, temit, self.cancel, self.ask, cwd=cwd)
         except Cancelled:
             raise
         except Exception as e:
@@ -763,6 +854,10 @@ class Agent:
 
     def _no_checks(self, cmd):
         cmd = re.sub(r"\b(?:which|command\s+-v|type|where)\s+[^;&|\n]*", "", str(cmd or ""))  # looking a tool up is not checking work
+        # text a command only carries (a heredoc writing a CI file, a grep pattern, python -c "import playwright") runs nothing
+        cmd = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?.*?\n\1\b", " ", cmd, flags=re.S)
+        cmd = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", " ", cmd)
+        cmd = re.sub(r"\|\s*(?:grep|rg|head|tail|sort|wc)\b[^;&|\n]*", " ", cmd)
         if behavior(self.s.config["settings"])["tests"] or not CHECK_RX.search(cmd):
             return False
         req = next((m for m in reversed(self.session["messages"]) if m["role"] == "user" and not m.get("_aux")), {}).get("content", "")
@@ -924,6 +1019,8 @@ class Agent:
     # ─── subagents ───
     def _task(self, a, temit):
         name = a.get("agent") or "code"
+        if name not in presets(self.s) and re.fullmatch(r"(?i)general(?:[-_ ]purpose)?|default|coder|coding|agent|sub-?agent|worker|code[-_ ]?agent", name):
+            name = "code"  # Claude Code's subagent names: models ask for them by habit
         if name not in presets(self.s):
             return False, f"error: no agent '{name}'. agents: {', '.join(presets(self.s))}", None
         report = {"text": ""}
@@ -941,12 +1038,15 @@ class Agent:
                 done = sum(1 for i in e["items"] if i["s"] == "done")
                 temit({"t": "progress", "v": done / max(1, len(e["items"])), "label": f"{done}/{len(e['items'])}"})
             elif t == "error":
+                report["error"] = e["text"]
                 temit({"t": "log", "text": "✗ " + e["text"]})
         sub = Agent(self.s, sub_emit, self.confirm, self.ask)
         sub.depth, sub.persist = self.depth + 1, False
         sub.cancel = self.cancel
         sub.session = new_session(self.session.get("cwd"))
         sub.session["agent"] = name
+        if not presets(self.s)[name].get("model"):  # the chat's pinned model, not whatever another chat picked last
+            sub.session["model"] = self.model_name()
         sub.session["roots"] = list(self.session.get("roots") or [])
         temit({"t": "status", "text": f"{name} agent started"})
         sub.run(a.get("prompt", "") + "\n\nYou are a subagent: do the job, verify it, then reply with a short report "
@@ -955,6 +1055,8 @@ class Agent:
             self.session["usage"][k] = self.session["usage"].get(k, 0) + sub.session["usage"].get(k, 0)
         self.snap.update({k: v for k, v in sub.snap.items() if k not in self.snap})
         last = next((m.get("content") for m in reversed(sub.session["messages"]) if m["role"] == "assistant" and m.get("content")), "")
+        if report.get("error"):  # it died midway: its last words ("Let me check X…") are not a report
+            return False, clip(f"subagent failed: {report['error']}\nlast output: {last or report['text']}", 6000), None
         return bool(last), clip(last or report["text"] or "(subagent returned nothing)", 6000), None
 
     # ─── checkpoints / undo ───
@@ -1095,6 +1197,32 @@ class Agent:
         self.s.save_session(self.session)
         return (c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")), sorted(set(files))
 
+    def chat_command(self, c):
+        """/rename /fork /btw /rewind sent by the web chat (local lane or cloud sandbox): the outcome comes back as events.
+        Returns the "reload" event for the caller to send once the chat is saved where the page reads it (a sandbox syncs first)."""
+        t = c.get("type")
+        if t == "btw":
+            try:
+                return self.emit({"type": "btw", "q": str(c.get("text", ""))[:300], "text": self.side_question(str(c.get("text", "")))})
+            except Exception as e:
+                return self.emit({"type": "error", "text": str(e)})
+        if self.busy:
+            return self.emit({"type": "error", "text": "busy"})
+        if t == "rename" and str(c.get("text", "")).strip():
+            self.session["title"] = str(c["text"]).strip()[:80]
+            self.s.save_session(self.session)
+        elif t == "fork":
+            self.fork()
+        elif t == "rewind":
+            text, files = self.rewind(int(c.get("i", -1)))
+            if text is None:
+                return self.emit({"type": "error", "text": files})
+            self.emit({"type": "notice", "level": "info", "text": "rewound" + (": restored " + ", ".join(files[:8]) if files else "")})
+            return {"type": "reload", "session": self.session["id"], "draft": text}
+        else:
+            return self.emit({"type": "error", "text": f"unknown command {t}"})
+        return {"type": "reload", "session": self.session["id"]}
+
     def fork(self):
         """Continue in a copy of this chat; the original stays as it is (try another approach without losing this one)."""
         old = self.session
@@ -1219,6 +1347,19 @@ class Agent:
         ctx = int(m.get("context") or 128000)
         return min(int(ctx * float(pct) / 100), 1_000_000)
 
+    def compact_now(self):
+        """/compact from a frontend: one at a time, never during a turn, and every outcome is reported."""
+        if self.busy:
+            return self.emit({"type": "error", "text": "busy"})
+        self.busy = True
+        try:
+            if not self.compact(reason="manual"):
+                self.emit({"type": "notice", "level": "info", "text": "nothing to compact yet"})
+        except Exception as e:
+            self.emit({"type": "error", "text": f"compact failed: {e}"})
+        finally:
+            self.busy = False
+
     def compact(self, reason="manual", model=None, keep_frac=0.25):
         """Replace older history with a model-written summary. The most recent messages (about `keep_frac` of the model's
         context) stay verbatim. The cut may fall inside one long turn (an assistant step and its tool results stay together),
@@ -1292,11 +1433,24 @@ class Agent:
         if not d or d.get("updated", 0) <= self.session.get("updated", 0) + 0.01:
             return False
         d.setdefault("usage", {"in": 0, "out": 0})
+        here = cwd or self.session.get("cwd")  # this chat's folder here, not the process's: me web runs chats in many folders
         self.session = d
         self.ctx_used = d.get("ctx", self.ctx_used)
-        if cwd and os.path.abspath(cwd) != d.get("cwd"):
-            self.relocate(cwd)
+        if here and os.path.isdir(here) and os.path.abspath(here) != d.get("cwd"):
+            self.relocate(here)
+        self.ensure_cwd()
         return True
+
+    def ensure_cwd(self):
+        """A chat synced from another machine (or continued in the cloud) may name a folder that does not exist here: tools
+        would then split between a phantom tree and the process folder. Move it to the first real candidate."""
+        cwd = self.session.get("cwd")
+        if not cwd or os.path.isdir(cwd):
+            return
+        for c in list(self.session.get("roots") or []) + [os.getcwd()]:
+            if c and os.path.isdir(c):
+                self.relocate(c)
+                return
 
     def relocate(self, new_cwd):
         """Session moved to another machine/sandbox: map every earlier project root to the new one,
@@ -1330,4 +1484,5 @@ class Agent:
             self.session = d
             self.session.setdefault("usage", {"in": 0, "out": 0})
             self.ctx_used = self.session.get("ctx", 0)
+            self.ensure_cwd()
         return d

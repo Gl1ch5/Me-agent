@@ -131,6 +131,8 @@ function applyTheme() {
   const r = document.documentElement.style, c = S.colors || {};
   for (const [k, v] of Object.entries(c)) if (COLOR_VARS[k]) r.setProperty(COLOR_VARS[k], v);
   const a = c.accent || "#8b7cff", w = c.warn || "#ffb454", ok = c.ok || "#5ad18a", er = c.err || "#ff6b7a";
+  const lum = (/^#?([\da-f]{6})/i.exec(a) || [0, "8b7cff"])[1].match(/../g).map(x => { x = parseInt(x, 16) / 255; return x <= .03928 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; });
+  r.setProperty("--on-a", .2126 * lum[0] + .7152 * lum[1] + .0722 * lum[2] > .35 ? "#0a0a0a" : "#ffffff");  // text on accent buttons: whichever reads
   for (const [n, v] of Object.entries({"--a10": rgba(a, .1), "--a14": rgba(a, .14), "--a30": rgba(a, .3), "--a45": rgba(a, .45), "--w8": rgba(w, .08), "--w45": rgba(w, .45),
     "--w25": rgba(w, .25), "--ok10": rgba(ok, .1), "--err10": rgba(er, .1), "--ok35": rgba(ok, .35), "--err35": rgba(er, .35)})) r.setProperty(n, v);
   document.documentElement.style.colorScheme = S.dark ? "dark" : "light";
