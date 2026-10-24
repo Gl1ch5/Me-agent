@@ -1308,6 +1308,19 @@ class Agent:
         ctx = int(m.get("context") or 128000)
         return min(int(ctx * float(pct) / 100), 1_000_000)
 
+    def compact_now(self):
+        """/compact from a frontend: one at a time, never during a turn, and every outcome is reported."""
+        if self.busy:
+            return self.emit({"type": "error", "text": "busy"})
+        self.busy = True
+        try:
+            if not self.compact(reason="manual"):
+                self.emit({"type": "notice", "level": "info", "text": "nothing to compact yet"})
+        except Exception as e:
+            self.emit({"type": "error", "text": f"compact failed: {e}"})
+        finally:
+            self.busy = False
+
     def compact(self, reason="manual", model=None, keep_frac=0.25):
         """Replace older history with a model-written summary. The most recent messages (about `keep_frac` of the model's
         context) stay verbatim. The cut may fall inside one long turn (an assistant step and its tool results stay together),

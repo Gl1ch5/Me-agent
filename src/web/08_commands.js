@@ -114,6 +114,7 @@ const CMDS = {
   retry: ["take back the last request and run it again", "", async () => {
     const ms = state.session?.messages || [], i = ms.map(m => m.role === "user" && !m._aux).lastIndexOf(true);
     if (i < 0) return note(t("nothing to retry"), "warn");
+    if (busy) return note(t("busy"), "warn");  // the sandbox would queue it while the view already dropped the turn
     const c = ms[i].content, text = Array.isArray(c) ? c.filter(x => x.type === "text").map(x => x.text).join(" ") : c;
     await api(base + "/retry", {});
     state.session = {...state.session, messages: ms.slice(0, i)}; renderHistory(state.session);

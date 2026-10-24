@@ -163,8 +163,8 @@ def run_rpc(store):
             if os.environ.get("ME_WS_ID"):
                 ag.session["ws"] = os.environ["ME_WS_ID"]
             emit({"type": "loaded", "ok": True, "session": ag.session["id"]})
-        elif t == "compact" and not ag.busy:
-            threading.Thread(target=ag.compact, daemon=True).start()
+        elif t == "compact":
+            threading.Thread(target=ag.compact_now, daemon=True).start()
         elif t == "sync":
             cloud.sync()
             store.config = jload(store.cfg_path) or store.config

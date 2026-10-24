@@ -218,8 +218,7 @@ class WebSession:
         if path == "/compact":
             if a.busy:
                 raise ValueError("busy")
-            threading.Thread(target=lambda: a.compact(reason="manual") or self.push({"type": "error", "text": "nothing to compact yet"}),
-                             daemon=True).start()
+            threading.Thread(target=a.compact_now, daemon=True).start()
             return {"ok": True}
         if path == "/agent":
             self.s.config["agent"] = body["name"]
