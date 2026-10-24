@@ -74,7 +74,8 @@ def phone_split(browser, stand, out, token, total=25.0, S=None):
         pc.wait_for_timeout(400)
         pc.click("#send")
         mk.at("click")
-        _log_has(pc, "wrote index.html")
+        pc.wait_for_function("() => [...document.querySelectorAll('#log .tool .lab')].some(e => e.textContent.trim() === 'index.html')",
+                             timeout=40000)  # the write of index.html is on the PC's screen
         mk.at("pop")
         pc.wait_for_timeout(1500)  # the PC shows the finished page
         # the phone: the session appears in its list through sync; open it from the menu and reply
