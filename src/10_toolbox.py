@@ -370,6 +370,11 @@ def _replace_one(text, old, new, all_):
                 repl = _reindent(news, lines[i:i + len(olds)], olds) if how == "indentation" else news
                 lines[i:i + len(olds)] = repl
             return "\n".join(lines), f"{len(hits)} replacement{'s' if len(hits) > 1 else ''}, line {hits[0] + 1} (matched ignoring {how})"
+    hit = _block_anchor(lines, olds) if not all_ else None
+    if hit is not None:  # first and last lines match exactly once, the middle was paraphrased: the block between them
+        i, n = hit
+        lines[i:i + n] = news
+        return "\n".join(lines), f"1 replacement, line {i + 1} (matched by its first and last lines; the middle differed)"
     full = [x for x in old.split("\n") if x.strip()]
     if full and all(LINE_NO_RX.match(x) for x in full):  # the `N│` prefix of read output copied into old (and maybe new)
         strip = lambda s: "\n".join(LINE_NO_RX.sub("", x, 1) for x in s.split("\n"))
@@ -383,6 +388,29 @@ def _replace_one(text, old, new, all_):
         if r[0] is not None:
             return r[0], r[1] + " (unescaped \\n / \\\")"
     return None, "error: old text not found." + _closest(text, old)
+
+
+def _block_anchor(lines, olds):
+    """(start, length) of the one block whose first and last lines equal old's (ignoring indentation), about as long as old
+    and similar enough in between — or None. Weak models often quote a long block's middle loosely (opencode does this too)."""
+    if len(olds) < 3 or not olds[0].strip() or not olds[-1].strip():
+        return None
+    first, last = olds[0].strip(), olds[-1].strip()
+    cands = []
+    for i, l in enumerate(lines):
+        if l.strip() != first:
+            continue
+        for j in range(i + 2, min(len(lines), i + int(len(olds) * 1.25) + 2)):
+            if lines[j].strip() == last:
+                n = j - i + 1
+                if abs(n - len(olds)) <= max(1, len(olds) // 4):
+                    cands.append((i, n))
+                break
+    if len(cands) != 1:
+        return None
+    i, n = cands[0]
+    mid = difflib.SequenceMatcher(None, "\n".join(x.strip() for x in lines[i + 1:i + n - 1]), "\n".join(x.strip() for x in olds[1:-1])).ratio()
+    return cands[0] if mid >= 0.6 else None
 
 
 LINE_NO_RX = re.compile(r"^\s*\d+\s?(?:│|:|→|\|)\s?")

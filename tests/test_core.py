@@ -123,6 +123,13 @@ def test_step_limit_turns_tools_off_for_a_report():
     assert any(e["type"] == "turn_end" for e in ev)
 
 
+def test_edit_block_anchor_match():
+    t = "def f(x):\n    a = x + 1\n    b = a * 2\n    return b\n\nprint(f(1))\n"
+    new, msg = me._replace_one(t, "def f(x):\n    a = x+1  # inc\n    b = a*2\n    return b", "def f(x):\n    return (x + 1) * 2", False)
+    assert new == "def f(x):\n    return (x + 1) * 2\n\nprint(f(1))\n" and "first and last" in msg
+    assert me._replace_one(t, "def f(x):\n    totally different\n    stuff here\n    return b", "X", False)[0] is None  # too different: no guess
+
+
 def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
     s = make()
     s.config["settings"]["yolo"] = False
