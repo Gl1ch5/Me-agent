@@ -3303,6 +3303,8 @@ LOOP_NUDGE = ("[you made the same call three times and got the same result — i
               "or stop and tell the user what blocks you]")
 THINK_NUDGE = "[your reasoning used up the output token limit before you answered — think less and act or answer now]"
 CUTOFF_NUDGE = "[your reply was cut off by the output token limit — continue exactly where it stopped, without repeating]"
+MAX_STEPS_NOTE = ("[step limit reached (settings.max_steps): tools are off now. Reply with what is done, what is left and what to do next; "
+                  "the user can say \"continue\" to go on]")
 REPEAT_NUDGE = "[your reply started repeating itself and was stopped — do not repeat it; continue the task with tools, or give the final answer]"
 EMPTY_NUDGE = "[your last reply was empty — continue: call the next tool with valid JSON arguments, or answer]"
 INTENT_NUDGE = "[self-check] You said what you would do next but made no tool call, so nothing happened. Do it now, or say why you stopped."
@@ -3695,6 +3697,11 @@ class Agent:
                 if limit and self.ctx_used > limit and not compact_failed:
                     compact_failed = not self.compact(reason="auto", model=m)  # a failed summary is not retried on every step
                 schemas = self.tool_schemas()
+                cap = int(st.get("max_steps") or 200)
+                if self.depth == 0 and steps >= cap:  # the last step: no tools, the model reports instead of being cut off
+                    schemas = []
+                    if self.session["messages"][-1].get("content") != MAX_STEPS_NOTE:
+                        self.session["messages"].append({"role": "user", "_aux": True, "content": MAX_STEPS_NOTE})
                 self._tool_names = {t["name"] for t in schemas}
                 system = self.system_prompt()
                 try:
@@ -3747,8 +3754,14 @@ class Agent:
                         continue
                     raise ProviderError("the model ran out of output tokens before answering — raise max_out or lower effort in /models" if cut
                                         else "the model returned an empty reply — try again, or pick another model (/model)")
+                if not schemas and msg.get("tool_calls"):  # tools were off (step limit): calls anyway are not run
+                    msg.pop("tool_calls")
+                    msg["content"] = msg.get("content") or "(step limit reached — say \"continue\" to go on)"
                 self.session["messages"].append(msg)
                 self.checkpoint()
+                if not msg.get("tool_calls") and not schemas:
+                    finished = True
+                    break
                 if not msg.get("tool_calls"):
                     if cut and cutoffs < 2:  # the reply hit the output limit: let it carry on where it stopped
                         cutoffs += 1

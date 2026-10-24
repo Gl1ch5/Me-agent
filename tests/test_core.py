@@ -113,6 +113,16 @@ def test_chat_commands_from_the_web():
     assert s.config["settings"]["max_turn_cost"] == 0.5 and s.config["settings"]["max_day_cost"] == 0
 
 
+def test_step_limit_turns_tools_off_for_a_report():
+    s = make()
+    s.config["settings"]["max_steps"] = 1
+    ag, ev = run(s, "tool:bash " + json.dumps({"cmd": "echo one"}))
+    msgs = ag.session["messages"]
+    assert any(m.get("content") == me.MAX_STEPS_NOTE for m in msgs), [m.get("content") for m in msgs]
+    assert msgs[-1]["role"] == "assistant" and not msgs[-1].get("tool_calls")
+    assert any(e["type"] == "turn_end" for e in ev)
+
+
 def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
     s = make()
     s.config["settings"]["yolo"] = False
