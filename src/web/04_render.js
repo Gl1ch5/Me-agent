@@ -37,7 +37,14 @@ function onEvent(e) {
   if (t === "user") { if (!cur.echo) userMsg(e.text); cur.echo = false; return; }
   if (t === "queued") { const b = [...log.querySelectorAll(".msg.user")].pop(); if (b && !b.querySelector(".qtag")) b.querySelector(".bub").insertAdjacentHTML("beforeend", `<span class="qtag">${tt("queued")}</span>`); return; }
   if (t === "queued_sent") { log.querySelectorAll(".qtag").forEach(x => x.remove()); return; }
-  if (t === "queued_dropped") { log.querySelectorAll(".qtag").forEach(x => { x.textContent = t("not sent"); x.classList.add("dropped"); }); return; }
+  if (t === "btw") { cur.text = null; el(`<div class="msg md">${md("> /btw " + e.q + "\n\n" + e.text)}</div>`); return; }
+  if (t === "reload") {  // /rename /fork /rewind changed the chat: show it as it is now
+    if (e.session && state.worker) state.worker = {...state.worker, session: e.session};  // /fork moved this lane to the copy
+    A.state(state.worker).then(s => { state.session = s.session; state.sessions = s.sessions || state.sessions; renderHistory(s.session); renderSessions();
+      if (e.draft) { inp.value = e.draft; inp.focus(); } }).catch(() => {});
+    return;
+  }
+  if (t === "queued_dropped") { log.querySelectorAll(".qtag").forEach(x => { x.textContent = window.t("not sent"); x.classList.add("dropped"); }); return; }
   if (t === "suggest") { if (!busy) setHint(e.text); return; }
   if (t === "turn_start") { setHint(""); if (e.context) { state.context = e.context; state.agent = e.agent || state.agent; renderStatus(); } busy = true; turnT0 = Date.now(); setBusy(); return; }
   if (t === "reasoning") {
@@ -108,7 +115,7 @@ function onEvent(e) {
   if (t === "compacting") { cur.text = null; el(`<div class="info">${tt("compacting history…")}</div>`); return; }
   if (t === "compacted") { state.ctx = e.ctx; renderStatus(); el(`<div class="info">${tt("compacted {a} → {b} messages · ~{c} tokens", {a: e.before, b: e.after, c: human(e.ctx)})}</div>`); return; }
   if (t === "usage") { state.ctx = e.ctx; if (state.session) state.session.usage = {...(state.session.usage || {}), cost: e.session_cost}; if (e.day_cost != null) state.day_cost = e.day_cost; renderStatus(e.in, e.out); return; }
-  if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(t(e.text))}</div>`); return; }
+  if (t === "error") { cur.failed = true; el(`<div class="info ${e.text === "interrupted" ? "warn" : "err"}">${e.text === "interrupted" ? tt("interrupted") : esc(window.t(e.text))}</div>`); return; }
   if (t === "turn_end") {
     const failed = cur.failed; endThink(); busy = false; cur = {}; setBusy();
     const st = e.steps || 1, cp = e.cached && e.in ? ` (${Math.round(100 * e.cached / e.in)}% ${T("cached")})` : "";
@@ -117,10 +124,10 @@ function onEvent(e) {
   }
   if (t === "todo") { if (state.session) state.session.todo = e.items; renderTodo(e.items); return; }
   if (t === "goal") { goalEvent(e); return; }
-  if (t === "notice") { cur.text = null; el(`<div class="info${e.level === "info" ? "" : " warn"}">${esc(t(e.text))}</div>`); return; }
+  if (t === "notice") { cur.text = null; el(`<div class="info${e.level === "info" ? "" : " warn"}">${esc(window.t(e.text))}</div>`); return; }
   if (t === "verify") { cur.text = null; el(`<div class="info">${tt("self-check: running checks before finishing")}</div>`); return; }
   if (t === "turn_diff") { diffCard(e.files || []); return; }
-  if (t === "undone") { el(`<div class="info warn">↶ ${esc(t(e.text))}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
+  if (t === "undone") { el(`<div class="info warn">↶ ${esc(window.t(e.text))}</div>`); A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); }); return; }
   if (t === "loaded" && e.session && state.worker) state.worker.session = e.session;  // later reloads must read this session
   if (t === "loaded" && e.title) $("title").textContent = e.title;
   if (t === "reload") { A.state(state.worker).then(s => { state.session = s.session; renderHistory(s.session); renderSessions(); }); return; }

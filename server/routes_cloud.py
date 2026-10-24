@@ -170,6 +170,20 @@ def cloud_model(wid: str, p: ModelPick, u=Depends(user)):
     return {"ok": True}
 
 
+class ChatCmd(BaseModel):
+    type: str
+    text: str = ""
+    i: int = -1
+
+
+@app.post("/api/cloud/{wid}/cmd")
+def cloud_cmd(wid: str, p: ChatCmd, u=Depends(user)):
+    if p.type not in ("rename", "fork", "btw", "rewind"):
+        raise HTTPException(404)
+    _worker(u, wid).send({"type": p.type, "text": p.text[:4000], "i": p.i})
+    return {"ok": True}
+
+
 @app.post("/api/cloud/{wid}/{action}")
 def cloud_action(wid: str, action: str, u=Depends(user)):
     if action not in ("cancel", "new", "sync", "compact", "undo", "retry"):

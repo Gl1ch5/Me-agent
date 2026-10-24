@@ -1184,6 +1184,32 @@ class Agent:
         self.s.save_session(self.session)
         return (c if isinstance(c, str) else " ".join(x.get("text", "") for x in c if x.get("type") == "text")), sorted(set(files))
 
+    def chat_command(self, c):
+        """/rename /fork /btw /rewind sent by the web chat (local lane or cloud sandbox): the outcome comes back as events.
+        Returns the "reload" event for the caller to send once the chat is saved where the page reads it (a sandbox syncs first)."""
+        t = c.get("type")
+        if t == "btw":
+            try:
+                return self.emit({"type": "btw", "q": str(c.get("text", ""))[:300], "text": self.side_question(str(c.get("text", "")))})
+            except Exception as e:
+                return self.emit({"type": "error", "text": str(e)})
+        if self.busy:
+            return self.emit({"type": "error", "text": "busy"})
+        if t == "rename" and str(c.get("text", "")).strip():
+            self.session["title"] = str(c["text"]).strip()[:80]
+            self.s.save_session(self.session)
+        elif t == "fork":
+            self.fork()
+        elif t == "rewind":
+            text, files = self.rewind(int(c.get("i", -1)))
+            if text is None:
+                return self.emit({"type": "error", "text": files})
+            self.emit({"type": "notice", "level": "info", "text": "rewound" + (": restored " + ", ".join(files[:8]) if files else "")})
+            return {"type": "reload", "session": self.session["id"], "draft": text}
+        else:
+            return self.emit({"type": "error", "text": f"unknown command {t}"})
+        return {"type": "reload", "session": self.session["id"]}
+
     def fork(self):
         """Continue in a copy of this chat; the original stays as it is (try another approach without losing this one)."""
         old = self.session

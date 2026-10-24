@@ -168,6 +168,13 @@ def main():
         cur, seen = until("goal", cur)
         assert seen[-1]["status"] == "done", seen[-1]
         print("ok   undo and /goal work in the cloud sandbox")
+        c.req("POST", f"/api/cloud/{w['id']}/cmd", {"type": "rename", "text": "renamed in the cloud"})
+        cur, seen = until("reload", cur)
+        sid = seen[-1]["session"]
+        assert json.loads(c.req("GET", "/api/doc?key=session/" + sid)["content"])["title"] == "renamed in the cloud"
+        c.req("POST", f"/api/cloud/{w['id']}/cmd", {"type": "btw", "text": "side"})
+        cur, seen = until("btw", cur)
+        print("ok   web chat commands (/rename, /btw) reach the cloud sandbox and the chat is synced before reload")
 
         # the agent's `later` tool from inside the sandbox: syncs the chat, then the server holds a reminder for it
         c.req("POST", f"/api/cloud/{w['id']}/prompt", {"text": 'tool:later {"text":"check the logs","cron":"0 9 * * *","tz":3}'})

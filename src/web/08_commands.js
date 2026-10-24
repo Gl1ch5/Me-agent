@@ -31,6 +31,7 @@ function applySetting(cfg, key, v, model) {  // mirror of apply_setting() in the
   if (key === "prompt") cfg.prompt = String(v || "");
   else if (key === "autocompact") cfg.settings.autocompact = (v === "off" || v === 0 || v == null) ? 0 : Math.max(10, Math.min(95, parseInt(v)));
   else if (key === "effort") { const m = (cfg.models || []).find(x => x.name === (model || cfg.model)); if (!m) throw new Error("no model"); m.effort = (v === "none" || !v) ? "" : String(v); }
+  else if (key === "cost_turn" || key === "cost_day") cfg.settings[key === "cost_turn" ? "max_turn_cost" : "max_day_cost"] = Math.max(0, parseFloat(v) || 0);
   else if (key === "searchkey") searchKey(cfg, String(v || ""));
   else if (key === "search_asked") cfg.settings.search_asked = [...new Set([...(cfg.settings.search_asked || []), String(v)])].sort();
   else if (key.startsWith("skill:")) { const d = new Set(cfg.settings.disabled_skills || []); v ? d.delete(key.slice(6)) : d.add(key.slice(6)); cfg.settings.disabled_skills = [...d].sort(); }
@@ -140,10 +141,23 @@ const CMDS = {
   }],
   perm: ["permissions", "[read|ask|full]", a => ["read", "ask", "full"].includes(a) && state.perm !== "sandbox" ? setPerm(a) : pickPerm()],  // cloud: the synced setting is the local agent's
   yolo: ["full access on/off", "", () => state.perm === "sandbox" ? pickPerm() : setPerm(state.perm === "full" ? "ask" : "full")],
-  cost: ["spending", "", () => {
+  cost: ["spending; /cost turn 0.5 · /cost day 3 set limits (0 = off)", "[turn|day $]", async a => {
+    const [k, v] = (a || "").split(/\s+/);
+    if (k === "turn" || k === "day") { await cfgSet("cost_" + k, v || 0); return note(`${k} ${parseFloat(v) ? "$" + parseFloat(v) : t("off")}`, "ok"); }
     const u = state.session?.usage || {};
     say(`## ${t("Spending")}\n- ${t("session")}: **${money(u.cost || 0)}** · ↑${human(u.in || 0)} ↓${human(u.out || 0)}\n- ${t("today")}: **${money(state.day_cost || 0)}**`);
   }],
+  rename: ["rename this chat", "[name]", async a => { const n = a || prompt(t("Chat name"), state.session?.title || ""); if (n && n.trim()) await A.cmd("rename", {text: n.trim()}); }],
+  fork: ["continue in a copy of this chat", "", () => busy ? note(t("busy"), "warn") : A.cmd("fork")],
+  btw: ["a side question: not added to the chat", "[question]", a => a ? A.cmd("btw", {text: a}) : note("/btw " + t("question"), "warn")],
+  rewind: ["go back to before an earlier request (files restored)", "", () => {
+    if (busy) return note(t("busy"), "warn");
+    const ms = state.session?.messages || [], txt = c => typeof c === "string" ? c : (c || []).filter(x => x.type === "text").map(x => x.text).join(" ");
+    const reqs = ms.map((m, i) => [i, m]).filter(([, m]) => m.role === "user" && !m._aux && !m._shell && !txt(m.content).startsWith("[Summary"));
+    if (!reqs.length) return note(t("nothing to rewind"), "warn");
+    popupList(reqs.reverse().map(([i, m], n) => [i, txt(m.content).replace(/\s+/g, " ").slice(0, 90) || "…", "#" + (reqs.length - n), false]), i => A.cmd("rewind", {i}));
+  }],
+  lang: ["interface language", "[en|ru|auto]", async a => { const v = ["en", "ru", "auto"].includes(a) ? a : (LANG === "ru" ? "en" : "ru"); await cfgSet("lang", v === "auto" ? "" : v); setLang(v === "auto" ? (navigator.language || "en").slice(0, 2) === "ru" ? "ru" : "en" : v); }],
   todo: ["the agent's checklist", "", () => { const it = state.session?.todo || []; it.length ? say(it.map(i => `- [${i.s === "done" ? "x" : " "}] ${i.t}`).join("\n")) : note("—"); }],
   theme: ["color theme", "[name]", a => { const x = themeList.find(th => th.name === a); x ? setTheme(x.name) : pickTheme(); }],
   sync: ["sync now", "", () => MODE === "cloud" ? api(base + "/sync", {}).then(() => note(t("saved"), "ok")) : note("local", "warn")],

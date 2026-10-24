@@ -43,6 +43,8 @@ def apply_setting(cfg, key, value, model=None):
         if not m:
             raise ValueError("no model")
         m["effort"] = "" if value in ("none", "", None) else str(value)
+    elif key in ("cost_turn", "cost_day"):  # spending limits in $: 0 = off
+        st["max_turn_cost" if key == "cost_turn" else "max_day_cost"] = max(0.0, float(value or 0))
     elif key == "searchkey":
         return search_key(cfg, str(value or ""))
     elif key == "search_asked":  # the "add a search key" note was shown on this surface (tui / web / tg)
@@ -215,6 +217,9 @@ class WebSession:
                     pass
                 a.relocate(local)  # this chat only: other chats in this process keep their folders
             return self.state()
+        if path == "/cmd":  # /rename /fork /btw /rewind: results arrive as events, as from a cloud sandbox
+            threading.Thread(target=lambda: (lambda ev: ev and self.push(ev))(a.chat_command(body)), daemon=True).start()
+            return {"ok": True}
         if path == "/compact":
             if a.busy:
                 raise ValueError("busy")

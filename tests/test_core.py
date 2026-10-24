@@ -93,6 +93,26 @@ def test_write_asks_to_read_an_unread_file_first(tmp=Path(tempfile.mkdtemp())):
     assert g.read_text() == "a = 2\n"
 
 
+def test_chat_commands_from_the_web():
+    s = make()
+    ev = []
+    ag = me.Agent(s, ev.append)
+    ag.run("hi")
+    ag.run("second")
+    assert ag.chat_command({"type": "rename", "text": "  new name "})["type"] == "reload" and ag.session["title"] == "new name"
+    old = ag.session["id"]
+    r = ag.chat_command({"type": "fork"})
+    assert r["session"] == ag.session["id"] != old and ag.session["title"].endswith("· fork")
+    i = [n for n, _ in ag.requests()][-1]
+    r = ag.chat_command({"type": "rewind", "i": i})
+    assert r["draft"] == "second" and [t for _, t in ag.requests()] == ["hi"]
+    ag.chat_command({"type": "btw", "text": "what is 2+2"})
+    assert ev[-1]["type"] == "btw" and ev[-1]["q"] == "what is 2+2" and [t for _, t in ag.requests()] == ["hi"]
+    me.apply_setting(s.config, "cost_turn", "0.5")
+    me.apply_setting(s.config, "cost_day", 0)
+    assert s.config["settings"]["max_turn_cost"] == 0.5 and s.config["settings"]["max_day_cost"] == 0
+
+
 def test_confirm_denied(tmp=Path(tempfile.mkdtemp())):
     s = make()
     s.config["settings"]["yolo"] = False

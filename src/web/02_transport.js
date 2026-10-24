@@ -87,6 +87,7 @@ const A = {
   prompt: (text, images) => api(base + "/prompt", {text, images: images || []}),
   goal: (text) => api(base + "/goal", {text}),
   undo: () => api(base + "/undo", {}),
+  cmd: (type, extra) => api(base + "/cmd", {type, ...(extra || {})}),  // /rename /fork /btw /rewind: the result comes back as events
   async listFiles() {  // every project file, for @ completion
     if (MODE === "local") return (await api(base + "/files", {all: true})).paths;
     return state.ws ? Object.keys((await api(`/api/ws/${state.ws}/manifest`)).files || {}) : [];
