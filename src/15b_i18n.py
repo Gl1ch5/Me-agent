@@ -24,7 +24,7 @@ RU = {
     "work autonomously until done+verified or blocked": "работать сам, пока не сделает и не проверит (или не упрётся)",
     "revert the files of the last turn": "откатить файлы последнего хода", "take back the last request and run it again": "отменить последний запрос и выполнить заново",
     "save this chat as Markdown": "сохранить чат в Markdown", "permissions: read-only / ask / full + allow-list": "разрешения: read-only / ask / full + список разрешённых",
-    "spending: turn, session, today, limits": "расходы: задача, сессия, сегодня, лимиты", "MCP servers (lazy)": "MCP-серверы (подгружаются по требованию)",
+    "spending: turn, session, today, limits": "расходы: задача, сессия, сегодня, лимиты", "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю", "MCP servers (lazy)": "MCP-серверы (подгружаются по требованию)",
     "show the agent's checklist": "показать todo-список агента", "toggle full access": "полный доступ вкл/выкл", "sync with cloud now": "синхронизировать сейчас",
     "log in / register": "войти / зарегистрироваться", "authenticator (TOTP) on/off": "двухфакторная защита (TOTP) вкл/выкл", "log out of cloud": "выйти из облака",
     "settings": "настройки", "update me": "обновить me", "color theme (installable)": "цветовая тема (можно ставить новые)", "quit": "выход",
@@ -149,8 +149,8 @@ RU = {
     "log in / create account": "войти / создать аккаунт", "config, keys, skills & chats follow you everywhere": "настройки, ключи, навыки и чаты с вами на любом устройстве",
     "use offline": "работать офлайн", "you can /login any time": "войти можно в любой момент: /login", "☁ {} items synced from cloud": "☁ из облака синхронизировано: {}",
     "☁ sync failed: {}": "☁ синхронизация не удалась: {}", "☁ syncing…": "☁ синхронизация…",
-    "Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).":
-        "Подключим модель. Подойдёт любой OpenAI-совместимый API (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).",
+    "Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…). Or /login for Me AI, the built-in model (free plan).":
+        "Подключим модель. Подойдёт любой OpenAI-совместимый API (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…). Или /login — и будет Me AI, встроенная модель (бесплатный тариф).",
     "↻ {} — retrying": "↻ {} — повторяю", "↻ {} — retrying in {}s": "↻ {} — повтор через {} с", "◌ compacting history ({})…": "◌ сжимаю историю ({})…",
     "✓ compacted {} → {} messages · context now ~{} tokens": "✓ сжато: {} → {} сообщений · контекст теперь ~{} токенов",
     "◌ self-check: changes were made but not run yet — verifying before finishing": "◌ самопроверка: изменения не запускались — проверяю перед завершением",

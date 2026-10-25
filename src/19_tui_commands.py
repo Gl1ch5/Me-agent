@@ -439,7 +439,7 @@ class TUICommands:
                 self.info(f"✗ {e}", "err")
 
     def cmd_model(self, arg):
-        ms = self.s.config["models"]
+        ms = self.s.models()
         if not ms:
             self.info("no models yet", "warn")
             return self.cmd_models("")
@@ -899,6 +899,26 @@ class TUICommands:
     def cmd_logout(self, arg):
         self.cloud.logout()
         self.toast("logged out — local data kept", "ok")
+
+    def cmd_usage(self, arg):
+        if not self.cloud.online:
+            return self.info("log in first — /login", "warn")
+        try:
+            st = self.cloud.req("GET", "/api/plan")
+        except CloudError as e:
+            return self.info(f"✗ {e}", "err")
+        ru = UI_LANG["v"] == "ru"
+        lines = [f"## Me AI · {st['title']}" + (f" ({'до' if ru else 'until'} {time.strftime('%d.%m', time.localtime(st['until']))})" if st.get("until") else "")]
+        for w in st["windows"]:
+            bar = "█" * int(w["pct"] // 10) + "░" * (10 - int(w["pct"] // 10))
+            name = ("5 часов" if w["kind"] == "5h" else "неделя") if ru else ("5 hours" if w["kind"] == "5h" else "week")
+            left = max(0, int((w["resets"] or 0) - time.time()))
+            when = (f" · {'сброс через' if ru else 'resets in'} {left // 86400 and str(left // 86400) + 'd ' or ''}{left % 86400 // 3600}h {left % 3600 // 60}m"
+                    if w["resets"] else "")
+            lines.append(f"- {name}: `{bar}` **{w['pct']:g}%**{when}")
+        lines.append("- " + " · ".join(f"{p['title']} {p['price']} ₽" + ("/мес" if ru else "/mo") * bool(p["price"]) for p in st["plans"])
+                     + (f" — {self.cloud.server}/account#plans"))
+        self.add("assistant", text="\n".join(lines)).done = True
 
     def cmd_twofa(self, arg):
         if not self.cloud.online:

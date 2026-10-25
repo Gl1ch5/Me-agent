@@ -107,7 +107,7 @@ class WebSession:
     def state(self):
         ses = self.agent.session
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": self.agent.cwd, "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
-                "config": {"model": self.agent.model_name(), "models": self.s.config.get("models", []), "prompt": self.s.config.get("prompt", ""),
+                "config": {"model": self.agent.model_name(), "models": self.s.models(), "prompt": self.s.config.get("prompt", ""),
                            "autocompact": self.s.config["settings"].get("autocompact", 80),
                            "search": {a: len(search_keys(self.s.config, a)) for a in SEARCH_APIS},
                            "search_asked": self.s.config["settings"].get("search_asked", [])},

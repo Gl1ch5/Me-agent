@@ -40,7 +40,8 @@ const A = {
     const [ag, man] = await Promise.all([api("/api/agents").catch(() => ({agents: [], current: "code"})),
       w && w.ws ? api(`/api/ws/${w.ws}/manifest`).catch(() => ({files: {}})) : {files: {}}]);
     const context = ["AGENTS.md", "ME.md", "CLAUDE.md", "DESIGN.md", "PLAN.md"].filter(f => f in man.files);
-    return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: (session?.model && (cfg.models || []).some(m => m.name === session.model)) ? session.model : cfg.model, models: cfg.models || [], prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80, search: searchCounts(cfg), search_asked: (cfg.settings || {}).search_asked || []}, sessions, session, ws: w && w.ws, worker: w,
+    const models = (cfg.models || []).concat((cfg.models || []).some(m => m.name === "me-ai") ? [] : [{name: "me-ai", id: "me-ai", provider: "me", context: 1000000, vision: true}]);  // Me AI: the account's own model
+    return {mode: "cloud", user: me.username, ctx: session?.ctx || 0, config: {model: (session?.model && models.some(m => m.name === session.model)) ? session.model : cfg.model || models[0].name, models, prompt: cfg.prompt || "", autocompact: (cfg.settings || {}).autocompact ?? 80, search: searchCounts(cfg), search_asked: (cfg.settings || {}).search_asked || []}, sessions, session, ws: w && w.ws, worker: w,
             lang: (cfg.settings || {}).lang || "", behavior: {...BEHAVIOR_DEFAULTS, ...((cfg.settings || {}).no_verify ? {tests: false} : {}), ...((cfg.settings || {}).behavior || {})},
             agent: session?.agent || ag.current, agents: ag.agents, context, perm: "sandbox", preview: w && w.preview, push: me.push};
   },

@@ -290,8 +290,8 @@ class TUI(TUIRender, TUIInput, TUICommands):
                 self.toast(f"☁ {n} items synced from cloud", "ok")
             elif n < 0:
                 self.toast(f"☁ sync failed: {self.cloud.last_error[:60]}", "err")
-        if not self.s.config.get("models"):
-            self.info("Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…).")
+        if not self.s.models():
+            self.info("Let's connect a model. Any OpenAI-compatible API works (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio…). Or /login for Me AI, the built-in model (free plan).")
             self.setup_provider()
         st = self.s.config["settings"]
         if "tui" not in st.get("search_asked", []) and not any(search_keys(self.s.config, a) for a in SEARCH_APIS):
