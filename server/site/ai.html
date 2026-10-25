@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Me AI — the model built into me</title>
+<meta property="og:title" content="Me AI — the model built into me">
+<meta property="og:type" content="website">
+<meta property="og:url" content="__SERVER__/ai">
+<meta name="theme-color" content="#0b0c10">
+<meta name="description" content="Me AI: the model built into me, tuned for agent work by the Improver engine. Speed, benchmarks and plans.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0c10;--bg2:#111319;--line:#1f2230;--fg:#d8dae3;--dim:#7b8094;--faint:#3a3d4a;--a:#8b7cff;--b:#4fd1c5;--ok:#5ad18a;--hl:rgba(139,124,255,.10);
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+:root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf;--hl:rgba(139,124,255,.12)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf;--hl:rgba(139,124,255,.12)}}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.wrap{max-width:980px;margin:0 auto;padding:0 20px}
+nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0;gap:12px}
+.logo{font-family:var(--mono);font-weight:700;font-size:20px;letter-spacing:-.5px;display:flex;align-items:center;gap:10px;text-decoration:none}
+.logo i{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--a),var(--b));display:inline-block}
+nav .links{display:flex;gap:22px;font-size:14px;color:var(--dim);align-items:center}
+nav .links a{text-decoration:none}nav .links a:hover{color:var(--fg)}
+.lang{position:relative;display:flex;border:1px solid var(--line);border-radius:999px;padding:2px;flex-shrink:0;background:var(--bg2)}
+.lang:before{content:"";position:absolute;top:2px;bottom:2px;left:2px;width:calc(50% - 2px);border-radius:999px;background:var(--a);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+.lang:has(button[data-l="ru"].on):before{transform:translateX(100%)}
+.lang button{position:relative;z-index:1;font:700 12px var(--mono);background:none;border:none;color:var(--dim);padding:6px 12px;min-width:42px;border-radius:999px;cursor:pointer;transition:color .2s}
+.lang button.on{color:#0b0c10}
+.hero{padding:70px 0 10px}
+.hero h1{font-family:var(--mono);font-size:clamp(40px,8vw,84px);line-height:1;letter-spacing:-3px;font-weight:700}
+.hero h1 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{margin-top:22px;font-size:clamp(16px,2.2vw,20px);color:var(--dim);max-width:660px;line-height:1.55}
+.hero p b{color:var(--fg);font-weight:500}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:40px}
+.stats div{background:var(--bg);padding:18px 20px}
+.stats b{display:block;font:700 26px var(--mono);letter-spacing:-1px;background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}
+.stats span{font-size:13px;color:var(--dim);line-height:1.45;display:block}
+section{padding:80px 0 0}
+h2{font-family:var(--mono);font-size:26px;letter-spacing:-1px;margin-bottom:10px}
+.sub{color:var(--dim);margin-bottom:28px;line-height:1.6;max-width:660px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.grid div{background:var(--bg);padding:24px}
+.grid h3{font:600 15px var(--mono);margin-bottom:8px}.grid h3 em{font-style:normal;color:var(--a);margin-right:8px}
+.grid p{color:var(--dim);font-size:14.5px;line-height:1.6}
+.tbl{border:1px solid var(--line);border-radius:14px;overflow-x:auto;background:var(--bg)}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:760px}
+th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:center;vertical-align:middle}
+thead th{font:600 13px var(--mono);color:var(--fg);background:var(--bg2);line-height:1.3}
+td{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--dim)}
+td.cat{font:600 13px var(--sans);color:var(--fg);text-align:left;width:150px;border-right:1px solid var(--line)}
+td.bm{font-family:var(--sans);color:var(--fg);text-align:left}
+td.bm small{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+td b{color:var(--fg);font-weight:700}
+.me{background:var(--hl)}thead th.me{color:var(--a)}
+td.me{color:var(--fg)}
+tbody tr:last-child td{border-bottom:none}
+.notes{margin-top:14px;color:var(--dim);font-size:13px;line-height:1.6}
+.notes p+p{margin-top:6px}
+.vs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.vs>div{border:1px solid var(--line);border-radius:14px;padding:22px;background:var(--bg2)}
+.vs>div.hot{border-color:var(--a)}
+.vs h3{font:600 15px var(--mono);margin-bottom:12px}.vs>div.hot h3{color:var(--a)}
+.vs ul{list-style:none}.vs li{color:var(--dim);font-size:14px;line-height:1.5;padding:6px 0;border-top:1px solid var(--line)}.vs li:first-child{border-top:none}
+.vs li b{color:var(--fg);font-weight:600}.vs a{color:var(--a)}
+.cta{margin-top:80px;text-align:center;border:1px solid var(--line);border-radius:16px;padding:46px 20px;background:var(--bg2)}
+.cta h2{font-size:28px}.cta p{color:var(--dim);margin:8px auto 22px;max-width:520px;line-height:1.6}
+.btn{display:inline-block;font:600 14px var(--mono);padding:11px 18px;border-radius:10px;text-decoration:none;margin:4px;border:1px solid var(--line)}
+.btn.main{background:var(--a);border-color:var(--a);color:#0b0c10}.btn:hover{filter:brightness(1.1)}
+footer{padding:90px 0 50px;color:var(--dim);font-size:13px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+@media (max-width:760px){td.cat,thead th:first-child{display:none}table{min-width:600px}th,td{padding:10px 8px}
+  td.bm,thead th:nth-child(2){position:sticky;left:0;z-index:1;background:var(--bg);min-width:140px;max-width:150px;box-shadow:1px 0 0 var(--line)}
+  thead th:nth-child(2){background:var(--bg2)}td.bm{font-size:13px}
+  nav .links{gap:14px}nav .links a.hide{display:none}.hero{padding:40px 0 10px}section{padding-top:56px}
+  .grid div{padding:20px}.cta{margin-top:56px;padding:34px 16px}footer{padding:60px 0 36px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <a class="logo" href="/"><i></i>me</a>
+  <div class="links">
+    <a class="hide" href="#bench" data-i18n="nav_bench">benchmarks</a>
+    <a href="/#pricing" data-i18n="nav_pricing">pricing</a>
+    <a href="/account" data-i18n="nav_account">account</a>
+    <div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ru">RU</button></div>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1><span>Me AI</span></h1>
+  <p data-i18n="lead">The model built into <b>me</b>. Sign in and it is already there: no API keys, no provider setup. Its <b>Improver</b> engine tunes every request for agent work: planning, editing files, running tests.</p>
+  <div class="stats">
+    <div><b>~155</b><span data-i18n="s1">tokens per second, output</span></div>
+    <div><b>2.6 s</b><span data-i18n="s2">to the first token (median)</span></div>
+    <div><b>14/14</b><span data-i18n="s3">real coding tasks solved in our eval</span></div>
+    <div><b>0</b><span data-i18n="s4">keys to set up, included in every plan</span></div>
+  </div>
+</div>
+
+<section id="bench">
+  <h2 data-i18n="b_h">benchmarks</h2>
+  <p class="sub" data-i18n="b_sub">Me AI next to the leading frontier models on the benchmarks they are usually compared on. All values are percentages.</p>
+  <div class="tbl"><table>
+    <thead><tr><th></th><th></th><th class="me">Me AI</th><th>Gemini 4 Argon</th><th>GPT-6 Astra</th><th>Claude Fable 5.1</th><th>Claude Opus 5.5</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+  <div class="notes">
+    <p data-i18n="n1">Me AI: published results of its base model on the same benchmarks; the Improver engine is not included in these numbers. Other models: results published by their developers. — means no comparable published result.</p>
+  </div>
+</section>
+
+<section>
+  <h2 data-i18n="sp_h">speed</h2>
+  <p class="sub" data-i18n="sp_sub">Measured on me-agent.ru through the same endpoint the agent uses, median of three runs.</p>
+  <div class="tbl"><table style="min-width:520px">
+    <thead><tr><th style="text-align:left" data-i18n="sp_c0">answer</th><th data-i18n="sp_c1">first token</th><th data-i18n="sp_c2">output speed</th><th data-i18n="sp_c3">total</th></tr></thead>
+    <tbody>
+      <tr><td class="bm" data-i18n="sp_r1">short, ~160 tokens</td><td>2.6 s</td><td>~151 tok/s</td><td>4.2 s</td></tr>
+      <tr><td class="bm" data-i18n="sp_r2">long, ~3.5k tokens</td><td>3.3 s</td><td>~160 tok/s</td><td>25.4 s</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2 data-i18n="ev_h">in the agent</h2>
+  <p class="sub" data-i18n="ev_sub">Benchmarks measure the model. This is what Improver adds on top: the same base model in me, with and without the engine, on our 14 coding tasks (bug fixes, features, refactors, hidden tests, AGENTS.md rules) and one open-ended prompt.</p>
+  <div class="vs">
+    <div class="hot"><h3>Me AI</h3><ul data-i18n="ev_me">
+      <li><b>14/14</b> tasks passed</li>
+      <li><b>371 s</b> for all 14 tasks</li>
+      <li>"make a site for a coffee shop": one polished page, works on a phone — <a href="https://me-agent.ru/s/gl1ch/coffee-meai/" target="_blank" rel="noopener">open</a></li>
+    </ul></div>
+    <div><h3 data-i18n="ev_base_h">base model without Improver</h3><ul data-i18n="ev_base">
+      <li><b>14/14</b> tasks passed</li>
+      <li><b>470 s</b> for all 14 tasks</li>
+      <li>the same prompt: a plainer site that scrolls sideways on a phone — <a href="https://me-agent.ru/s/gl1ch/coffee-base/" target="_blank" rel="noopener">open</a></li>
+    </ul></div>
+  </div>
+  <p class="notes" data-i18n="ev_note">The eval is in the repo: tests/eval_live.py. One run per model, so treat the timing as a rough figure.</p>
+</section>
+
+<section>
+  <h2 data-i18n="im_h">Improver</h2>
+  <p class="sub" data-i18n="im_sub">Our engine between the agent and the model.</p>
+  <div class="grid">
+    <div><h3><em>01</em><span data-i18n="im1h">made for agents</span></h3><p data-i18n="im1p">Each request gets instructions for tool use, planning and checking its own work, tuned on how me works.</p></div>
+    <div><h3><em>02</em><span data-i18n="im2h">nothing to set up</span></h3><p data-i18n="im2p">Your me account is the key. The model shows up in /model as soon as you sign in, on every device.</p></div>
+    <div><h3><em>03</em><span data-i18n="im3h">fair limits</span></h3><p data-i18n="im3p">Usage counts in 5-hour and weekly windows. /usage shows where you are; Plus and Pro raise the limits.</p></div>
+  </div>
+</section>
+
+<div class="cta">
+  <h2 data-i18n="cta_h">try Me AI</h2>
+  <p data-i18n="cta_p">Install me, sign in and pick me-ai in /model. The free plan includes it.</p>
+  <a class="btn main" href="/" data-i18n="cta_i">install me</a><a class="btn" href="/#pricing" data-i18n="cta_p2">see plans</a>
+</div>
+
+<footer><span>me v__VERSION__</span><span><a href="/" data-i18n="home">home</a> · <a href="/account" data-i18n="nav_account">account</a> · <a href="/changelog" data-i18n="chg">changelog</a></span></footer>
+</div>
+
+<script>
+// [category, benchmark, note, Me AI, Gemini 4 Argon, GPT-6 Astra, Claude Fable 5.1, Claude Opus 5.5]
+const ROWS = [
+  ["Knowledge work", "Vals Index", "", null, 68.9, 63.1, 65.8, 67.0],
+  ["", "AutomationBench", "score", 29.7, 51.3, 41.4, 31.4, 42.5],
+  ["", "Vals Finance Agent v2", "", 61.4, 65.4, 53.5, 58.9, 58.6],
+  ["", "Harvey's Legal Agent Benchmark", "", 10.0, 19.6, 5.4, 6.7, 3.8],
+  ["Agentic coding", "DeepSWE v1.1", "", 73.8, 77.9, 74.1, 67.4, 74.2],
+  ["", "FrontierSWE v2", "", null, 55.0, 65.5, 56.3, 62.3],
+  ["", "Vibe Code Bench", "", null, 91.9, 89.6, 90.3, 90.3],
+  ["", "Terminal-Bench 4.0", "", null, 57.4, 58.2, 57.9, 66.4],
+  ["ML engineering", "PostTrainBench", "", null, 45.3, 44.3, 40.2, 49.3],
+  ["Science and math", "Terminal-Bench Science 0.1", "", null, 57.6, 68.1, 52.6, 63.3],
+  ["", "LABBench 2", "", 86.2, 88.8, 85.4, 68.6, 73.1],
+  ["", "RiemannBench", "", null, 76.0, 72.0, 65.6, 69.6],
+  ["Long context", "GraphWalks", "up to 128k, BFS (F1)", null, 99.7, 98.7, 91.4, 90.6],
+  ["", "GraphWalks", "256k to 1M, BFS (F1)", null, 84.2, 71.8, 65.0, 66.8],
+  ["Computer use", "Agent's Last Exam", "pass rate", null, 39.5, 34.2, null, 38.2],
+  ["", "OSWorld-2.0", "offline subset, partial score", 59.0, 69.2, 72.6, null, null],
+  ["Multimodal understanding", "Chartography", "", 42.5, 71.6, 71.0, 46.2, 66.3],
+  ["", "LVBench", "", 87.8, 91.7, 87.5, 79.7, 83.7],
+  ["Cybersecurity", "CWE-bench v1", "", 47.2, 68.0, 68.0, 58.0, 67.0],
+];
+const RU = {
+  title: "Me AI — модель, встроенная в me",
+  desc: "Me AI: модель, встроенная в me и настроенная движком Improver для работы агента. Скорость, бенчмарки и тарифы.",
+  nav_bench: "бенчмарки", nav_pricing: "тарифы", nav_account: "аккаунт", home: "главная", chg: "изменения",
+  lead: "Модель, встроенная в <b>me</b>. Войдите в аккаунт, и она уже там: без API-ключей и настройки провайдера. Движок <b>Improver</b> настраивает каждый запрос под работу агента: планирование, правку файлов, запуск тестов.",
+  s1: "токенов в секунду на выходе", s2: "до первого токена (медиана)", s3: "реальных задач по коду решено в нашем eval", s4: "ключей настраивать, входит в каждый тариф",
+  b_h: "бенчмарки", b_sub: "Me AI рядом с ведущими frontier-моделями на бенчмарках, по которым их обычно сравнивают. Все значения в процентах.",
+  n1: "Me AI: опубликованные результаты её базовой модели на тех же бенчмарках; вклад движка Improver в эти цифры не входит. Остальные модели: результаты, опубликованные их разработчиками. — означает, что сопоставимого опубликованного результата нет.",
+  sp_h: "скорость", sp_sub: "Измерено на me-agent.ru через тот же endpoint, что использует агент, медиана трёх запусков.",
+  sp_c0: "ответ", sp_c1: "первый токен", sp_c2: "скорость вывода", sp_c3: "всего", sp_r1: "короткий, ~160 токенов", sp_r2: "длинный, ~3.5k токенов",
+  ev_h: "в агенте", ev_sub: "Бенчмарки меряют модель. Здесь видно, что добавляет Improver: та же базовая модель в me с движком и без него, на наших 14 задачах по коду (баги, фичи, рефакторинг, скрытые тесты, правила AGENTS.md) и одном открытом запросе.",
+  ev_me: '<li><b>14/14</b> задач решено</li><li><b>371 с</b> на все 14 задач</li><li>«создай сайт для кофейни»: одна аккуратная страница, работает на телефоне — <a href="https://me-agent.ru/s/gl1ch/coffee-meai/" target="_blank" rel="noopener">открыть</a></li>',
+  ev_base_h: "базовая модель без Improver",
+  ev_base: '<li><b>14/14</b> задач решено</li><li><b>470 с</b> на все 14 задач</li><li>тот же запрос: сайт попроще, на телефоне прокручивается вбок — <a href="https://me-agent.ru/s/gl1ch/coffee-base/" target="_blank" rel="noopener">открыть</a></li>',
+  ev_note: "Eval лежит в репозитории: tests/eval_live.py. По одному запуску на модель, так что время приблизительное.",
+  im_sub: "Наш движок между агентом и моделью.",
+  im1h: "сделан для агентов", im1p: "Каждый запрос получает инструкции по работе с инструментами, планированию и самопроверке, настроенные под то, как работает me.",
+  im2h: "ничего не настраивать", im2p: "Ключ — ваш аккаунт me. Модель появляется в /model сразу после входа, на всех устройствах.",
+  im3h: "честные лимиты", im3p: "Расход считается в окнах по 5 часов и по неделе. /usage показывает, сколько осталось; Plus и Pro поднимают лимиты.",
+  cta_h: "попробуйте Me AI", cta_p: "Установите me, войдите и выберите me-ai в /model. Бесплатный тариф её включает.", cta_i: "установить me", cta_p2: "тарифы",
+  cat: {"Knowledge work": "Работа со знаниями", "Agentic coding": "Агентное программирование", "ML engineering": "ML-инженерия", "Science and math": "Наука и математика",
+    "Long context": "Длинный контекст", "Computer use": "Управление компьютером", "Multimodal understanding": "Мультимодальность", "Cybersecurity": "Кибербезопасность"},
+  note: {"score": "оценка", "up to 128k, BFS (F1)": "до 128k, BFS (F1)", "256k to 1M, BFS (F1)": "от 256k до 1M, BFS (F1)", "pass rate": "доля пройденных", "offline subset, partial score": "офлайн-подмножество, частичный балл"}
+};
+const EN_TITLE = document.title, EN_DESC = document.querySelector('meta[name="description"]').content;
+const EN = {}; document.querySelectorAll("[data-i18n]").forEach(e => EN[e.dataset.i18n] = e.innerHTML);
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function rows(l) {
+  const span = {}; let cur = 0;
+  ROWS.forEach((r, i) => { if (r[0]) cur = i; span[cur] = (span[cur] || 0) + 1; });
+  return ROWS.map((r, i) => {
+    const nums = r.slice(3), best = Math.max(...nums.filter(v => v != null));
+    const cat = r[0] ? `<td class="cat" rowspan="${span[i]}">${esc(l === "ru" ? RU.cat[r[0]] : r[0])}</td>` : "";
+    const note = r[2] ? `<small>${esc(l === "ru" ? RU.note[r[2]] : r[2])}</small>` : "";
+    const cells = nums.map((v, j) => `<td${j ? "" : ' class="me"'}>${v == null ? "—" : v === best ? `<b>${v.toFixed(1)}</b>` : v.toFixed(1)}</td>`).join("");
+    return `<tr>${cat}<td class="bm">${esc(r[1])}${note}</td>${cells}</tr>`;
+  }).join("");
+}
+function detect() {
+  const q = new URLSearchParams(location.search).get("lang");
+  if (q === "ru" || q === "en") return q;
+  try { const s = localStorage.getItem("me-lang"); if (s === "ru" || s === "en") return s; } catch (e) {}
+  for (const l of (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || "en"])) {
+    const c = String(l).toLowerCase().slice(0, 2);
+    if (c === "ru" || c === "be" || c === "kk") return "ru";
+    if (c === "en") return "en";
+  }
+  return "en";
+}
+function setLang(l, save) {
+  document.documentElement.lang = l;
+  document.querySelectorAll("[data-i18n]").forEach(e => { const v = l === "ru" ? RU[e.dataset.i18n] : EN[e.dataset.i18n]; if (v != null) e.innerHTML = v; });
+  document.title = l === "ru" ? RU.title : EN_TITLE;
+  document.querySelector('meta[name="description"]').content = l === "ru" ? RU.desc : EN_DESC;
+  document.querySelectorAll(".lang button").forEach(b => b.classList.toggle("on", b.dataset.l === l));
+  document.getElementById("rows").innerHTML = rows(l);
+  if (save) try { localStorage.setItem("me-lang", l); } catch (e) {}
+}
+document.querySelectorAll(".lang button").forEach(b => b.onclick = () => setLang(b.dataset.l, true));
+setLang(detect(), false);
+</script>
+</body>
+</html>

@@ -779,6 +779,11 @@ def changelog(req: Request):
     return HTMLResponse(page("changelog.html", req).body.decode().replace("__CHANGELOG__", changelog_html()))
 
 
+@app.get("/ai")
+def ai_page(req: Request):
+    return page("ai.html", req)
+
+
 @app.get("/account")
 def account(req: Request):
     return page("account.html", req)
