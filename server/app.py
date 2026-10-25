@@ -731,6 +731,11 @@ def install_ps(req: Request):
 
 def page(name, req):
     html = (HERE / "site" / name).read_text("utf-8")
+    import plans  # late: plans imports this module
+    for k, v in plans.PLANS.items():  # prices and limits on the landing come from the real plans
+        for f in ("price", "5h", "week"):
+            n = v[f]
+            html = html.replace(f"__{k}_{f}__".upper(), str(n) if f == "price" else f"{n / 1e6:g}M")
     return HTMLResponse(html.replace("__SERVER__", base_url(req)).replace("__VERSION__", client_version()))
 
 

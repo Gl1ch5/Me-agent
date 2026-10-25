@@ -100,6 +100,17 @@ nav .links{align-items:center}
 @media (max-width:760px){.shots figure,.shots figure.half{grid-column:span 6}.shots figure.wide{grid-column:span 6}}
 .grid .app{display:block;color:inherit;text-decoration:none;background:var(--bg);padding:26px}.apps .app:hover h3 span{color:var(--a,#8b7cff)}
 .apps .app a{color:var(--a,#8b7cff)}
+.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.plan{border:1px solid var(--line);border-radius:14px;padding:24px;background:var(--bg2);display:flex;flex-direction:column}
+.plan.hot{border-color:var(--a);box-shadow:0 20px 60px -30px rgba(139,124,255,.45)}
+.plan h3{font:700 15px var(--mono);display:flex;justify-content:space-between;align-items:center}
+.plan h3 small{font:600 11px var(--mono);color:var(--bg);background:var(--a);border-radius:5px;padding:2px 7px}
+.plan .pr{font:700 34px var(--mono);letter-spacing:-1px;margin:14px 0 2px}.plan .pr span{font:500 14px var(--sans);color:var(--dim);letter-spacing:0}
+.plan ul{list-style:none;margin:14px 0 20px;flex:1}.plan li{color:var(--dim);font-size:14px;line-height:1.5;padding:6px 0;border-top:1px solid var(--line)}
+.plan li b{color:var(--fg);font-weight:600}.plan .btn{text-align:center;margin:0}
+.perks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:16px}
+.perks div{border:1px dashed var(--line);border-radius:14px;padding:18px 20px;color:var(--dim);font-size:14px;line-height:1.6}
+.perks b{color:var(--fg)}
 </style>
 </head>
 <body>
@@ -107,13 +118,14 @@ nav .links{align-items:center}
 <nav>
   <a class="logo" href="/"><i></i>me</a>
   <div class="links">
-    <a href="#apps" data-i18n="nav_apps">apps</a>
+    <a href="#pricing" data-i18n="nav_pricing">pricing</a>
+    <a class="hide" href="#apps" data-i18n="nav_apps">apps</a>
     <a class="hide" href="#features" data-i18n="nav_features">features</a>
     <a class="hide" href="#tour" data-i18n="nav_tour">screens</a>
     <a class="hide" href="#skills" data-i18n="nav_skills">skills</a>
     <a class="hide" href="#open" data-i18n="nav_open">open source</a>
     <a class="hide" href="#commands" data-i18n="nav_commands">commands</a>
-    <a href="/changelog" data-i18n="nav_changes">changelog</a>
+    <a class="hide" href="/changelog" data-i18n="nav_changes">changelog</a>
     <a href="/account" data-i18n="nav_account">account</a>
     <div class="lang" role="group" aria-label="Language"><button data-l="en">EN</button><button data-l="ru">RU</button></div>
   </div>
@@ -121,7 +133,7 @@ nav .links{align-items:center}
 
 <div class="hero">
   <h1><span data-i18n="h1a">your agent,</span><br><span data-i18n="h1b">everywhere.</span></h1>
-  <p data-i18n="hero_p"><b>me</b> is a minimal coding agent in <b>one Python file</b>. Your models, API keys, prompts, skills and chats live in the cloud — install on any machine, log in, and everything is already there.</p>
+  <p data-i18n="hero_p"><b>me</b> is a minimal coding agent in <b>one Python file</b>. Your models, API keys, prompts, skills and chats live in the cloud — install on any machine, log in, and everything is already there. No API key yet? Log in and use <b>Me AI</b>, the built-in model.</p>
   <div class="install">
     <div class="tabs"><button class="on" data-t="sh">macOS / Linux</button><button data-t="ps">Windows</button></div>
     <div class="cmd"><span class="p">$</span><code id="cmd">curl -fsSL __SERVER__/i | sh</code><button class="copy" id="cp" data-i18n="copy">copy</button></div>
@@ -129,10 +141,10 @@ nav .links{align-items:center}
     <div class="note" data-i18n="note">Needs Python 3.8+. No pip, no node, no dependencies. Then just type <code>me</code>.</div>
   </div>
   <div class="stats">
-    <div><b>&lt;1k</b><span data-i18n="st1">tokens before you say hello</span></div>
+    <div><b>~2k</b><span data-i18n="st1">tokens before you say hello</span></div>
     <div><b>1</b><span data-i18n="st2">Python file, stdlib only</span></div>
     <div><b>0</b><span data-i18n="st3">dependencies to install</span></div>
-    <div><b>∞</b><span data-i18n="st4">any OpenAI-compatible model</span></div>
+    <div><b>0 ₽</b><span data-i18n="st4">to start: Me AI is free, or bring your own key</span></div>
   </div>
 </div>
 
@@ -143,26 +155,26 @@ nav .links{align-items:center}
   <p class="sub" data-i18n="how_sub">No setup to repeat. Your account carries the whole environment.</p>
   <div class="steps">
     <div><h3 data-i18n="s1h">install</h3><p data-i18n="s1p">One command from the box above. Python 3.8+ is all it needs.</p></div>
-    <div><h3 data-i18n="s2h">log in</h3><p data-i18n="s2p">Type <code>me</code>, then <code>/login</code>. Models, keys, prompt, skills, themes and chats are already there.</p></div>
-    <div><h3 data-i18n="s3h">continue anywhere</h3><p data-i18n="s3p">Terminal, browser tab, phone app or Telegram. The same session, live, within a second.</p></div>
+    <div><h3 data-i18n="s2h">log in</h3><p data-i18n="s2p">Type <code>me</code>, then <code>/login</code>. Me AI works right away, and your models, keys, skills and chats are already there.</p></div>
+    <div><h3 data-i18n="s3h">continue anywhere</h3><p data-i18n="s3p">Terminal, browser tab, phone app or the Telegram bot. The same session, live, within a second.</p></div>
   </div>
 </section>
 
 <section id="features">
   <h2 data-i18n="f_h">tiny on purpose</h2>
-  <p class="sub" data-i18n="f_sub">Most agents spend 10–20k tokens before you say hello. me starts under 1k: a sharp system prompt and a few compact tools, web search included. Everything else loads only when it's needed.</p>
+  <p class="sub" data-i18n="f_sub">Most agents spend 10–20k tokens before you say hello. me starts at about 2k: a sharp system prompt and a few compact tools, web search included. Everything else loads only when it's needed.</p>
   <div class="grid">
     <div><h3><em>01</em><span data-i18n="f1h">one file</span></h3><p data-i18n="f1p">Stdlib Python. Read it, fork it, run it anywhere Python runs: Linux, macOS, Windows, a server, a Raspberry Pi.</p></div>
     <div><h3><em>02</em><span data-i18n="f2h">cloud sync</span></h3><p data-i18n="f2p">Config, providers, keys, system prompt, skills and full chat history follow your account. New laptop? <code>me</code> → log in → done.</p></div>
-    <div><h3><em>03</em><span data-i18n="f3h">any model</span></h3><p data-i18n="f3p">Any OpenAI-compatible API: chat/completions or responses, reasoning effort, streaming thinking, custom names and context sizes.</p></div>
+    <div><h3><em>03</em><span data-i18n="f3h">Me AI or any model</span></h3><p data-i18n="f3p"><b>Me AI</b> is built in: log in and it works, no key needed. Or plug in any OpenAI-compatible API with your own key, reasoning effort included.</p></div>
     <div><h3><em>04</em><span data-i18n="f4h">skills, not MCP</span></h3><p data-i18n="f4p">A skill is one .py file: instructions plus actions. About 15 tokens idle. MCP servers also work, loaded lazily the same way.</p></div>
     <div><h3><em>05</em><span data-i18n="f5h">goals and plans</span></h3><p data-i18n="f5p">A live <code>todo</code> checklist in every UI. <code>/goal</code> works until the goal is done <b>and verified</b>, or tells you exactly what blocks it.</p></div>
     <div><h3><em>06</em><span data-i18n="f6h">safe edits</span></h3><p data-i18n="f6p">A checkpoint per turn gives you <code>/undo</code>. The web UI shows a diff to keep or revert. Permissions: read-only, ask, or full.</p></div>
     <div><h3><em>07</em><span data-i18n="f7h">cloud sandbox</span></h3><p data-i18n="f7p">Start in the terminal, continue in the browser or Telegram. The session and project files follow you, isolated on the server.</p></div>
     <div><h3><em>08</em><span data-i18n="f8h">web app on your phone</span></h3><p data-i18n="f8p"><code>me web</code> locally, or the cloud <code>/app</code> as an installable PWA with attachments and push when a task is done.</p></div>
-    <div><h3><em>09</em><span data-i18n="f9h">background and preview</span></h3><p data-i18n="f9p">"Do X and notify me": tasks keep running after you close the page. The site the agent built opens on your phone by link.</p></div>
+    <div><h3><em>09</em><span data-i18n="f9h">reminders and background</span></h3><p data-i18n="f9p">"Check the logs in 2 hours", "every morning send me a summary": the task comes back to the same chat and runs in the cloud, even with your laptop off.</p></div>
     <div><h3><em>10</em><span data-i18n="f10h">plugins and voice</span></h3><p data-i18n="f10p">Plugins change me itself: commands, tools, keys, themes. Hold space to dictate with Groq Whisper.</p></div>
-    <div><h3><em>11</em><span data-i18n="f11h">your own Telegram bot</span></h3><p data-i18n="f11p">Every account sets its own bot. The agent's <code>notify</code> tool sends you messages and files.</p></div>
+    <div><h3><em>11</em><span data-i18n="f11h">Telegram bot</span></h3><p data-i18n="f11p">Use the standard <a href="https://t.me/meagentru_bot">@meagentru_bot</a> or link your own. Sign in right from the bot, chat by text, voice or photos, get files from <code>notify</code>.</p></div>
     <div><h3><em>12</em><span data-i18n="f12h">2FA if you want</span></h3><p data-i18n="f12p">Username and password by default. Attach Google Authenticator, Aegis or 1Password in one command.</p></div>
   </div>
 </section>
@@ -184,12 +196,12 @@ nav .links{align-items:center}
 </section>
 
 <section id="all">
-  <h2 data-i18n="a_h">everything it can do</h2>
-  <p class="sub" data-i18n="a_sub">The short list above is only the start. Here is the full one.</p>
+  <h2 data-i18n="all_h">everything it can do</h2>
+  <p class="sub" data-i18n="all_sub">The short list above is only the start. Here is the full one.</p>
   <div class="cols">
-    <div><h3 data-i18n="a1h">agent</h3><ul data-i18n="a1l"><li>modes: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> until done and verified, exit codes for CI</li><li>live todo list, self-check before "done"</li><li>subagents with <code>task(agent, prompt)</code></li><li>AGENTS.md always in context, <code>/init</code></li><li>checkpoint per turn, <code>/undo</code>, diff review</li><li>permissions: read-only, ask, full + allow-list</li><li>context meter, <code>/compact</code>, <code>/autocompact</code></li><li>cost per task, session and day, limits</li><li>web search and fetch built in</li></ul></div>
-    <div><h3 data-i18n="a2h">extend</h3><ul data-i18n="a2l"><li>skills: one .py file, about 15 tokens idle</li><li>plugins that change me itself</li><li>MCP servers, loaded lazily</li><li>marketplace with ratings, versions, auto-update</li><li>themes: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>custom agent modes as a .md file</li><li>any OpenAI-compatible model, reasoning effort</li></ul></div>
-    <div><h3 data-i18n="a3h">cloud</h3><ul data-i18n="a3l"><li>sync of config, keys, skills, themes and every chat</li><li>live sync between devices within a second</li><li>workspaces: project files with 3-way merge</li><li>isolated cloud sandboxes (bubblewrap)</li><li>background tasks, schedules, notifications</li><li>preview of the built site by link</li><li>GitHub: clone, branch, commit, push, PR</li><li>your own Telegram bot per account</li><li>web push, voice input, installable PWA</li><li>2FA, device list, self-hosting</li></ul></div>
+    <div><h3 data-i18n="all1h">agent</h3><ul data-i18n="all1l"><li>modes: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> until done and verified, exit codes for CI</li><li>live todo list, self-check before "done"</li><li>subagents with <code>task(agent, prompt)</code></li><li>AGENTS.md always in context, <code>/init</code></li><li>checkpoint per turn, <code>/undo</code>, diff review</li><li>permissions: read-only, ask, full + allow-list</li><li>context meter, <code>/compact</code>, <code>/autocompact</code></li><li>cost per task, session and day, limits</li><li>web search and fetch built in</li></ul></div>
+    <div><h3 data-i18n="all2h">extend</h3><ul data-i18n="all2l"><li>skills: one .py file, about 15 tokens idle</li><li>plugins that change me itself</li><li>MCP servers, loaded lazily</li><li>marketplace with ratings, versions, auto-update</li><li>themes: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>custom agent modes as a .md file</li><li>Me AI built in, or any OpenAI-compatible model</li></ul></div>
+    <div><h3 data-i18n="all3h">cloud</h3><ul data-i18n="all3l"><li>sync of config, keys, skills, themes and every chat</li><li>live sync between devices within a second</li><li>workspaces: project files with 3-way merge</li><li>isolated cloud sandboxes (bubblewrap)</li><li>background tasks, schedules, notifications</li><li>preview of the built site by link</li><li>GitHub: clone, branch, commit, push, PR</li><li>Telegram: the standard bot or your own, sign in from the bot</li><li>reminders and cron jobs that continue the chat</li><li>web push, voice input, installable PWA</li><li>2FA, device list, self-hosting</li></ul></div>
   </div>
 </section>
 
@@ -243,6 +255,7 @@ Call list_prs before labeling.
     <tr><td>/agent /theme</td><td data-i18n="c4">modes (code, design, plan, review…), themes</td></tr>
     <tr><td>/skills /plugins</td><td data-i18n="c5">manage skills, plugins and the secrets they use</td></tr>
     <tr><td>/sessions /new</td><td data-i18n="c6">resume any chat from any machine</td></tr>
+    <tr><td>/usage /invite</td><td data-i18n="c9">your plan and limits, your invite link</td></tr>
     <tr><td>/login /2fa /sync</td><td data-i18n="c7">cloud account, authenticator, sync now</td></tr>
     <tr><td>me -p "task"</td><td data-i18n="c8">headless one-shot · <code>me --rpc</code> JSON-lines for your own UI</td></tr>
   </table>
@@ -261,6 +274,27 @@ Call list_prs before labeling.
     <a class="app" href="/app"><h3><em>◎</em><span data-i18n="a6h">web app</span></h3><p data-i18n="a6p">Nothing to install: open it in any browser, add it to the home screen as an app.</p></a>
   </div>
   <p class="sub" style="margin-top:16px"><a href="https://github.com/Gl1ch5/Me-agent/releases" data-i18n="a_all">all downloads and nightly builds →</a></p>
+</section>
+
+<section id="pricing">
+  <h2 data-i18n="p_h">pricing</h2>
+  <p class="sub" data-i18n="p_sub">Plans only cover <b>Me AI</b>, the built-in model. Your own API keys and every other feature are free and have no limits.</p>
+  <div class="plans">
+    <div class="plan"><h3>Free</h3><div class="pr">0 ₽</div><ul>
+      <li><b>__FREE_5H__</b> <span data-i18n="p_5h">tokens every 5 hours</span></li><li><b>__FREE_WEEK__</b> <span data-i18n="p_wk">tokens a week</span></li><li data-i18n="p_f3">Me AI after <code>/login</code>, no key</li></ul>
+      <a class="btn" href="/account#register" data-i18n="p_free">create an account</a></div>
+    <div class="plan hot"><h3>Plus <small data-i18n="p_pop">popular</small></h3><div class="pr">__PLUS_PRICE__ ₽<span data-i18n="p_mo"> / month</span></div><ul>
+      <li><b>__PLUS_5H__</b> <span data-i18n="p_5h">tokens every 5 hours</span></li><li><b>__PLUS_WEEK__</b> <span data-i18n="p_wk">tokens a week</span></li><li data-i18n="p_x1">for everyday work</li></ul>
+      <a class="btn main" href="/account#plans" data-i18n="p_buy">get Plus</a></div>
+    <div class="plan"><h3>Pro</h3><div class="pr">__PRO_PRICE__ ₽<span data-i18n="p_mo"> / month</span></div><ul>
+      <li><b>__PRO_5H__</b> <span data-i18n="p_5h">tokens every 5 hours</span></li><li><b>__PRO_WEEK__</b> <span data-i18n="p_wk">tokens a week</span></li><li data-i18n="p_x2">for long goals and many agents at once</li></ul>
+      <a class="btn" href="/account#plans" data-i18n="p_buyp">get Pro</a></div>
+  </div>
+  <div class="perks">
+    <div data-i18n="p_pay"><b>Pay without a card.</b> Lolz (LZT Market) or Crypto Bot. A plan lasts 30 days, paying again adds 30 more.</div>
+    <div data-i18n="p_lim"><b>Fair limits.</b> A window starts with your first request and resets by itself. <code>/usage</code> shows what is left.</div>
+    <div data-i18n="p_ref"><b>Invite friends.</b> A friend gets +7 days on their first payment, you get 20% of each of their payments as days of your plan. <code>/invite</code></div>
+  </div>
 </section>
 
 <section id="open">
@@ -289,6 +323,14 @@ Call list_prs before labeling.
 <script>
 const S = "__SERVER__";
 const RU = {
+  nav_pricing: "тарифы", p_h: "тарифы",
+  p_sub: "Тарифы касаются только <b>Me AI</b>, встроенной модели. Свои ключи API и все остальные возможности бесплатны и без лимитов.",
+  p_5h: "токенов каждые 5 часов", p_wk: "токенов в неделю", p_f3: "Me AI после <code>/login</code>, без ключа", p_free: "создать аккаунт",
+  p_pop: "популярный", p_mo: " / мес", p_x1: "для ежедневной работы", p_x2: "для длинных целей и многих агентов сразу", p_buy: "взять Plus", p_buyp: "взять Pro",
+  p_pay: "<b>Оплата без карты.</b> Lolz (LZT Market) или Crypto Bot. Тариф действует 30 дней, повторная оплата добавляет ещё 30.",
+  p_lim: "<b>Честные лимиты.</b> Окно начинается с первого запроса и сбрасывается само. <code>/usage</code> покажет остаток.",
+  p_ref: "<b>Приглашайте друзей.</b> Друг получает +7 дней к первой оплате, а вы — 20% от каждой его оплаты днями своего тарифа. <code>/invite</code>",
+  c9: "ваш тариф и лимиты, ваша ссылка-приглашение",
   nav_apps: "приложения", a_h: "один агент — любой экран", a_sub: "Один аккаунт, чаты и навыки во всех приложениях. Выберите то, что подходит машине под рукой.",
   a1h: "терминал", a1p: "Полный агент в любом терминале: Windows, macOS, Linux, Termux. Одна команда установки вверху страницы.",
   a2h: "приложение для Windows", a2p: "Нативное окно с локальным агентом и проектами-папками. <b>me-desktop.exe</b>",
@@ -300,27 +342,27 @@ const RU = {
   nav_features: "возможности", nav_skills: "навыки", nav_open: "открытый код", nav_commands: "команды", nav_account: "аккаунт", nav_changes: "изменения",
   ver_p: "последняя версия — уже стоит? выполните <code>/update</code>",
   h1a: "ваш агент,", h1b: "везде.",
-  hero_p: "<b>me</b> — минималистичный агент для кода в <b>одном Python-файле</b>. Модели, ключи API, промпты, навыки и чаты живут в облаке: установите на любой машине, войдите, и всё уже на месте.",
+  hero_p: "<b>me</b> — минималистичный агент для кода в <b>одном Python-файле</b>. Модели, ключи API, промпты, навыки и чаты живут в облаке: установите на любой машине, войдите, и всё уже на месте. Ключа API ещё нет? Войдите и пользуйтесь <b>Me AI</b> — встроенной моделью.",
   copy: "копировать", copied: "скопировано",
   note: "Нужен Python 3.8+. Без pip, без node, без зависимостей. Затем просто наберите <code>me</code>.",
-  st1: "токенов до первого слова", st2: "файл на Python, только stdlib", st3: "зависимостей для установки", st4: "любая OpenAI-совместимая модель",
+  st1: "токенов до первого слова", st2: "файл на Python, только stdlib", st3: "зависимостей для установки", st4: "чтобы начать: Me AI бесплатно, или свой ключ",
   how_h: "три шага, любая машина", how_sub: "Настройку не нужно повторять. Весь ваш рабочий стенд лежит в аккаунте.",
   s1h: "установка", s1p: "Одна команда из блока выше. Нужен только Python 3.8+.",
-  s2h: "вход", s2p: "Наберите <code>me</code>, затем <code>/login</code>. Модели, ключи, промпт, навыки, темы и чаты уже на месте.",
-  s3h: "продолжайте где угодно", s3p: "Терминал, вкладка браузера, приложение на телефоне или Telegram. Та же сессия, вживую, за секунду.",
+  s2h: "вход", s2p: "Наберите <code>me</code>, затем <code>/login</code>. Me AI работает сразу, а ваши модели, ключи, навыки и чаты уже на месте.",
+  s3h: "продолжайте где угодно", s3p: "Терминал, вкладка браузера, приложение на телефоне или Telegram-бот. Та же сессия, вживую, за секунду.",
   f_h: "крошечный нарочно",
-  f_sub: "Большинство агентов тратят 10–20k токенов, пока вы не сказали ни слова. me стартует меньше чем с 1k: точный системный промпт и несколько компактных инструментов, включая веб-поиск. Всё остальное загружается только по необходимости.",
+  f_sub: "Большинство агентов тратят 10–20k токенов, пока вы не сказали ни слова. me стартует примерно с 2k: точный системный промпт и несколько компактных инструментов, включая веб-поиск. Всё остальное загружается только по необходимости.",
   f1h: "один файл", f1p: "Python на stdlib. Читайте, форкайте, запускайте везде, где есть Python: Linux, macOS, Windows, сервер, Raspberry Pi.",
   f2h: "облачная синхронизация", f2p: "Конфиг, провайдеры, ключи, системный промпт, навыки и вся история чатов следуют за аккаунтом. Новый ноутбук? <code>me</code> → войти → готово.",
-  f3h: "любая модель", f3p: "Любой OpenAI-совместимый API: chat/completions или responses, уровень рассуждений, потоковые мысли, свои имена и размеры контекста.",
+  f3h: "Me AI или любая модель", f3p: "<b>Me AI</b> встроена: войдите, и она работает без ключа. Или подключите любой OpenAI-совместимый API со своим ключом, с уровнем рассуждений.",
   f4h: "навыки, а не MCP", f4p: "Навык — один .py файл: инструкция и действия. В простое около 15 токенов. MCP-серверы тоже работают и загружаются лениво так же.",
   f5h: "цели и планы", f5p: "Живой чек-лист <code>todo</code> в каждом интерфейсе. <code>/goal</code> работает, пока цель не достигнута <b>и проверена</b>, либо точно говорит, что мешает.",
   f6h: "безопасные правки", f6p: "Контрольная точка на каждый ход даёт <code>/undo</code>. В вебе виден дифф: оставить или откатить. Разрешения: только чтение, спрашивать или полный доступ.",
   f7h: "облачная песочница", f7p: "Начните в терминале, продолжите в браузере или Telegram. Сессия и файлы проекта идут за вами, изолированно на сервере.",
   f8h: "веб-приложение на телефоне", f8p: "<code>me web</code> локально или облачное <code>/app</code> как устанавливаемое PWA: вложения и push, когда задача готова.",
-  f9h: "фон и предпросмотр", f9p: "«Сделай X и сообщи»: задача идёт дальше после закрытия страницы. Сайт, который собрал агент, открывается на телефоне по ссылке.",
+  f9h: "напоминания и фон", f9p: "«Через 2 часа проверь логи», «каждое утро присылай сводку»: задача вернётся в этот же чат и выполнится в облаке, даже если ноутбук выключен.",
   f10h: "плагины и голос", f10p: "Плагины меняют сам me: команды, инструменты, клавиши, темы. Удерживайте пробел, чтобы диктовать через Groq Whisper.",
-  f11h: "свой бот в Telegram", f11p: "У каждого аккаунта свой бот. Инструмент агента <code>notify</code> присылает сообщения и файлы.",
+  f11h: "Telegram-бот", f11p: "Пользуйтесь стандартным <a href=\"https://t.me/meagentru_bot\">@meagentru_bot</a> или привяжите своего. Вход прямо из бота, текст, голос и фото, файлы от <code>notify</code>.",
   f12h: "2FA по желанию", f12p: "По умолчанию логин и пароль. Подключите Google Authenticator, Aegis или 1Password одной командой.",
   sk_h: "навыки — это просто python",
   sk_sub: "Модель видит одну строку на навык. Когда он нужен, она загружает инструкцию и вызывает действия. Каждый вызов появляется как живая карточка со статусом, прогрессом и логами, а потом сворачивается в одну строку.",
@@ -344,11 +386,11 @@ const RU = {
   t4: "Модели и ключи, синхронизированные на все машины.", t5: "Маркетплейс: навыки, плагины, темы, агенты.", t6: "Облако: песочницы, Telegram, GitHub, push, фоновые задачи.",
   t7: "Темы, общие для терминала, веб-приложения и сайта.", t8: "Терминальный интерфейс с нечёткими командами через /.", t9: "Безопасность: 2FA, пароль, устройства.",
   nav_tour: "экраны",
-  a_h: "всё, что он умеет", a_sub: "Короткий список выше — только начало. Вот полный.",
-  a1h: "агент", a2h: "расширения", a3h: "облако",
-  a1l: "<li>режимы: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> до готового и проверенного результата, коды выхода для CI</li><li>живой список задач, самопроверка перед «готово»</li><li>субагенты через <code>task(agent, prompt)</code></li><li>AGENTS.md всегда в контексте, <code>/init</code></li><li>контрольная точка на каждый ход, <code>/undo</code>, просмотр диффа</li><li>разрешения: только чтение, спрашивать, полный доступ + список разрешённого</li><li>индикатор контекста, <code>/compact</code>, <code>/autocompact</code></li><li>стоимость задачи, сессии и дня, лимиты</li><li>веб-поиск и загрузка страниц встроены</li>",
-  a2l: "<li>навыки: один .py файл, около 15 токенов в простое</li><li>плагины, которые меняют сам me</li><li>MCP-серверы, загружаются лениво</li><li>маркетплейс с рейтингами, версиями и автообновлением</li><li>темы: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>свои режимы агента одним .md файлом</li><li>любая OpenAI-совместимая модель, уровень рассуждений</li>",
-  a3l: "<li>синхронизация конфига, ключей, навыков, тем и каждого чата</li><li>живая синхронизация между устройствами за секунду</li><li>рабочие области: файлы проектов с трёхсторонним слиянием</li><li>изолированные облачные песочницы (bubblewrap)</li><li>фоновые задачи, расписания, уведомления</li><li>предпросмотр собранного сайта по ссылке</li><li>GitHub: клонирование, ветки, коммиты, push, PR</li><li>свой Telegram-бот у каждого аккаунта</li><li>web push, голосовой ввод, устанавливаемое PWA</li><li>2FA, список устройств, свой сервер</li>",
+  all_h: "всё, что он умеет", all_sub: "Короткий список выше — только начало. Вот полный.",
+  all1h: "агент", all2h: "расширения", all3h: "облако",
+  all1l: "<li>режимы: code, design, plan, review, debug, docs, research</li><li><code>/goal</code> до готового и проверенного результата, коды выхода для CI</li><li>живой список задач, самопроверка перед «готово»</li><li>субагенты через <code>task(agent, prompt)</code></li><li>AGENTS.md всегда в контексте, <code>/init</code></li><li>контрольная точка на каждый ход, <code>/undo</code>, просмотр диффа</li><li>разрешения: только чтение, спрашивать, полный доступ + список разрешённого</li><li>индикатор контекста, <code>/compact</code>, <code>/autocompact</code></li><li>стоимость задачи, сессии и дня, лимиты</li><li>веб-поиск и загрузка страниц встроены</li>",
+  all2l: "<li>навыки: один .py файл, около 15 токенов в простое</li><li>плагины, которые меняют сам me</li><li>MCP-серверы, загружаются лениво</li><li>маркетплейс с рейтингами, версиями и автообновлением</li><li>темы: me-dark, me-light, mono, graphite, Nord, Tokyo Night, Gruvbox…</li><li>свои режимы агента одним .md файлом</li><li>встроенная Me AI или любая OpenAI-совместимая модель</li>",
+  all3l: "<li>синхронизация конфига, ключей, навыков, тем и каждого чата</li><li>живая синхронизация между устройствами за секунду</li><li>рабочие области: файлы проектов с трёхсторонним слиянием</li><li>изолированные облачные песочницы (bubblewrap)</li><li>фоновые задачи, расписания, уведомления</li><li>предпросмотр собранного сайта по ссылке</li><li>GitHub: клонирование, ветки, коммиты, push, PR</li><li>Telegram: стандартный бот или свой, вход прямо из бота</li><li>напоминания и задачи по расписанию, которые продолжают чат</li><li>web push, голосовой ввод, устанавливаемое PWA</li><li>2FA, список устройств, свой сервер</li>",
   title: "me — ваш агент, везде",
   desc: "Минималистичный агент для кода в одном Python-файле. Конфиг, ключи, навыки и чаты синхронизируются через облако: установите на любой машине и вы дома.",
   demo: "добавь повторы в http-клиент и запусти тесты"
