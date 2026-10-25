@@ -42,6 +42,26 @@ def main():
     assert all(re.fullmatch(r"[a-z0-9_]{1,32}", c) and 0 < len(d) and 0 < len(tr(d, "ru")) for c, d in COMMANDS)
     print("ok   telegram menu lists every command")
 
+    # an unlinked chat signs in from the bot: a button to the site (with the invite from t.me/<bot>?start=r<id>), then the site claims it
+    import sqlite3
+    from tgbot import Bot
+    db = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
+    db.execute("CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT)")
+    db.execute("CREATE TABLE tg_links(chat_id INTEGER, user_id INTEGER, created REAL, bot TEXT, quiet INTEGER DEFAULT 0)")
+    db.execute("INSERT INTO users VALUES(7, 'ann.b')")
+    b, out = Bot(db, None, lambda uid: {}, None, None), []
+    b.token, b.username = "x", "mebot"
+    b.call = lambda m, **kw: out.append((m, kw)) or {"message_id": 1}
+    b.config = lambda uid: {}
+    b.handle({"update_id": 1, "message": {"chat": {"id": 55}, "from": {"language_code": "en"}, "text": "/start r7"}})
+    url = [kw for m, kw in out if m == "sendMessage"][-1]["reply_markup"]["inline_keyboard"][0][0]["url"]
+    assert "/account?tg=" in url and url.endswith("&ref=ann.b#register"), url
+    code = url.split("tg=")[1].split("&")[0]
+    assert b.claim("nope", 7) is None and b.uid_for(55) is None
+    assert b.claim(code, 7) == 55 and b.uid_for(55) == 7 and b.claim(code, 7) is None  # one use
+    assert any(m == "setChatMenuButton" for m, _ in out)
+    print("ok   telegram: sign in from the bot, invite links via start=r<id>")
+
     # push encryption round-trip (decrypt like a browser would, RFC 8291)
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec

@@ -207,6 +207,19 @@ def tg_link(l: TgLink | None = None, u=Depends(user)):
     return {"url": url}
 
 
+class TgClaim(BaseModel):
+    code: str
+
+
+@app.post("/api/tg/claim")
+def tg_claim(c: TgClaim, u=Depends(user)):
+    """Signed in from a bot's "sign in" button: link that Telegram chat to this account."""
+    for b in [global_bot, *bots.values()]:
+        if b.token and b.claim(c.code, u["id"]):
+            return {"ok": True, "bot": b.username}
+    raise HTTPException(400, "this sign-in link has expired: send /start to the bot again")
+
+
 @app.delete("/api/tg/link")
 def tg_unlink(u=Depends(user)):
     conn.execute("DELETE FROM tg_links WHERE user_id=?", (u["id"],))

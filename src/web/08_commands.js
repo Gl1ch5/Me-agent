@@ -158,7 +158,7 @@ const CMDS = {
   invite: ["invite friends: your link and rewards", "", async () => {
     const r = await api(MODE === "cloud" ? "/api/ref" : base + "/ref");
     const earned = Object.entries(r.days).map(([k, v]) => `${k[0].toUpperCase() + k.slice(1)} +${v} ${t("days")}`).join(", ") || "—";
-    say(`## ${t("Invite friends")}\n${r.link}\n\n- ${t("A friend gets")} **+${r.bonus} ${t("days")}** ${t("on their first plan payment.")}\n`
+    say(`## ${t("Invite friends")}\n${r.link}${r.tg ? "\nTelegram: " + r.tg : ""}\n\n- ${t("A friend gets")} **+${r.bonus} ${t("days")}** ${t("on their first plan payment.")}\n`
       + `- ${t("You get")} **${r.pct}%** ${t("of each of their payments back as days of your plan (Plus while you are on Free).")}\n`
       + `- ${t("Invited")}: ${r.invited} · ${t("paid")}: ${r.paid} · ${t("earned")}: ${earned}`);
   }],
