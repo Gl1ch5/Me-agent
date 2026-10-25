@@ -263,7 +263,7 @@ class TUIInput:
                 cmd, arg = parts
                 opts = []
                 if cmd == "model":
-                    opts = [(m["name"], m["name"], f"{m['id']} · {human(m.get('context') or 0)} ctx") for m in self.s.config["models"]]
+                    opts = [(m["name"], m["name"], f"{m['id']} · {human(m.get('context') or 0)} ctx") for m in self.s.models()]
                 elif cmd == "effort":
                     opts = [(e, e, "") for e in EFFORTS]
                 if opts:

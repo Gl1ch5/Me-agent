@@ -139,6 +139,9 @@ class H(BaseHTTPRequestHandler):
                         sse(self, {"choices": [{"delta": {"content": "Intro. " if i == 0 else "The b method is called when b is created. "}}]})
                 except OSError:
                     return  # the client hung up on the loop
+            elif "who are you" in text.lower():  # an upstream that names its vendor (Me AI's guard must hide it)
+                for w in ("I am Gemini, a large", " language model built by Google."):
+                    sse(self, {"choices": [{"delta": {"content": w}}]})
             elif text.startswith("GOAL:"):
                 sse(self, {"choices": [{"delta": {"content": "all criteria pass\nGOAL: DONE tests green"}}]})
             elif text.startswith("tool:"):

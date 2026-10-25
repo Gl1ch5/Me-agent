@@ -29,6 +29,7 @@
 | `src/21_main.py` | entry point / argv |
 | `src/web/` | web chat UI (same code for local `me web` and cloud `/app`; `02_transport.js` switches local vs cloud) |
 | `server/app.py` | FastAPI: auth, docs sync, marketplace (seeded from `server/market/` on start), `/me.py`, site pages |
+| `server/plans.py` | subscriptions (free/plus/pro: 5-hour + weekly windows of weighted tokens) and **Me AI**: `/api/ai/v1/chat/completions` adds the `PERSONA` prompt, forwards to the upstream (settings `ai_url`/`ai_key`/`ai_model`, never named to users), counts usage; `/api/plan`, `/api/admin/plan`. The client lists model `me-ai` (provider `me` = the account token) while logged in (`Store.models()`; never saved to the config), `/usage` shows the limits |
 | `server/cloud.py`, `routes_cloud.py` | cloud sandboxes (bubblewrap, `me.py --rpc` via FIFO), `/api/cloud/*` |
 | `server/features.py` | push, jobs/schedules (also `later` reminders), previews, notify, GitHub (OAuth, repo sessions, `POST /api/github/repos` creates a repo, cloning empty repos) |
 | `server/tgbot.py`, `tg_commands.py`, `tg_i18n.py` | Telegram bot: link codes, mirroring with an "open this session" button, a recap of earlier messages when a session is opened, slash commands (`/newrepo`, `/jobs`…), RU strings |
@@ -43,7 +44,7 @@
 - Core tests (fast, no deps): `python3 tests/test_core.py`. They use the mock LLM in `tests/mock_llm.py`, where a user message `tool:<name> <json>` makes the model call that tool.
 - TUI end-to-end: `python3 tests/test_tui.py` (needs `pyte`; pins `ME_LANG=en`).
 - Server suites (need `fastapi uvicorn httpx python-multipart`):
-  - `python3 tests/test_features.py` starts its own server.
+  - `python3 tests/test_features.py` and `tests/test_plans.py` start their own server.
   - `tests/test_cloud.py` runs against a server you start yourself, using the commands in its docstring.
 - Also run `tests/test_studio.py` and `tests/test_terminal.py`.
 - Web UI by hand: `node --check src/web/*.js`. For Playwright, use the preinstalled chromium (`executable_path="/opt/pw-browsers/chromium"`) and `wait_until="load"`, not `networkidle`, because the UI long-polls `/events`.

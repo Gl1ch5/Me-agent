@@ -13,6 +13,7 @@ Object.assign(RU, {
   "search the web for current facts and docs": "ищет в интернете актуальные факты и доки", "stay in the project folder unless asked": "не выходит за папку проекта без просьбы", "show a plan and wait for a go before big changes": "перед большими изменениями показывает план и ждёт «да»",
   "very short replies": "очень короткие ответы", "explain the why (learning mode)": "объясняет «почему» (режим обучения)", "git commit each finished task": "git-коммит после каждой задачи",
   "offer to create AGENTS.md in new projects": "предлагает создать AGENTS.md в новых проектах", "change only what the task needs": "меняет только то, что нужно для задачи", "ask before adding dependencies": "спрашивает перед добавлением зависимостей", "ask when the request is unclear": "переспрашивает, если запрос неясен", "use subagents for big separate jobs": "использует сабагентов для больших отдельных задач", "global memory across chats": "глобальная память между чатами", "load matching skills before a task": "подбирает и загружает подходящие скиллы перед задачей", "show a project map (files and symbols) with the first task": "даёт карту проекта (файлы и функции) с первой задачей", "suggest the next message (tab to accept)": "подсказывает следующее сообщение (tab — принять)", "comment the code it writes": "комментирует код, который пишет", "watch for security issues": "следит за проблемами безопасности", "end with a short recap and next steps": "в конце — краткий итог и следующие шаги", "publish static sites at a public link (me cloud)": "публикует статические сайты по публичной ссылке (облако me)", "no refactors or cleanups of code you did not ask about": "без рефакторинга и «улучшений» кода, о котором не просили",
+  "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю", "5 hours": "5 часов", "week": "неделя", "resets in": "сброс через", "until": "до", "/mo": "/мес",
   "System prompt (empty = default)": "Системный промпт (пусто = по умолчанию)", "Spending": "Расходы", "session": "сессия", "today": "сегодня",
 });
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -142,6 +143,14 @@ const CMDS = {
   cost: ["spending", "", () => {
     const u = state.session?.usage || {};
     say(`## ${t("Spending")}\n- ${t("session")}: **${money(u.cost || 0)}** · ↑${human(u.in || 0)} ↓${human(u.out || 0)}\n- ${t("today")}: **${money(state.day_cost || 0)}**`);
+  }],
+  usage: ["Me AI plan: 5-hour and weekly limits", "", async () => {
+    const p = await api(MODE === "cloud" ? "/api/plan" : base + "/plan"), now = Date.now() / 1000;
+    const left = s => { s = Math.max(0, Math.round(s)); return (s >= 86400 ? Math.floor(s / 86400) + "d " : "") + Math.floor(s % 86400 / 3600) + "h " + Math.floor(s % 3600 / 60) + "m"; };
+    const rows = p.windows.map(w => `- ${t(w.kind === "5h" ? "5 hours" : "week")}: \`${"█".repeat(Math.floor(w.pct / 10))}${"░".repeat(10 - Math.floor(w.pct / 10))}\` **${w.pct}%**`
+      + (w.resets ? ` · ${t("resets in")} ${left(w.resets - now)}` : ""));
+    const until = p.until ? ` (${t("until")} ${new Date(p.until * 1000).toLocaleDateString()})` : "";
+    say(`## Me AI · ${p.title}${until}\n${rows.join("\n")}\n- ${p.plans.map(x => `${x.title} ${x.price} ₽${x.price ? t("/mo") : ""}`).join(" · ")} — [me-agent.ru/account#plans](https://me-agent.ru/account#plans)`);
   }],
   todo: ["the agent's checklist", "", () => { const it = state.session?.todo || []; it.length ? say(it.map(i => `- [${i.s === "done" ? "x" : " "}] ${i.t}`).join("\n")) : note("—"); }],
   theme: ["color theme", "[name]", a => { const x = themeList.find(th => th.name === a); x ? setTheme(x.name) : pickTheme(); }],

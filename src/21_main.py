@@ -18,7 +18,7 @@ def main():
         return print(f"me {VERSION}")
     model = want and pick_model(store, want)
     if want and not model:
-        return print(f"me: no model matches {want!r}. models: " + ", ".join(m["name"] for m in store.config["models"]))
+        return print(f"me: no model matches {want!r}. models: " + ", ".join(m["name"] for m in store.models()))
     if args and args[0] == "studio":
         return run_studio(store, args[1:])
     if args and args[0] in ("-h", "--help"):
@@ -94,7 +94,7 @@ def stdin_ready():
 
 def pick_model(store, name):
     """-m: an exact model name, else the only one whose name or id contains it."""
-    ms = store.config.get("models") or []
+    ms = store.models()
     hit = [m for m in ms if m["name"] == name] or [m for m in ms if name.lower() in (m["name"] + " " + m.get("id", "")).lower()]
     return hit[0]["name"] if len(hit) == 1 else None
 

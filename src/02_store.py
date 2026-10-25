@@ -14,6 +14,10 @@ DEFAULT_CONFIG = {
 }
 
 
+ME_AI = {"name": "me-ai", "id": "me-ai", "provider": "me", "api": "chat", "context": 1000000, "max_out": "", "effort": "", "temperature": "",
+         "vision": True, "price": [0, 0, 0]}
+
+
 class Store:
     def __init__(self, home=HOME):
         self.home = Path(home)
@@ -42,13 +46,22 @@ class Store:
         jsave(self.home / "auth.json", self.auth)
 
     # models
+    def models(self):
+        """The user's models, plus Me AI while logged in. Me AI is never written to the config: a sandbox or a new device
+        that saved it before its first sync would replace the account's real config."""
+        ms = self.config["models"]
+        if self.auth.get("token") and not any(m.get("name") == ME_AI["name"] for m in ms):
+            return ms + [ME_AI]
+        return ms
+
     def model(self, name=None):
         """By name; an unknown name (a model deleted since) falls back to the default model, then to the first one."""
+        ms = self.models()
         for n in (name, self.config.get("model")):
-            for m in self.config["models"]:
+            for m in ms:
                 if n and m["name"] == n:
                     return m
-        return self.config["models"][0] if self.config["models"] else None
+        return ms[0] if ms else None
 
     def unique_model_name(self, mid, provider="", skip=None):
         """A display name no other model has: the id's last part, then more of the id, then the provider, then a number."""
@@ -75,6 +88,8 @@ class Store:
         return changed
 
     def provider(self, m):
+        if m.get("provider") == "me":  # Me AI: the cloud account's token, never stored in the synced config
+            return {"base_url": (self.auth.get("server") or SERVER).rstrip("/") + "/api/ai/v1", "api_key": self.auth.get("token", "")}
         return self.config["providers"].get(m.get("provider", ""), {})
 
     # sessions

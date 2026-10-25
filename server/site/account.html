@@ -13,6 +13,9 @@
 :root[data-theme="light"]{--bg:#fafaf8;--bg2:#f1f1ee;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}
 @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#fafaf8;--bg2:#f1f1ee;--bg3:#e9e9e4;--line:#e2e2dc;--fg:#1d1e24;--dim:#62657a;--faint:#c7c8cf}}
 *{box-sizing:border-box;margin:0;padding:0}
+.win{margin-top:12px}.win .row{font-size:13px}.meter{height:8px;border-radius:5px;background:var(--bg3);overflow:hidden;margin-top:6px}.meter i{display:block;height:100%;border-radius:5px}
+.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}.plans .card{margin-top:16px}.pl.cur{border-color:var(--a)}
+.pl .price{font:600 22px var(--mono);margin:10px 0}.pl ul{margin:0 0 14px 18px;font-size:13px;line-height:1.8}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased;font-size:14.5px}
 .wrap{max-width:1040px;margin:0 auto;padding:0 20px 80px}
 nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0 26px;gap:12px}
@@ -138,7 +141,7 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
 
 <div id="dash" class="hidden">
   <div class="tabs" id="tabs">
-    <button data-tab="overview">overview</button><button data-tab="cloud">cloud</button><button data-tab="models">models &amp; keys</button><button data-tab="skills">skills</button>
+    <button data-tab="overview">overview</button><button data-tab="plans">plan</button><button data-tab="cloud">cloud</button><button data-tab="models">models &amp; keys</button><button data-tab="skills">skills</button>
     <button data-tab="plugins">plugins</button><button data-tab="market">marketplace</button><button data-tab="sessions">sessions</button><button data-tab="workspaces">workspaces</button><button data-tab="security">security</button>
     <button data-tab="admin" class="hidden" id="tadmin">admin</button>
   </div>
@@ -151,6 +154,13 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
       <p class="dim" style="margin-bottom:10px">Run, then <code>/login</code> — config, keys, skills and chats appear instantly.</p>
       <code id="i1"></code><br><br><code id="i2"></code></div>
     <div class="card"><div class="row"><h2 style="margin:0">recent sessions</h2><button class="ghost sm" onclick="tab('sessions')">all</button></div><table id="recent" style="margin-top:10px"></table></div>
+  </div>
+
+  <div data-pane="plans">
+    <div class="card"><div class="row"><div><h2 style="margin:0">Me AI</h2><p class="dim" style="margin-top:4px">The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.</p></div>
+      <span class="tag on" id="plname">free</span></div><div id="plwin" style="margin-top:14px"></div></div>
+    <div class="plans" id="plcards"></div>
+    <p class="dim" style="margin-top:12px;font-size:13px">Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. Online payment is coming soon — to upgrade now, write to support.</p>
   </div>
 
   <div data-pane="models">
@@ -286,6 +296,9 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
       <div class="row" style="flex-wrap:nowrap"><input id="tgtok" type="password" onfocus="this.type='text'" placeholder="123456:ABC…"><button onclick="saveTg()">save</button></div><div class="err" id="tge"></div></div>
     <div class="card"><h2>GitHub sign-in</h2><p class="dim" style="margin-bottom:10px">Create an OAuth app at <a href="https://github.com/settings/developers" target="_blank" style="color:var(--a)">github.com/settings/developers</a> with callback URL <code id="ghcb"></code>, then paste its client ID and secret. Users then connect GitHub with one click.</p>
       <div class="row" style="flex-wrap:nowrap"><input id="ghcid" placeholder="client ID"><input id="ghcsec" type="password" onfocus="this.type='text'" placeholder="client secret"><button onclick="saveGhApp()">save</button></div><div class="err" id="ghae"></div></div>
+    <div class="card"><h2>subscriptions</h2><p class="dim" style="margin-bottom:10px">Give a user a plan. Days 0 = forever; plan free removes it.</p>
+      <div class="row" style="flex-wrap:nowrap"><input id="spu" placeholder="username"><select id="spp"><option value="plus">plus</option><option value="pro">pro</option><option value="free">free</option></select><input id="spd" type="number" value="31" style="max-width:90px"><button onclick="setPlan()">set</button></div>
+      <div class="err" id="spe"></div><div style="overflow-x:auto;margin-top:12px"><table id="aai"></table></div></div>
     <div class="card"><h2>cloud sandboxes</h2><table id="aworkers"></table></div>
     <div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
   </div>
@@ -364,7 +377,12 @@ document.querySelectorAll(".lang button").forEach(b => b.onclick = () => setLang
 // ── full-page translation layer: exact EN->RU dictionary + patterns, DOM walker, MutationObserver ──
 const pl = (n, a, b, c) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? c : d > 1 && d < 5 ? b : d === 1 ? a : c; };
 const RU_D = {
-  "overview": "обзор", "cloud": "облако", "models & keys": "модели и ключи", "skills": "навыки", "plugins": "плагины", "marketplace": "маркетплейс", "sessions": "сессии", "workspaces": "рабочие области", "security": "безопасность", "admin": "админ",
+  "overview": "обзор", "plan": "тариф", "cloud": "облако",
+  "The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.": "Собственная модель агента: выберите me-ai в /model, API-ключ не нужен. Использование идёт в счёт тарифа.",
+  "Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. Online payment is coming soon — to upgrade now, write to support.": "Лимиты сбрасываются сами: 5-часовое окно начинается с первого запроса, недельное — тоже. Онлайн-оплата скоро появится — чтобы перейти на тариф сейчас, напишите в поддержку.",
+  "5-hour limit": "лимит на 5 часов", "weekly limit": "лимит на неделю", "not started": "ещё не начат", "/ month": "/ мес", "5-hour and weekly limits": "лимиты на 5 часов и неделю", "free": "бесплатно", "Me AI model": "модель Me AI", 
+  "your plan": "ваш тариф", "soon": "скоро", "subscriptions": "подписки", "Give a user a plan. Days 0 = forever; plan free removes it.": "Выдать пользователю тариф. Дней 0 = навсегда; free снимает тариф.",
+  "requests 24h": "запросов за 24 ч", "plan set": "тариф выдан", "models & keys": "модели и ключи", "skills": "навыки", "plugins": "плагины", "marketplace": "маркетплейс", "sessions": "сессии", "workspaces": "рабочие области", "security": "безопасность", "admin": "админ",
   "work from anywhere": "работайте откуда угодно",
   "sign in with GitHub": "войти через GitHub", "or paste a token:": "или вставьте токен:", "GitHub sign-in": "вход через GitHub", "GitHub connected": "GitHub подключён", "client ID": "client ID", "client secret": "client secret", "secret set": "секрет задан",
   "Create an OAuth app at ": "Создайте OAuth-приложение на ", " with callback URL ": " с callback URL ", ", then paste its client ID and secret. Users then connect GitHub with one click.": ", затем вставьте его client ID и секрет. Тогда пользователи подключают GitHub одной кнопкой.",
@@ -604,6 +622,7 @@ function tab(name) {
   history.replaceState(null, "", "#" + name);
   if (name === "market") loadMarket();
   if (name === "admin") loadAdmin();
+  if (name === "plans") loadPlan();
   if (name === "cloud") loadCloud();
   if (name === "workspaces") { loadWs(); loadSites(); }
 }
@@ -1153,6 +1172,26 @@ async function saveGhApp() {
   try { await api("/api/admin/settings", b); $("ghae").className = "err okmsg"; $("ghae").textContent = "saved"; $("ghcsec").value = ""; }
   catch (e) { $("ghae").className = "err"; $("ghae").textContent = e.message; }
 }
+// ── plan: Me AI limits ──
+const left = t => { const s = Math.max(0, t - Date.now() / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + "d " : "") + h + "h " + m + "m"; };
+async function loadPlan() {
+  const st = await api("/api/plan");
+  $("plname").textContent = st.title + (st.until ? " · " + new Date(st.until * 1000).toLocaleDateString(LANG) : "");
+  $("plwin").innerHTML = st.windows.map(w => `<div class="win"><div class="row"><span>${w.kind === "5h" ? "5-hour limit" : "weekly limit"}</span>
+    <span class="dim">${w.pct}% · ${w.resets ? (LANG === "ru" ? "сброс через " : "resets in ") + left(w.resets) : "not started"}</span></div>
+    <div class="meter"><i style="width:${w.pct}%;background:${w.pct >= 90 ? "var(--err)" : w.pct >= 70 ? "var(--y)" : "var(--a)"}"></i></div></div>`).join("");
+  $("plcards").innerHTML = st.plans.map(p => `<div class="card pl${p.id === st.plan ? " cur" : ""}"><h2 style="margin:0">${esc(p.title)}</h2>
+    <div class="price">${p.price ? p.price + " ₽<span class=dim> / month</span>" : "free"}</div>
+    <ul class="dim"><li>Me AI model</li>${p.id === "free" ? "<li>5-hour and weekly limits</li>" : `<li>×${Math.round(p["5h"] / st.plans[0]["5h"])} ${LANG === "ru" ? "на 5 часов" : "per 5 hours"}</li>
+    <li>×${Math.round(p.week / st.plans[0].week)} ${LANG === "ru" ? "на неделю" : "per week"}</li>`}</ul>
+    ${p.id === st.plan ? '<span class="tag on">your plan</span>' : p.price ? '<button class="ghost sm" disabled>soon</button>' : ""}</div>`).join("");
+}
+async function setPlan() {
+  $("spe").textContent = "";
+  try { await api("/api/admin/plan", {username: $("spu").value.trim(), plan: $("spp").value, days: +$("spd").value || 0}); toast("plan set"); loadAdmin(); }
+  catch (e) { $("spe").textContent = e.message; }
+}
 async function loadAdmin() {
   const [st, ss] = await Promise.all([api("/api/admin/stats"), api("/api/admin/settings")]);
   $("srv").innerHTML = [["load", st.load[0].toFixed(2) + " / " + st.cpus + " cpu"], ["memory free", st.mem_avail_mb + " / " + st.mem_total_mb + " MB"], ["disk free", st.disk_free_gb + " GB"],
@@ -1162,6 +1201,11 @@ async function loadAdmin() {
   $("aworkers").innerHTML = ss.workers.length ? "<tr><th>user</th><th>session</th><th>workspace</th><th>state</th><th>last</th></tr>" + ss.workers.map(w =>
     `<tr><td>${esc(w.user)}</td><td>${esc(w.title || "—")}</td><td class="dim">${esc(w.ws)}</td><td>${w.busy ? '<span class="tag a">working</span>' : '<span class="tag on">idle</span>'}</td><td class="dim">${ago(w.last)}</td></tr>`).join("")
     : '<tr><td class="dim">none running</td></tr>';
+  const ai = await api("/api/admin/ai");
+  $("aai").innerHTML = (ai.configured ? "" : '<tr><td class="err">Me AI upstream not set (settings ai_url / ai_key)</td></tr>') +
+    "<tr><th>user</th><th>plan</th><th>requests 24h</th><th>in</th><th>out</th></tr>" + ai.day.map(r =>
+    `<tr><td>${esc(r.username)}</td><td class="dim">${esc((ai.subs.find(x => x.username === r.username) || {}).plan || "free")}</td><td>${r.n}</td><td class="dim">${human(r.i)}</td><td class="dim">${human(r.o)}</td></tr>`).join("") +
+    ai.subs.filter(x => !ai.day.some(r => r.username === x.username)).map(x => `<tr><td>${esc(x.username)}</td><td class="dim">${esc(x.plan)}${x.until ? " · " + new Date(x.until * 1000).toLocaleDateString(LANG) : ""}</td><td>0</td><td></td><td></td></tr>`).join("");
   const us = await api("/api/admin/users");
   $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>devices</th><th>2fa</th></tr>" + us.map(u =>
     `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag a">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString(LANG)}</td>
