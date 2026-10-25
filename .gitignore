@@ -2,3 +2,7 @@ __pycache__/
 *.db
 *.db-*
 dist/
+
+# promo downloads (re-fetch: python3 scripts/promo/sfx.py --force)
+scripts/promo/sfx/
+scripts/promo/score/

@@ -38,6 +38,7 @@ class Stand:
         else:
             raise SystemExit("promo stand: server did not start (see " + str(self.work / "server.log") + ")")
         self._provision()
+        self._publish_promo_theme()
 
     def _provision(self):
         """Log the promo account in and push a provider/model config that points at the mock (synced to the cloud sandbox)."""
@@ -53,6 +54,18 @@ class Stand:
         s.config["model"] = "promo-mock"
         s.save()
         c.sync()
+
+    def _publish_promo_theme(self):
+        """The /theme scene installs a theme from the marketplace list, so the list needs one: the promo's own palette is
+        published here, by the throwaway account, as any user's theme would be (server/app.py, POST /api/market)."""
+        f = ROOT / "scripts" / "promo" / "theme-coffee.json"
+        if not f.exists():
+            return
+        json.loads(f.read_text("utf-8"))  # a broken theme file must not take the whole stand down
+        body = json.dumps({"ext": "json", "note": "promo stand", "content": f.read_text("utf-8")}).encode()
+        req = urllib.request.Request(self.base + "/api/market", method="POST", data=body,
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + self.token_for_browser()})
+        urllib.request.urlopen(req, timeout=10).read()
 
     def token_for_browser(self):
         """The session token the web app keeps in localStorage (same login the account page does)."""

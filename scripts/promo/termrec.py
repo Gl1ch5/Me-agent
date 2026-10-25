@@ -2,6 +2,7 @@
 and writes the raw byte stream as an asciinema v2 .cast. Frames are later concatenated into video by compose.py."""
 import codecs, json, os, pty, select, struct, fcntl, termios, time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import pyte
 from PIL import Image, ImageDraw, ImageFont
@@ -11,6 +12,10 @@ ANSI = {"black": "#16181f", "red": "#ff6b7a", "green": "#5ad18a", "brown": "#ffb
         "magenta": "#c792ea", "cyan": "#4fd1c5", "white": "#d8dae3"}
 KEYS = {"down": "\x1b[B", "up": "\x1b[A", "enter": "\r", "esc": "\x1b", "backspace": "\x7f", "tab": "\t"}
 ME_DARK = {"bg": "#0e0f13", "bg2": "#111319", "line": "#1f2230", "fg": "#d8dae3", "dim": "#6b6f80", "accent": "#8b7cff", "sel": "#262a38"}
+
+
+RENDER = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) - 1))  # frames are drawn while the scene keeps running
+FAST = float(os.environ.get("PROMO_SPEED") or 1.0)  # >1 plays every pause and every keystroke faster (a quick preview)
 
 
 def _color(c, default):
@@ -45,6 +50,8 @@ class Term:
         self.dec = codecs.getincrementaldecoder("utf-8")("replace")
         self.t0 = time.time()
         self.cast = []  # (t, text) asciinema events
+        self.jobs = []  # the frame renders still running: finish() waits for them
+        self.marks = {}  # text → when it first showed up on screen (scene timing for the audio)
         self.frames = []  # (t, png path) for every distinct screen
         self._last = None
         self._n = 0
@@ -60,7 +67,7 @@ class Term:
         return time.time() - self.t0
 
     def pump(self, seconds):
-        end = time.time() + seconds
+        end = time.time() + seconds / FAST
         while True:
             left = end - time.time()
             r, _, _ = select.select([self.fd], [], [], max(0.0, min(0.02, left)))
@@ -95,12 +102,19 @@ class Term:
         while time.time() < end:
             self.pump(0.1)
             if needle in "\n".join(self.screen.display):
+                self.marks.setdefault(needle, self.now())
                 return True
         raise AssertionError(f"promo terminal: '{needle}' never appeared")
 
+    def last_seen(self, needle):
+        """When `needle` first appeared (for the sound design): a wait_for that matched, or a scan of the screen now."""
+        if needle in self.marks:
+            return self.marks[needle]
+        return self.now() if needle in "\n".join(self.screen.display) else None
+
     def hold(self, seconds, every=0.07, ch=" "):
         """Hold a key: repeated presses, like key auto-repeat (the voice plugin reads three quick spaces as 'start')."""
-        end = time.time() + seconds
+        end = time.time() + seconds / FAST
         while time.time() < end:
             self.write(ch)
             self.pump(every)
@@ -109,10 +123,16 @@ class Term:
         self.pump(seconds)
 
     def finish(self, total):
-        """Hold the last screen until the scene's planned length."""
+        """Hold the last screen until the scene's planned length, then make sure every frame is on disk."""
         self.pump(max(0.0, total - self.now()))
+        for j in self.jobs:
+            j.result()
+        self.jobs.clear()
 
     def close(self):
+        for j in self.jobs:  # a scene can be closed without finish(): never leave a half-written frame behind
+            j.result()
+        self.jobs.clear()
         try:
             os.kill(self.pid, 9)
             os.waitpid(self.pid, 0)
@@ -136,8 +156,9 @@ class Term:
         self._last = key
         path = self.frames_dir / f"{self._n:05d}.png"
         self._n += 1
-        self._render().save(path)
+        img = self._render()  # the screen state is copied here; the drawing runs in the background
         self.frames.append((self.now(), path))
+        self.jobs.append(RENDER.submit(img.save, path))
 
     def _render(self):
         t = self.theme

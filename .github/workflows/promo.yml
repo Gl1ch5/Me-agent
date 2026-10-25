@@ -1,0 +1,54 @@
+name: promo
+# The promo videos: four short clips (scripts/build_promo.sh) and the full-length ones (scripts/build_promo_full.sh).
+# It runs whenever the promo pipeline — or the product it shows — changes, and by hand from the Actions tab; the videos
+# come out as the `promo` artifact. Nothing here decides a release: a red run only means the videos did not render.
+on:
+  push:
+    paths:
+      - "scripts/promo/**"
+      - "scripts/build_promo.sh"
+      - "scripts/build_promo_full.sh"
+      - "docs/promo/**"
+      - "server/market/**"
+      - "src/web/**"
+  pull_request:
+    paths:
+      - "scripts/promo/**"
+      - "scripts/build_promo*.sh"
+      - "docs/promo/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      # the promo stack: the stand (fastapi/uvicorn), the recorder (pyte), the page frames (pillow), the browser (playwright)
+      - run: pip install fastapi uvicorn playwright pyte pillow numpy
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: python3 -m playwright install --with-deps chromium --only-shell
+      # UI sounds + the Chopin score once, before anything renders (offline: the videos build, just quieter)
+      - name: sound pack and score
+        run: python3 scripts/promo/sfx.py
+        continue-on-error: true
+      - run: bash scripts/build_promo.sh
+      # the full-length videos (RU/EN × 16:9/9:16) come last: build_promo.sh clears dist/promo first
+      - run: bash scripts/build_promo_full.sh
+      - name: collect the videos next to their previews
+        if: always()
+        run: |
+          cp dist/promo/full/me-*.mp4 dist/promo/full/me-*.webp dist/promo/ 2>/dev/null || true
+          ls -l dist/promo/*.mp4 2>/dev/null || echo "no videos this run"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: promo, path: dist/promo, if-no-files-found: ignore}

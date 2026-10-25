@@ -37,9 +37,12 @@ jobs:
       - run: pip install fastapi uvicorn playwright pyte pillow numpy
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: python3 -m playwright install --with-deps chromium --only-shell
-      - run: scripts/build_promo.sh
+      # UI sounds and the Chopin score (archive.org, CC0): offline, the videos still build, just quieter
+      - run: python3 scripts/promo/sfx.py
+        continue-on-error: true
+      - run: bash scripts/build_promo.sh
       # the full-length video (RU/EN x 16:9/9:16) comes after the short clips: build_promo.sh clears dist/promo first
-      - run: scripts/build_promo_full.sh
+      - run: bash scripts/build_promo_full.sh
       - name: move the full-length videos next to the short ones for the release
         if: always()
         run: cp dist/promo/full/me-*.mp4 dist/promo/full/me-*.webp dist/promo/ 2>/dev/null || true
