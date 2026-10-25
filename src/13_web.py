@@ -235,6 +235,10 @@ class WebSession:
             if not self.cloud.online:
                 raise ValueError("log in first — /login")
             return self.cloud.req("GET", "/api/plan")
+        if path == "/ref":  # /invite
+            if not self.cloud.online:
+                raise ValueError("log in first — /login")
+            return self.cloud.req("GET", "/api/ref")
         if path == "/themes":
             return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
         if path == "/theme":

@@ -10,7 +10,7 @@ COMMANDS = [
     ("btw", "quick side question, kept out of the history"), ("search", "find text in all chats"),
     ("export", "save this chat as Markdown"), ("diff", "what changed in this chat"), ("rename", "rename this chat"),
     ("lang", "interface language: en / ru"),
-    ("perm", "permissions: read-only / ask / full + allow-list"), ("cost", "spending: turn, session, today, limits"), ("usage", "Me AI plan: 5-hour and weekly limits"), ("mcp", "MCP servers (lazy)"),
+    ("perm", "permissions: read-only / ask / full + allow-list"), ("cost", "spending: turn, session, today, limits"), ("usage", "Me AI plan: 5-hour and weekly limits"), ("invite", "invite friends: your link and rewards"), ("mcp", "MCP servers (lazy)"),
     ("todo", "show the agent's checklist"), ("yolo", "toggle full access"), ("sync", "sync with cloud now"), ("login", "log in / register"),
     ("2fa", "authenticator (TOTP) on/off"), ("logout", "log out of cloud"), ("config", "settings"), ("update", "update me"),
     ("theme", "color theme (installable)"), ("exit", "quit"), ("quit", "quit"),

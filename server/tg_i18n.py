@@ -6,7 +6,7 @@ RU = {
     "start a new session": "новая сессия", "resume a session": "вернуться к сессии", "choose the workspace for new tasks": "рабочая область для новых задач",
     "switch model": "сменить модель", "work until done and verified: /goal <what>": "работать до результата: /goal <что сделать>",
     "interrupt": "прервать", "revert the last turn's files": "откатить файлы последнего ответа", "run the last request again": "повторить последний запрос",
-    "show the checklist": "чеклист", "summarize history": "сжать историю", "spending: this session and total": "расходы: сессия и всего", "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю",
+    "show the checklist": "чеклист", "summarize history": "сжать историю", "spending: this session and total": "расходы: сессия и всего", "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю", "invite friends: your link and rewards": "пригласить друзей: ссылка и бонусы",
     "global notes: /memory, /memory forget <id>": "заметки: /memory, /memory forget <id>", "background tasks: /jobs, /jobs run <id>": "фоновые задачи: /jobs, /jobs run <id>",
     "link to the site the agent built": "ссылка на сайт из песочницы", "published sites": "опубликованные сайты",
     "agent mode: code, design, plan…": "режим агента: code, design, plan…", "switches: self-testing, todo, web, brief…": "переключатели: самопроверка, todo, веб, краткость…",

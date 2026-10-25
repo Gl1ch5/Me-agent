@@ -160,6 +160,9 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     <div class="card"><div class="row"><div><h2 style="margin:0">Me AI</h2><p class="dim" style="margin-top:4px">The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.</p></div>
       <span class="tag on" id="plname">free</span></div><div id="plwin" style="margin-top:14px"></div></div>
     <div class="plans" id="plcards"></div><div class="err" id="paye"></div>
+    <div class="card" id="refcard"><div class="row"><h2 style="margin:0">invite friends</h2><span class="dim" id="refst"></span></div>
+      <p class="dim" id="refrule" style="margin-top:6px"></p>
+      <div class="row" style="flex-wrap:nowrap;margin-top:10px"><input id="reflink" readonly onclick="this.select()"><button onclick="copyRef()">copy</button></div></div>
     <p class="dim" style="margin-top:12px;font-size:13px">Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. A paid plan lasts 30 days; paying again for the same plan adds 30 more. Pay with Lolz or Crypto Bot — no card needed.</p>
   </div>
 
@@ -302,6 +305,8 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     <div class="card"><h2>payments</h2><p class="dim" style="margin-bottom:10px">Lolz: a merchant at lzt.market (merchant ID, secret key) and an API token with the invoice scope. Crypto Bot: @CryptoBot → Crypto Pay → Create App, paste its token and set the webhook there to <code id="cbhook"></code>. Leave a field empty to keep it.</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px"><input id="lzt" type="password" onfocus="this.type='text'" placeholder="Lolz API token"><input id="lzm" placeholder="merchant ID"><input id="lzs" type="password" onfocus="this.type='text'" placeholder="merchant secret key"></div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px"><input id="cbt" type="password" onfocus="this.type='text'" placeholder="Crypto Pay token"><select id="cbn"><option value="main">mainnet</option><option value="test">testnet</option></select><button onclick="savePay()">save</button></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px"><label class="dim" style="margin:0;font-size:13px">referral reward, % of a payment<input id="rfp" type="number" min="0" style="margin-top:4px"></label>
+        <label class="dim" style="margin:0;font-size:13px">friend's bonus, days<input id="rfb" type="number" min="0" style="margin-top:4px"></label></div>
       <div class="err" id="pse"></div><div style="overflow-x:auto;margin-top:12px"><table id="apay"></table></div></div>
     <div class="card"><h2>cloud sandboxes</h2><table id="aworkers"></table></div>
     <div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
@@ -385,10 +390,10 @@ const RU_D = {
   "The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.": "Собственная модель агента: выберите me-ai в /model, API-ключ не нужен. Использование идёт в счёт тарифа.",
   "Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. A paid plan lasts 30 days; paying again for the same plan adds 30 more. Pay with Lolz or Crypto Bot — no card needed.": "Лимиты сбрасываются сами: 5-часовое окно начинается с первого запроса, недельное — тоже. Платный тариф действует 30 дней; повторная оплата того же тарифа добавляет ещё 30. Оплата через Lolz или Crypto Bot — карта не нужна.",
   "5-hour limit": "лимит на 5 часов", "weekly limit": "лимит на неделю", "not started": "ещё не начат", "/ month": "/ мес", "5-hour and weekly limits": "лимиты на 5 часов и неделю", "free": "бесплатно", "Me AI model": "модель Me AI", 
-  "your plan": "ваш тариф", "soon": "скоро", "payments": "платежи", "pay in the opened tab, then come back": "оплатите в открывшейся вкладке и вернитесь сюда",
+  "your plan": "ваш тариф", "soon": "скоро", "payments": "платежи", "invite friends": "пригласить друзей", "status": "статус", "copy": "копировать", "copied": "скопировано", "referral reward, % of a payment": "награда пригласившему, % от оплаты", "friend's bonus, days": "бонус другу, дней", "pay in the opened tab, then come back": "оплатите в открывшейся вкладке и вернитесь сюда",
   "Lolz: a merchant at lzt.market (merchant ID, secret key) and an API token with the invoice scope. Crypto Bot: @CryptoBot → Crypto Pay → Create App, paste its token and set the webhook there to": "Lolz: мерчант на lzt.market (ID мерчанта, секретный ключ) и API-токен с правом invoice. Crypto Bot: @CryptoBot → Crypto Pay → Create App, вставьте его токен и укажите там вебхук",
   ". Leave a field empty to keep it.": ". Пустое поле оставляет прежнее значение.", "Lolz API token": "API-токен Lolz", "merchant ID": "ID мерчанта", "merchant secret key": "секретный ключ мерчанта",
-  "Crypto Pay token": "токен Crypto Pay", "Lolz token set": "токен Lolz задан", "Crypto Pay token set": "токен Crypto Pay задан", "secret set": "ключ задан", "no payments yet": "платежей пока нет", "when": "когда", "method": "способ", "pending": "ожидает", "paid": "оплачен",
+  "Crypto Pay token": "токен Crypto Pay", "Lolz token set": "токен Lolz задан", "Crypto Pay token set": "токен Crypto Pay задан", "no payments yet": "платежей пока нет", "when": "когда", "method": "способ", "pending": "ожидает", "paid": "оплачен",
   "this payment method is not available": "этот способ оплаты недоступен", "no method ready": "ни один способ не настроен", "subscriptions": "подписки", "Give a user a plan. Days 0 = forever; plan free removes it.": "Выдать пользователю тариф. Дней 0 = навсегда; free снимает тариф.",
   "requests 24h": "запросов за 24 ч", "plan set": "тариф выдан", "models & keys": "модели и ключи", "skills": "навыки", "plugins": "плагины", "marketplace": "маркетплейс", "sessions": "сессии", "workspaces": "рабочие области", "security": "безопасность", "admin": "админ",
   "work from anywhere": "работайте откуда угодно",
@@ -608,6 +613,9 @@ window.prompt = (m, d) => _prompt(LANG === "ru" ? trs(String(m)) : m, d);
 setLang(detectLang(), false);
 
 // ── auth ──
+const REF = new URLSearchParams(location.search).get("ref");
+if (REF) try { localStorage.setItem("me_ref", REF); } catch (e) {}
+const savedRef = () => { try { return localStorage.getItem("me_ref"); } catch (e) { return null; } };
 document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
   mode = b.dataset.m; document.querySelectorAll(".switch button").forEach(x => x.classList.toggle("on", x === b));
   $("go").textContent = L(mode === "login" ? "go_login" : "go_reg"); $("e").textContent = "";
@@ -615,7 +623,9 @@ document.querySelectorAll(".switch button").forEach(b => b.onclick = () => {
 $("f").onsubmit = async e => {
   e.preventDefault(); $("e").textContent = "";
   try {
-    const r = await api("/api/" + mode, {username: $("u").value.trim(), password: $("p").value, totp: $("c").value || null, device: "web · " + navigator.platform});
+    const r = await api("/api/" + mode, {username: $("u").value.trim(), password: $("p").value, totp: $("c").value || null, device: "web · " + navigator.platform,
+                                         ref: mode === "register" ? savedRef() : null});
+    if (mode === "register") try { localStorage.removeItem("me_ref"); } catch (e) {}
     tok = r.token; localStorage.setItem("me_token", tok); load();
   } catch (err) {
     if (/^totp_/.test(err.message)) { $("c").classList.remove("hidden"); $("c").focus(); $("e").textContent = err.message === "totp_invalid" ? "wrong code" : "enter your authenticator code"; }
@@ -1197,7 +1207,17 @@ async function loadPlan() {
     ${payBtns(p, st, pi.methods)}</div>`).join("");
   const back = sessionStorage.getItem("me_pay");
   if (back) checkPay(back);
+  loadRef().catch(() => $("refcard").classList.add("hidden"));
 }
+async function loadRef() {
+  const r = await api("/api/ref"), ru = LANG === "ru";
+  $("reflink").value = r.link;
+  $("refrule").textContent = ru ? `Друг получает +${r.bonus} дн. к первой оплате тарифа. Вы получаете ${r.pct}% от каждой его оплаты днями своего тарифа (Plus, если у вас Free).`
+    : `A friend gets +${r.bonus} days on their first plan payment. You get ${r.pct}% of each of their payments back as days of your plan (Plus while you are on Free).`;
+  const earned = Object.entries(r.days).map(([k, v]) => `${k[0].toUpperCase() + k.slice(1)} +${v}`).join(", ");
+  $("refst").textContent = (ru ? `приглашено ${r.invited} · оплатили ${r.paid}` : `invited ${r.invited} · paid ${r.paid}`) + (earned ? " · " + earned + (ru ? " дн." : " days") : "");
+}
+async function copyRef() { try { await navigator.clipboard.writeText($("reflink").value); toast("copied"); } catch (e) { $("reflink").select(); } }
 const PAYN = {lolz: "Lolz", cryptobot: "Crypto Bot"};
 function payBtns(p, st, ms) {
   const cur = p.id === st.plan, price = st.plans.find(x => x.id === st.plan).price;
@@ -1223,7 +1243,7 @@ async function setPlan() {
   catch (e) { $("spe").textContent = e.message; }
 }
 async function savePay() {
-  const b = {cryptobot_net: $("cbn").value}; for (const [id, k] of [["lzt", "lolz_token"], ["lzm", "lolz_merchant"], ["lzs", "lolz_secret"], ["cbt", "cryptobot_token"]]) if ($(id).value.trim()) b[k] = $(id).value.trim();
+  const b = {cryptobot_net: $("cbn").value, ref_pct: $("rfp").value, ref_bonus: $("rfb").value}; for (const [id, k] of [["lzt", "lolz_token"], ["lzm", "lolz_merchant"], ["lzs", "lolz_secret"], ["cbt", "cryptobot_token"]]) if ($(id).value.trim()) b[k] = $(id).value.trim();
   try { const r = await api("/api/admin/pay", b); $("pse").className = "err okmsg"; $("pse").textContent = "saved · " + (r.methods.map(m => PAYN[m]).join(", ") || "no method ready"); for (const id of ["lzt", "lzs", "cbt"]) $(id).value = ""; loadAdmin(); }
   catch (e) { $("pse").className = "err"; $("pse").textContent = e.message; }
 }
@@ -1242,7 +1262,7 @@ async function loadAdmin() {
     `<tr><td>${esc(r.username)}</td><td class="dim">${esc((ai.subs.find(x => x.username === r.username) || {}).plan || "free")}</td><td>${r.n}</td><td class="dim">${human(r.i)}</td><td class="dim">${human(r.o)}</td></tr>`).join("") +
     ai.subs.filter(x => !ai.day.some(r => r.username === x.username)).map(x => `<tr><td>${esc(x.username)}</td><td class="dim">${esc(x.plan)}${x.until ? " · " + new Date(x.until * 1000).toLocaleDateString(LANG) : ""}</td><td>0</td><td></td><td></td></tr>`).join("");
   const pa = await api("/api/admin/pay");
-  $("cbhook").textContent = pa.cryptobot_webhook; $("lzm").value = pa.lolz_merchant || ""; $("cbn").value = pa.cryptobot_net;
+  $("cbhook").textContent = pa.cryptobot_webhook; $("lzm").value = pa.lolz_merchant || ""; $("cbn").value = pa.cryptobot_net; $("rfp").value = pa.ref_pct; $("rfb").value = pa.ref_bonus;
   $("lzt").placeholder = pa.set.lolz_token ? "Lolz token set" : "Lolz API token"; $("lzs").placeholder = pa.set.lolz_secret ? "secret set" : "merchant secret key"; $("cbt").placeholder = pa.set.cryptobot_token ? "Crypto Pay token set" : "Crypto Pay token";
   $("apay").innerHTML = pa.payments.length ? "<tr><th>when</th><th>user</th><th>plan</th><th>method</th><th>₽</th><th>status</th></tr>" + pa.payments.map(r =>
     `<tr><td class="dim">${ago(r.created)}</td><td>${esc(r.username)}</td><td>${esc(r.plan)}</td><td class="dim">${PAYN[r.method] || esc(r.method)}</td><td>${r.amount}</td><td>${r.status === "paid" ? '<span class="tag on">paid</span>' : '<span class="dim">pending</span>'}</td></tr>`).join("")
@@ -1272,7 +1292,9 @@ async function setTheme(n) { cfg.theme = n; await saveCfg("theme → " + n + " �
 async function load() {
   try { me = await api("/api/me"); } catch (e) { localStorage.removeItem("me_token"); tok = null; me = null; }
   $("i1").textContent = `curl -fsSL ${S}/i | sh`; $("i2").textContent = `irm ${S}/i.ps1 | iex`;
-  const want = location.hash.slice(1) || (location.pathname === "/market" ? "market" : "overview");
+  let want = location.hash.slice(1) || (location.pathname === "/market" ? "market" : "overview");
+  if (!me && want === "register") document.querySelector('.switch button[data-m="register"]').click();
+  if (want === "register") want = "overview";
   if (!me) {
     if (want === "market" || location.pathname === "/market") { // public marketplace
       $("dash").classList.remove("hidden"); $("tabs").classList.add("hidden");

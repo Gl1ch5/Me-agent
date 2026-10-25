@@ -24,7 +24,7 @@ RU = {
     "work autonomously until done+verified or blocked": "работать сам, пока не сделает и не проверит (или не упрётся)",
     "revert the files of the last turn": "откатить файлы последнего хода", "take back the last request and run it again": "отменить последний запрос и выполнить заново",
     "save this chat as Markdown": "сохранить чат в Markdown", "permissions: read-only / ask / full + allow-list": "разрешения: read-only / ask / full + список разрешённых",
-    "spending: turn, session, today, limits": "расходы: задача, сессия, сегодня, лимиты", "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю", "MCP servers (lazy)": "MCP-серверы (подгружаются по требованию)",
+    "spending: turn, session, today, limits": "расходы: задача, сессия, сегодня, лимиты", "Me AI plan: 5-hour and weekly limits": "тариф Me AI: лимиты на 5 часов и неделю", "invite friends: your link and rewards": "пригласить друзей: ссылка и бонусы", "MCP servers (lazy)": "MCP-серверы (подгружаются по требованию)",
     "show the agent's checklist": "показать todo-список агента", "toggle full access": "полный доступ вкл/выкл", "sync with cloud now": "синхронизировать сейчас",
     "log in / register": "войти / зарегистрироваться", "authenticator (TOTP) on/off": "двухфакторная защита (TOTP) вкл/выкл", "log out of cloud": "выйти из облака",
     "settings": "настройки", "update me": "обновить me", "color theme (installable)": "цветовая тема (можно ставить новые)", "quit": "выход",
