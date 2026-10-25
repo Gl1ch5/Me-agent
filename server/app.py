@@ -830,3 +830,4 @@ import routes_cloud  # noqa: E402,F401  (registers workspace/cloud/telegram/admi
 import features  # noqa: E402,F401  (push, jobs, preview, personal Telegram bots, GitHub, notify)
 import sites  # noqa: E402,F401  (static sites published by the agent at /s/<user>/<site>/)
 import plans  # noqa: E402,F401  (subscriptions: free/plus/pro limits and the Me AI model at /api/ai/v1)
+import payments  # noqa: E402,F401  (buying a plan: Lolz and Crypto Bot invoices + their webhooks)

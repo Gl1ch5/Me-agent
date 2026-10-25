@@ -1,6 +1,7 @@
 """Subscriptions and Me AI: the proxy adds the persona, hides the upstream, counts usage into the 5-hour/weekly windows, stops at the limit.
 Run: python3 tests/test_plans.py   (starts its own server + mock LLM as the upstream; needs fastapi/uvicorn)"""
-import json, os, sqlite3, sys, tempfile, time
+import hashlib, hmac, json, os, sqlite3, sys, tempfile, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
 import test_restart as T  # noqa: E402
@@ -8,6 +9,50 @@ import test_restart as T  # noqa: E402
 T.env["ME_AI_URL"] = f"http://127.0.0.1:{T.llm.server_port}/v1"
 T.env["ME_AI_MODEL"] = "mock-1"
 me, mock = T.me, T.mock_llm
+INV = {}  # invoices the mock providers made: id → {status, ...}
+
+
+class Pay(BaseHTTPRequestHandler):
+    """Mock Lolz (/invoice) and Crypto Pay (/cp/createInvoice, /cp/getInvoices)."""
+    def log_message(self, *a): pass
+
+    def reply(self, o):
+        b = json.dumps(o).encode()
+        self.send_response(200), self.send_header("Content-Type", "application/json"), self.send_header("Content-Length", str(len(b))), self.end_headers()
+        self.wfile.write(b)
+
+    def do_POST(self):
+        b = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        n = str(len(INV) + 1)
+        if self.path == "/invoice":
+            assert self.headers["Authorization"] == "Bearer LT" and b["currency"] == "rub" and b["url_callback"].endswith("/api/pay/lolz"), b
+            INV[n] = {"invoice_id": n, "payment_id": b["payment_id"], "amount": b["amount"], "status": "not_paid", "url": "https://lzt.test/i/" + n}
+            self.reply({"invoice": INV[n]})
+        else:
+            assert self.headers["Crypto-Pay-API-Token"] == "CT" and b["currency_type"] == "fiat" and b["fiat"] == "RUB", b
+            INV[n] = {"invoice_id": int(n), "payload": b["payload"], "amount": b["amount"], "status": "active", "bot_invoice_url": "https://t.me/CryptoBot?start=" + n}
+            self.reply({"ok": True, "result": INV[n]})
+
+    def do_GET(self):
+        q = me.urllib.parse.parse_qs(me.urllib.parse.urlparse(self.path).query)
+        if self.path.startswith("/invoice"):
+            self.reply({"invoice": next(i for i in INV.values() if i.get("payment_id") == q["payment_id"][0])})
+        else:
+            self.reply({"ok": True, "result": {"items": [INV[i] for i in q["invoice_ids"][0].split(",")]}})
+
+
+pay_srv = ThreadingHTTPServer(("127.0.0.1", 0), Pay)
+threading.Thread(target=pay_srv.serve_forever, daemon=True).start()
+T.env["ME_LOLZ_API"] = f"http://127.0.0.1:{pay_srv.server_port}"
+T.env["ME_CRYPTOPAY_API"] = f"http://127.0.0.1:{pay_srv.server_port}/cp"
+
+
+def raw(path, body, headers):
+    req = me.urllib.request.Request(T.SERVER + path, data=body, method="POST", headers={"Content-Type": "application/json", **headers})
+    try:
+        return me.urllib.request.urlopen(req, timeout=10).status
+    except me.urllib.error.HTTPError as e:
+        return e.code
 
 
 def main():
@@ -63,6 +108,42 @@ def main():
         db.commit()
         assert c.req("GET", "/api/plan")["plan"] == "free", "an expired plan still applies"
         print("ok   admin sets a plan; it falls back to free when it expires")
+
+        assert c.req("GET", "/api/pay")["methods"] == []
+        r = c.req("POST", "/api/admin/pay", {"lolz_token": "LT", "lolz_merchant": "7", "lolz_secret": "LS", "cryptobot_token": "CT"})
+        assert r["methods"] == ["lolz", "cryptobot"], r
+        assert "LT" not in json.dumps(c.req("GET", "/api/admin/pay")), "a payment secret is shown back"
+        p = c.req("POST", "/api/pay", {"plan": "plus", "method": "lolz"})
+        assert p["url"].startswith("https://lzt.test/") and INV["1"]["amount"] == 490, (p, INV)
+        assert c.req("GET", "/api/pay/" + p["id"])["status"] == "pending"
+        hook = json.dumps({"invoice_id": 1, "payment_id": p["id"], "status": "paid", "merchant_id": 7, "amount": 490}).encode()
+        assert raw("/api/pay/lolz", hook, {"x-secret-key": "wrong"}) == 403 and c.req("GET", "/api/plan")["plan"] == "free", "a forged callback was taken"
+        assert raw("/api/pay/lolz", hook, {"x-secret-key": "LS"}) == 200 and raw("/api/pay/lolz", hook, {"x-secret-key": "LS"}) == 200
+        st = c.req("GET", "/api/plan")
+        assert st["plan"] == "plus" and abs(st["until"] - time.time() - 30 * 86400) < 60, "a repeated callback added the days twice"
+        print("ok   Lolz: an invoice for the plan's price; only a callback with the merchant secret grants 30 days, once")
+
+        p = c.req("POST", "/api/pay", {"plan": "plus", "method": "cryptobot"})
+        assert p["url"].startswith("https://t.me/CryptoBot") and INV["2"]["amount"] == "490", INV
+        upd = json.dumps({"update_type": "invoice_paid", "payload": {**INV["2"], "status": "paid"}}).encode()
+        sig = hmac.new(hashlib.sha256(b"CT").digest(), upd, hashlib.sha256).hexdigest()
+        assert raw("/api/pay/cryptobot", upd, {"crypto-pay-api-signature": "0" * 64}) == 403
+        assert raw("/api/pay/cryptobot", upd, {"crypto-pay-api-signature": sig}) == 200
+        st = c.req("GET", "/api/plan")
+        assert st["plan"] == "plus" and abs(st["until"] - time.time() - 60 * 86400) < 60, "paying the same plan again did not add 30 days"
+        print("ok   Crypto Bot: a signed invoice_paid adds 30 days to the same plan; a bad signature is refused")
+
+        p = c.req("POST", "/api/pay", {"plan": "pro", "method": "cryptobot"})
+        INV["3"]["status"] = "paid"  # paid, but its webhook never came
+        r = c.req("GET", "/api/pay/" + p["id"])
+        assert r["status"] == "paid" and r["plan"] == "pro" and abs(r["until"] - time.time() - 30 * 86400) < 60, r
+        try:
+            c.req("POST", "/api/pay", {"plan": "plus", "method": "lolz"})
+            raise AssertionError("bought a lower plan over a higher one")
+        except me.CloudError as e:
+            assert "Pro" in str(e), e
+        assert [x["status"] for x in c.req("GET", "/api/pay")["payments"]] == ["paid"] * 3
+        print("ok   a lost webhook: coming back asks the provider and grants the upgrade; a lower plan over a higher one is refused")
     finally:
         os.killpg(srv.pid, 9)
 
