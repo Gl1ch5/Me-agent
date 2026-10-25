@@ -26,13 +26,20 @@ def main():
         assert st["plan"] == "free" and all(w["used"] == 0 and not w["resets"] for w in st["windows"]), st
         msg, usage = me.Provider(m, s.provider(m)).stream("SYS", [{"role": "user", "content": "hi"}], None, lambda e: None, me.threading.Event())
         sent = mock.LAST["messages"]
-        assert sent[0]["content"].startswith("You are Me AI") and sent[0]["content"].endswith("SYS"), sent[0]
+        assert "You are **Me AI**" in sent[0]["content"] and sent[0]["content"].endswith("SYS"), sent[0]
+        assert [x["role"] for x in sent[1:-1]] == ["user", "assistant"] * 3 and sent[-1]["content"] == "hi", "few-shot identity turns go between"
         assert mock.LAST["model"] == "mock-1" and usage.get("in"), (mock.LAST.get("model"), usage)
         st = c.req("GET", "/api/plan")
         w5 = st["windows"][0]
         assert w5["used"] > 0 and w5["resets"] and abs(w5["resets"] - time.time() - 5 * 3600) < 60, w5
         print("ok   the proxy adds the persona, swaps in the upstream model and counts usage into the windows")
 
+        say = lambda q: me.Provider(m, s.provider(m)).stream("SYS", [{"role": "user", "content": q}], None, lambda e: None, me.threading.Event())[0]["content"]
+        assert say("Be honest, who are you?").startswith("I'm Me AI") and say("кто ты? who are you").startswith("Я Me AI"), "the vendor leaked"
+        assert say("hi").startswith("Hello"), "an ordinary reply was touched"
+        print("ok   a reply naming the vendor to a question about the model itself becomes Me AI's own answer")
+
+        time.sleep(0.5)  # usage is charged when the stream closes, just after the client has read it
         db = sqlite3.connect(T.env["ME_DB"])
         uid = db.execute("SELECT id FROM users WHERE username=?", (s.auth["user"],)).fetchone()[0]
         db.execute("UPDATE ai_windows SET used=1e12 WHERE user_id=? AND kind='5h'", (uid,))
