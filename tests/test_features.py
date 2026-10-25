@@ -32,6 +32,16 @@ def main():
     assert time.strftime("%H:%M", time.gmtime(features.cron_next("0 9 * * *", t0, tz_min=180))) == "06:00"  # 09:00 in UTC+3
     print("ok   cron schedule parsing")
 
+    # every Telegram command handler is in the "/" menu, under a name and description Telegram accepts
+    import re
+    from tg_commands import COMMANDS, TgCommands
+    from tg_i18n import tr
+    names = [c for c, _ in COMMANDS]
+    handlers = {n[4:] for n in dir(TgCommands) if n.startswith("cmd_")}
+    assert set(names) == handlers and len(names) == len(set(names)) <= 100, handlers ^ set(names)
+    assert all(re.fullmatch(r"[a-z0-9_]{1,32}", c) and 0 < len(d) and 0 < len(tr(d, "ru")) for c, d in COMMANDS)
+    print("ok   telegram menu lists every command")
+
     # push encryption round-trip (decrypt like a browser would, RFC 8291)
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
