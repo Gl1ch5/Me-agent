@@ -12,7 +12,8 @@ Newer Bot API features, each with a fallback for chats or bots that lack it:
 - a bot with topics enabled in private chats (@BotFather) keeps one session per topic: /new opens a topic, a topic the
   user creates starts a fresh session, and sessions from the web or terminal get their own topic when mirrored.
 """
-import base64, secrets, threading, time
+import base64, os, secrets, threading, time
+from urllib.parse import quote
 from pathlib import Path
 
 import acctlog
@@ -22,17 +23,22 @@ from tg_i18n import tr
 from tg_tasks import TgTasks
 from tg_topics import TgTopics
 
+SITE = os.environ.get("ME_PUBLIC_URL", "").rstrip("/") or "https://me-agent.ru"
+LINKED = ("Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\n"
+          "Things started elsewhere show up here too. /help for commands.")
+SIGN_IN = "Sign in to your me account to start: the button opens the site, and once you sign in (or sign up) this chat is connected."
+
 # Every bot (the global one and each personal one) gets this avatar and description; bump PROFILE_VER to push a change to all.
-PROFILE_VER = 1
+PROFILE_VER = 2
 AVATAR = Path(__file__).resolve().parent / "site" / "bot-avatar.jpg"
 PROFILE = {
     "": ("Your me coding agent in Telegram. Write a task — it runs in your cloud sandbox and syncs to all your devices: "
          "answers stream live, tasks started on the web or in the terminal show up here, each session can have its own topic. "
-         "Link the chat in your account on me-agent.ru → Telegram.",
+         "Send /start and sign in to your me-agent.ru account right from here.",
          "me — your coding agent: tasks run in your cloud sandbox and sync everywhere."),
     "ru": ("Ваш агент me в Telegram. Напишите задачу — она выполнится в вашей облачной песочнице и синхронизируется на все устройства: "
            "ответ стримится вживую, задачи из веба и терминала тоже приходят сюда, у каждой сессии может быть своя тема. "
-           "Подключите чат в аккаунте на me-agent.ru → Telegram.",
+           "Отправьте /start и войдите в аккаунт me-agent.ru прямо отсюда.",
            "me — ваш агент для кода: задачи выполняются в облачной песочнице и синхронизируются везде."),
 }
 
@@ -56,6 +62,7 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
         self.db.execute("CREATE TABLE IF NOT EXISTS tg_codes(code TEXT PRIMARY KEY, uid INTEGER, bot TEXT, exp REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS tg_topics(chat_id INTEGER, bot TEXT, thread INTEGER, session TEXT, ws TEXT, "
                         "PRIMARY KEY(chat_id, bot, thread))")
+        self.db.execute("CREATE TABLE IF NOT EXISTS tg_logins(code TEXT PRIMARY KEY, chat_id INTEGER, bot TEXT, exp REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS tg_profile(bot TEXT PRIMARY KEY, ver INTEGER)")
         try:  # chats can be muted from mirroring; the setting survives restarts
             self.db.execute("ALTER TABLE tg_links ADD COLUMN quiet INTEGER DEFAULT 0")
@@ -155,6 +162,32 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
             return None
         return r[0]
 
+    def link(self, chat, uid):
+        self.db.execute("DELETE FROM tg_links WHERE chat_id=? AND COALESCE(bot,'')=?", (chat, self.key))
+        self.db.execute("INSERT INTO tg_links(chat_id,user_id,created,bot,quiet) VALUES(?,?,?,?,0)", (chat, uid, time.time(), self.key))
+        try:  # a chat-level menu button makes the app refetch the command list it may have cached before the menu existed
+            self.call("setChatMenuButton", chat_id=chat, menu_button={"type": "commands"})
+        except Exception:
+            pass
+
+    def sign_in(self, chat, text=SIGN_IN, ref=None):
+        """An unlinked chat gets a button to the site: sign in or sign up there and this chat is linked (see claim).
+        ref: the inviter's username from an invite link (t.me/<bot>?start=r<id>): the button opens sign-up with it."""
+        code = secrets.token_urlsafe(12)
+        self.db.execute("DELETE FROM tg_logins WHERE exp<?", (time.time(),))
+        self.db.execute("INSERT INTO tg_logins VALUES(?,?,?,?)", (code, chat, self.key, time.time() + 1800))
+        return self.send(chat, text, reply_markup={"inline_keyboard": [[{"text": "sign in", "url": f"{SITE}/account?tg={code}" + (f"&ref={quote(ref)}#register" if ref else "")}]]})
+
+    def claim(self, code, uid):
+        """The site, once signed in from that button: link the chat to the account. The chat id, or None."""
+        r = self.db.execute("SELECT chat_id, exp FROM tg_logins WHERE code=? AND bot=?", (code, self.key)).fetchone()
+        if not r or r[1] < time.time() or (self.owner is not None and uid != self.owner):
+            return None
+        self.db.execute("DELETE FROM tg_logins WHERE code=?", (code,))
+        self.link(r[0], uid)
+        self.send(r[0], LINKED, thread=0)
+        return r[0]
+
     def uid_for(self, chat):
         r = self.db.execute("SELECT user_id FROM tg_links WHERE chat_id=? AND COALESCE(bot,'')=?", (chat, self.key)).fetchone()
         return r[0] if r else None
@@ -220,18 +253,15 @@ class Bot(TgApi, TgTopics, TgTasks, TgCommands):
                 code = text.split(" ", 1)[1].strip() if " " in text else ""
                 uid = self.take_code(code)
                 if uid:
-                    self.db.execute("DELETE FROM tg_links WHERE chat_id=? AND COALESCE(bot,'')=?", (chat, self.key))
-                    self.db.execute("INSERT INTO tg_links(chat_id,user_id,created,bot,quiet) VALUES(?,?,?,?,0)", (chat, uid, time.time(), self.key))
-                    return self.send(chat, "Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\n"
-                                           "Things started elsewhere show up here too. /help for commands.")
+                    self.link(chat, uid)
+                    return self.send(chat, LINKED)
                 if self.uid_for(chat):  # a plain /start (or an old link) in a chat that is already linked
                     return self.send(chat, "You're connected. Write a task — it runs in your cloud sandbox. /help for commands.")
-                if not code:
-                    return self.send(chat, "Not linked yet. Open your account on the me site → Telegram → connect.")
-                return self.send(chat, "This link has expired or belongs to another bot. Open your account on the me site → Telegram → connect.")
+                ref = self.db.execute("SELECT username FROM users WHERE id=?", (int(code[1:]),)).fetchone() if code[1:].isdigit() and code[:1] == "r" else None
+                return self.sign_in(chat, ref=ref and ref[0])
             uid = self.uid_for(chat)
             if not uid:
-                return self.send(chat, "Not linked yet. Open your account on the me site → Telegram → connect.")
+                return self.sign_in(chat)
             acctlog.log(uid, "tg_msg", text=acctlog.cut(text, 300), thread=self.tl.thread, bot=self.key,
                         media=[k for k in ("voice", "audio", "photo", "document") if m.get(k)])
             try:

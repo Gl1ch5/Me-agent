@@ -54,9 +54,9 @@ RU = {
     "Linked. Write a task — it runs in your cloud sandbox and syncs to all your machines.\nThings started elsewhere show up here too. /help for commands.":
         "Подключено. Напишите задачу — она выполнится в облачной песочнице и синхронизируется на все устройства.\n"
         "Задачи, начатые в других местах, тоже приходят сюда. Команды — /help.",
-    "This link has expired or belongs to another bot. Open your account on the me site → Telegram → connect.":
-        "Ссылка устарела или от другого бота. Откройте аккаунт на сайте me → Telegram → подключить.",
-    "Not linked yet. Open your account on the me site → Telegram → connect.": "Чат ещё не подключён. Откройте аккаунт на сайте me → Telegram → подключить.",
+    "Sign in to your me account to start: the button opens the site, and once you sign in (or sign up) this chat is connected.":
+        "Войдите в аккаунт me, чтобы начать: кнопка откроет сайт, и как только вы войдёте (или зарегистрируетесь), этот чат подключится.",
+    "sign in": "войти",
     "You're connected. Write a task — it runs in your cloud sandbox. /help for commands.":
         "Чат подключён. Напишите задачу — она выполнится в облачной песочнице. /help — команды.",
     "You are linked. /help for commands.": "Чат подключён. Команды — /help.",

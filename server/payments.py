@@ -203,7 +203,10 @@ def ref_stats(u, base):
     paid = conn.execute("SELECT COUNT(DISTINCT r.user_id) FROM referrals r JOIN payments p ON p.user_id=r.user_id AND p.status='paid' WHERE r.referrer=?",
                         (u["id"],)).fetchone()[0]
     days = conn.execute("SELECT plan, SUM(days) d FROM ref_rewards WHERE referrer=? GROUP BY plan", (u["id"],)).fetchall()
-    return {"link": base + "/r/" + urllib.parse.quote(u["username"]), "invited": invited, "paid": paid,
+    import routes_cloud  # the shared bot: t.me/<bot>?start=r<id> opens sign-up with this invite
+    bot = routes_cloud.bot.username if routes_cloud.bot.token else ""
+    return {"link": base + "/r/" + urllib.parse.quote(u["username"]), "tg": f"https://t.me/{bot}?start=r{u['id']}" if bot else None,
+            "invited": invited, "paid": paid,
             "days": {r["plan"]: round(r["d"], 1) for r in days}, "pct": num("ref_pct", 20), "bonus": num("ref_bonus", 7)}
 
 
@@ -212,10 +215,10 @@ def ref_text(u, ru=False):
     st = ref_stats(u, PUBLIC or "https://me-agent.ru")
     earned = ", ".join(f"{plans.PLANS[k]['title']} +{v:g} {'дн.' if ru else 'days'}" for k, v in st["days"].items()) or "—"
     if ru:
-        return (f"Пригласить друзей\n{st['link']}\n\nДруг получает +{st['bonus']:g} дн. к первой оплате тарифа.\n"
+        return (f"Пригласить друзей\n{st['tg'] or st['link']}\n\nДруг получает +{st['bonus']:g} дн. к первой оплате тарифа.\n"
                 f"Вы получаете {st['pct']:g}% от каждой его оплаты днями своего тарифа (Plus, если у вас Free).\n\n"
                 f"Приглашено: {st['invited']} · оплатили: {st['paid']} · получено: {earned}")
-    return (f"Invite friends\n{st['link']}\n\nA friend gets +{st['bonus']:g} days on their first plan payment.\n"
+    return (f"Invite friends\n{st['tg'] or st['link']}\n\nA friend gets +{st['bonus']:g} days on their first plan payment.\n"
             f"You get {st['pct']:g}% of each of their payments back as days of your plan (Plus while you are on Free).\n\n"
             f"Invited: {st['invited']} · paid: {st['paid']} · earned: {earned}")
 
