@@ -2,11 +2,11 @@
 Run: uvicorn app:app --host 127.0.0.1 --port 8790
 Env: ME_DB (sqlite path), ME_CLIENT (path to me.py), ME_PUBLIC_URL (e.g. https://me-agent.ru)
 """
-import base64, hashlib, hmac, json, os, re, secrets, sqlite3, struct, threading, time
+import base64, hashlib, hmac, json, os, re, secrets, sqlite3, struct, threading, time, urllib.parse
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 import acctlog as tr
@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS market(id INTEGER PRIMARY KEY, name TEXT UNIQUE, auth
   color TEXT, ext TEXT, content TEXT, installs INTEGER DEFAULT 0, created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS tg_links(chat_id INTEGER PRIMARY KEY, user_id INTEGER, created REAL);
+CREATE TABLE IF NOT EXISTS referrals(user_id INTEGER PRIMARY KEY, referrer INTEGER, created REAL);
 CREATE INDEX IF NOT EXISTS docs_rev ON docs(user_id, rev);
 """)
 
@@ -208,6 +209,7 @@ class Creds(BaseModel):
     password: str
     totp: str | None = None
     device: str = ""
+    ref: str | None = None
 
 
 @app.post("/api/register")
@@ -224,6 +226,9 @@ def register(c: Creds, req: Request):
         first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
         cur = conn.execute("INSERT INTO users(username,pw,admin,created,seen) VALUES(?,?,?,?,?)",
                            (c.username, pw_hash(c.password), int(first), time.time(), time.time()))
+        r = c.ref and conn.execute("SELECT id FROM users WHERE username=?", (c.ref,)).fetchone()
+        if r:
+            conn.execute("INSERT INTO referrals VALUES(?,?,?)", (cur.lastrowid, r["id"], time.time()))
     seed_user(cur.lastrowid)
     with lock:
         return {"token": new_token(cur.lastrowid, c.device or "web"), "username": c.username}
@@ -772,6 +777,12 @@ def changelog(req: Request):
 @app.get("/account")
 def account(req: Request):
     return page("account.html", req)
+
+
+@app.get("/r/{name}")
+def referral_link(name: str):
+    """An invite link: the account page remembers who invited and opens "create account"."""
+    return RedirectResponse("/account?ref=" + urllib.parse.quote(name[:32]) + "#register")
 
 
 @app.get("/shots/{name}")

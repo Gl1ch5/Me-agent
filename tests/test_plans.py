@@ -144,6 +144,31 @@ def main():
             assert "Pro" in str(e), e
         assert [x["status"] for x in c.req("GET", "/api/pay")["payments"]] == ["paid"] * 3
         print("ok   a lost webhook: coming back asks the provider and grants the upgrade; a lower plan over a higher one is refused")
+
+        # referrals: c (Pro until +30d) invites f
+        loc = me.urllib.request.urlopen(me.urllib.request.Request(T.SERVER + "/r/" + s.auth["user"]), timeout=5).url
+        assert loc.endswith("/account?ref=" + s.auth["user"] + "#register") or "ref=" + s.auth["user"] in loc, loc
+        sf = me.Store(tempfile.mkdtemp())
+        sf.auth = {"server": T.SERVER}
+        f = me.Cloud(sf)
+        name = "f" + os.urandom(3).hex()
+        tok = c.req("POST", "/api/register", {"username": name, "password": "secret1", "ref": s.auth["user"]})["token"]
+        sf.auth.update(token=tok, user=name)
+        assert c.req("GET", "/api/ref")["invited"] == 1 and c.req("GET", "/api/ref")["link"].endswith("/r/" + s.auth["user"])
+        pro_until = c.req("GET", "/api/plan")["until"]
+        pid = f.req("POST", "/api/pay", {"plan": "plus", "method": "lolz"})["id"]
+        hook = json.dumps({"payment_id": pid, "status": "paid", "merchant_id": 7}).encode()
+        assert raw("/api/pay/lolz", hook, {"x-secret-key": "LS"}) == 200
+        st = f.req("GET", "/api/plan")
+        assert st["plan"] == "plus" and abs(st["until"] - time.time() - 37 * 86400) < 60, "the friend's first payment has no bonus week"
+        r = c.req("GET", "/api/ref")
+        assert r["paid"] == 1 and r["days"] == {"pro": round(490 * 0.2 / (1490 / 30), 1)}, r
+        assert abs(c.req("GET", "/api/plan")["until"] - pro_until - r["days"]["pro"] * 86400) < 5, "the inviter's Pro was not extended"
+        pid = f.req("POST", "/api/pay", {"plan": "plus", "method": "lolz"})["id"]
+        raw("/api/pay/lolz", json.dumps({"payment_id": pid, "status": "paid", "merchant_id": 7}).encode(), {"x-secret-key": "LS"})
+        assert abs(f.req("GET", "/api/plan")["until"] - time.time() - 67 * 86400) < 60, "the bonus came again on a second payment"
+        assert c.req("GET", "/api/ref")["days"]["pro"] == 2 * round(490 * 0.2 / (1490 / 30), 1), "every payment of the friend rewards"
+        print("ok   referrals: /r/<name> invites; a friend's first payment gets +7 days, the inviter gets 20% of each payment as days of their plan")
     finally:
         os.killpg(srv.pid, 9)
 

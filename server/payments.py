@@ -5,7 +5,10 @@
   crypto-pay-api-signature = hex HMAC-SHA256 of the body with key SHA256(app token). The Crypto Bot webhook URL is set once
   in @CryptoBot → Crypto Pay → My apps. A lost callback is covered by GET /api/pay/{id}, which asks the provider itself.
 - A paid invoice adds 30 days: to the current end when it is the same plan, else from now.
-Settings (admin → payments): lolz_token (scope invoice), lolz_merchant, lolz_secret; cryptobot_token, cryptobot_net (main/test).
+- Referrals (link /r/<username>): only a real payment rewards, so fake accounts earn nothing. The friend's first payment
+  gets ref_bonus extra days; the inviter gets ref_pct % of every payment of the friend back as days of their own plan (Plus while free).
+Settings (admin → payments): lolz_token (scope invoice), lolz_merchant, lolz_secret; cryptobot_token, cryptobot_net (main/test);
+ref_pct (default 20), ref_bonus (days, default 7); 0 turns either off.
 """
 import hashlib, hmac, json, os, time, urllib.error, urllib.parse, urllib.request, uuid
 
@@ -13,16 +16,24 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel
 
 import plans
-from app import app, base_url, conn, setting, user
+from app import PUBLIC, app, base_url, conn, setting, user
 
 conn.executescript("""
 CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY, user_id INTEGER, plan TEXT, method TEXT, amount REAL, status TEXT,
   ext TEXT DEFAULT '', url TEXT DEFAULT '', created REAL, paid REAL);
 CREATE INDEX IF NOT EXISTS payments_user ON payments(user_id, created);
+CREATE TABLE IF NOT EXISTS ref_rewards(payment TEXT PRIMARY KEY, referrer INTEGER, plan TEXT, days REAL, created REAL);
 """)
 DAYS = 30
 LOLZ = os.environ.get("ME_LOLZ_API", "https://prod-api.lzt.market")
-KEYS = ("lolz_token", "lolz_merchant", "lolz_secret", "cryptobot_token", "cryptobot_net")
+KEYS = ("lolz_token", "lolz_merchant", "lolz_secret", "cryptobot_token", "cryptobot_net", "ref_pct", "ref_bonus")
+
+
+def num(key, default):
+    try:
+        return max(0.0, float(setting(key) or default))
+    except ValueError:
+        return float(default)
 
 
 def cryptobot_api():
@@ -85,17 +96,38 @@ def cryptobot_paid(p):
 PROVIDERS = {"lolz": (lolz_create, lolz_paid), "cryptobot": (cryptobot_create, cryptobot_paid)}
 
 
+def add_days(uid, plan, days, note, now):
+    """Extend plan by days: from its end when it is the current plan, else from now. A paid plan given forever stays as it is."""
+    cur, until = plans.plan_of(uid)
+    if days <= 0 or (cur == plan and until is None):
+        return
+    start = until if cur == plan else now
+    conn.execute("INSERT OR REPLACE INTO subs VALUES(?,?,?,?,?)", (uid, plan, start + days * 86400, note, now))
+
+
+def reward(p, now):
+    r = conn.execute("SELECT referrer FROM referrals WHERE user_id=?", (p["user_id"],)).fetchone()
+    if not r:
+        return
+    if not conn.execute("SELECT 1 FROM payments WHERE user_id=? AND status='paid' AND id<>?", (p["user_id"], p["id"])).fetchone():
+        add_days(p["user_id"], p["plan"], num("ref_bonus", 7), f"invite bonus {p['id']}", now)
+    cur, _ = plans.plan_of(r["referrer"])
+    plan = cur if plans.PLANS[cur]["price"] else "plus"
+    days = round(p["amount"] * num("ref_pct", 20) / 100 / (plans.PLANS[plan]["price"] / DAYS), 1)
+    if days > 0:
+        add_days(r["referrer"], plan, days, f"referral {p['id']}", now)
+        conn.execute("INSERT OR IGNORE INTO ref_rewards VALUES(?,?,?,?,?)", (p["id"], r["referrer"], plan, days, now))
+
+
 def grant(pid):
-    """Mark the payment paid and extend the plan; safe to call twice (webhook + check)."""
+    """Mark the payment paid, extend the plan and reward the inviter; safe to call twice (webhook + check)."""
     with plans.lock:
         p = conn.execute("SELECT * FROM payments WHERE id=?", (pid,)).fetchone()
         if not p or p["status"] == "paid":
             return
         now = time.time()
-        cur, until = plans.plan_of(p["user_id"])
-        if not (cur == p["plan"] and until is None):  # a paid plan given forever stays as it is
-            start = until if cur == p["plan"] else now
-            conn.execute("INSERT OR REPLACE INTO subs VALUES(?,?,?,?,?)", (p["user_id"], p["plan"], start + DAYS * 86400, f"paid {p['method']} {pid}", now))
+        add_days(p["user_id"], p["plan"], DAYS, f"paid {p['method']} {pid}", now)
+        reward(p, now)
         conn.execute("UPDATE payments SET status='paid', paid=? WHERE id=?", (now, pid))
 
 
@@ -165,12 +197,42 @@ async def cryptobot_hook(req: Request):
     return {"ok": True}
 
 
+def ref_stats(u, base):
+    """The invite link and what it brought."""
+    invited = conn.execute("SELECT COUNT(*) FROM referrals WHERE referrer=?", (u["id"],)).fetchone()[0]
+    paid = conn.execute("SELECT COUNT(DISTINCT r.user_id) FROM referrals r JOIN payments p ON p.user_id=r.user_id AND p.status='paid' WHERE r.referrer=?",
+                        (u["id"],)).fetchone()[0]
+    days = conn.execute("SELECT plan, SUM(days) d FROM ref_rewards WHERE referrer=? GROUP BY plan", (u["id"],)).fetchall()
+    return {"link": base + "/r/" + urllib.parse.quote(u["username"]), "invited": invited, "paid": paid,
+            "days": {r["plan"]: round(r["d"], 1) for r in days}, "pct": num("ref_pct", 20), "bonus": num("ref_bonus", 7)}
+
+
+def ref_text(u, ru=False):
+    """/invite in Telegram."""
+    st = ref_stats(u, PUBLIC or "https://me-agent.ru")
+    earned = ", ".join(f"{plans.PLANS[k]['title']} +{v:g} {'дн.' if ru else 'days'}" for k, v in st["days"].items()) or "—"
+    if ru:
+        return (f"Пригласить друзей\n{st['link']}\n\nДруг получает +{st['bonus']:g} дн. к первой оплате тарифа.\n"
+                f"Вы получаете {st['pct']:g}% от каждой его оплаты днями своего тарифа (Plus, если у вас Free).\n\n"
+                f"Приглашено: {st['invited']} · оплатили: {st['paid']} · получено: {earned}")
+    return (f"Invite friends\n{st['link']}\n\nA friend gets +{st['bonus']:g} days on their first plan payment.\n"
+            f"You get {st['pct']:g}% of each of their payments back as days of your plan (Plus while you are on Free).\n\n"
+            f"Invited: {st['invited']} · paid: {st['paid']} · earned: {earned}")
+
+
+@app.get("/api/ref")
+def ref_info(req: Request, u=Depends(user)):
+    return ref_stats(u, base_url(req))
+
+
 class PaySettings(BaseModel):
     lolz_token: str | None = None
     lolz_merchant: str | None = None
     lolz_secret: str | None = None
     cryptobot_token: str | None = None
     cryptobot_net: str | None = None
+    ref_pct: str | None = None
+    ref_bonus: str | None = None
 
 
 def _admin(u):
@@ -184,6 +246,7 @@ def admin_pay(req: Request, u=Depends(user)):
     rows = conn.execute("SELECT p.created, u.username, p.plan, p.method, p.amount, p.status FROM payments p JOIN users u ON u.id=p.user_id "
                         "ORDER BY p.created DESC LIMIT 50").fetchall()
     return {"set": {k: bool(setting(k)) for k in KEYS}, "lolz_merchant": setting("lolz_merchant"), "cryptobot_net": setting("cryptobot_net") or "main",
+            "ref_pct": num("ref_pct", 20), "ref_bonus": num("ref_bonus", 7),
             "cryptobot_webhook": base_url(req) + "/api/pay/cryptobot", "methods": methods(), "payments": [dict(r) for r in rows]}
 
 

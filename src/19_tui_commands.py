@@ -1,6 +1,18 @@
 # ───── TUI: slash commands (mixin) ─────
 
 
+def ref_md(r, ru=False):
+    """/invite: the account's invite link, the rules and what it brought (r = GET /api/ref)."""
+    earned = ", ".join(f"{k.title()} +{v:g} {'дн.' if ru else 'days'}" for k, v in r["days"].items()) or "—"
+    if ru:
+        return (f"## Пригласить друзей\n{r['link']}\n\n- Друг получает **+{r['bonus']:g} дн.** к первой оплате тарифа.\n"
+                f"- Вы получаете **{r['pct']:g}%** от каждой его оплаты днями своего тарифа (Plus, если у вас Free).\n"
+                f"- Приглашено: {r['invited']} · оплатили: {r['paid']} · получено: {earned}")
+    return (f"## Invite friends\n{r['link']}\n\n- A friend gets **+{r['bonus']:g} days** on their first plan payment.\n"
+            f"- You get **{r['pct']:g}%** of each of their payments back as days of your plan (Plus while you are on Free).\n"
+            f"- Invited: {r['invited']} · paid: {r['paid']} · earned: {earned}")
+
+
 class TUICommands:
     # ─── commands (run in worker thread; may block on modals) ───
     def all_commands(self):
@@ -919,6 +931,15 @@ class TUICommands:
         lines.append("- " + " · ".join(f"{p['title']} {p['price']} ₽" + ("/мес" if ru else "/mo") * bool(p["price"]) for p in st["plans"])
                      + (f" — {self.cloud.server}/account#plans"))
         self.add("assistant", text="\n".join(lines)).done = True
+
+    def cmd_invite(self, arg):
+        if not self.cloud.online:
+            return self.info("log in first — /login", "warn")
+        try:
+            r = self.cloud.req("GET", "/api/ref")
+        except CloudError as e:
+            return self.info(f"✗ {e}", "err")
+        self.add("assistant", text=ref_md(r, UI_LANG["v"] == "ru")).done = True
 
     def cmd_twofa(self, arg):
         if not self.cloud.online:
