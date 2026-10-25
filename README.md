@@ -18,13 +18,13 @@ curl -fsSL https://me-agent.ru/i | sh       # macOS · Linux · Android (Termux)
 irm https://me-agent.ru/i.ps1 | iex         # Windows
 ```
 
-Then type `me`. Needs Python 3.8+, nothing else. The interface is available in **English and Russian** (auto-detected, switchable everywhere: site, account, web app).
+Then type `me` and `/login`: **Me AI**, the built-in model, works right away with no API key (or add your own provider). Needs Python 3.8+, nothing else. The interface is available in **English and Russian** (auto-detected, switchable everywhere: site, account, web app).
 
 ---
 
 ## Contents
 
-[Trust](#trust) · [Why me](#why-me) · [A tour](#a-tour) · [Everything it can do](#everything-it-can-do) · [Commands](#commands) · [Usage](#usage) · [Self-hosting](#self-hosting) · [Development](#development)
+[Trust](#trust) · [Why me](#why-me) · [Pricing](#pricing) · [A tour](#a-tour) · [Everything it can do](#everything-it-can-do) · [Commands](#commands) · [Usage](#usage) · [Self-hosting](#self-hosting) · [Development](#development)
 
 ---
 
@@ -56,6 +56,20 @@ Found a security problem? Open a GitHub issue marked `security`, or reach the ma
 Every agent makes you rebuild your setup on each machine. **me** keeps your models, API keys, prompt, skills, plugins, themes, agents, chats **and project files** in your account. Open a terminal, a browser tab, the phone app or Telegram, and you continue exactly where you left off, live.
 
 It is also **tiny on purpose**: the system prompt and tools take about 2k tokens at start (many agents spend 10–20k before you say hello). Skills, plugins and MCP servers cost almost nothing until the model needs them.
+
+## Pricing
+
+Plans only cover **Me AI**, the model built into me. Your own API keys and every other feature are free, with no limits.
+
+| Plan | Price | Me AI limits (weighted tokens) |
+|---|---|---|
+| **Free** | 0 ₽ | 1M every 5 hours · 5M a week |
+| **Plus** | 490 ₽ / month | 15M every 5 hours · 90M a week |
+| **Pro** | 1490 ₽ / month | 60M every 5 hours · 400M a week |
+
+- A limit window starts with your first request and resets by itself. Model output counts more than input, cached input less. `/usage` (terminal, web, Telegram) shows what is left.
+- Pay on the [account page](https://me-agent.ru/account#plans) with **Lolz** (LZT Market) or **Crypto Bot**. No card needed. A plan lasts 30 days; paying again adds 30 more.
+- **Invite friends**: `/invite` gives your link (`me-agent.ru/r/<name>` or a Telegram link). A friend gets +7 days on their first payment, and you get 20% of each of their payments as days of your plan.
 
 ## A tour
 
@@ -134,7 +148,7 @@ Terminal, web app and site share one palette. Pick one with `/theme` (live previ
 | | |
 |---|---|
 | **One file, no dependencies** | `me.py` is stdlib-only Python 3.8+. About 2k tokens of system prompt and tools at start. |
-| **Any model** | Any OpenAI-compatible API: chat/completions or responses, streaming, reasoning effort (none → xhigh), custom model names and context sizes, model list sync from a provider. |
+| **Any model** | **Me AI** built in after `/login` (no key), or any OpenAI-compatible API: chat/completions or responses, streaming, reasoning effort (none → xhigh), custom model names and context sizes, model list sync from a provider. |
 | **Agent modes** | `code` · `design` (writes DESIGN.md first, tokens and components, checked at 360 and 1280 px) · `plan` (writes PLAN.md, no code changes) · `review` (read-only, real bugs only) · `debug` (reproduce, root cause, prove) · `docs` · `research`. The marketplace adds devops, tester, security, mobile, and you can write your own as a `.md` file. |
 | **Goals** | `/goal "…"` works autonomously until the goal is done **and verified**, or reports exactly why it is blocked. Exits 0 or 2 in headless mode, so it works in CI. |
 | **Plans and todo** | A live `todo` checklist in the terminal and the web UI. The agent self-checks (tests, build, lint, running the code) before it says "done". |
@@ -167,9 +181,10 @@ Terminal, web app and site share one palette. Pick one with `/theme` (live previ
 | **Workspaces** | A project folder is synced to the cloud with a three-way merge. Heavy and ignored files are skipped. Browse and clone it from the account page. |
 | **Cloud sandbox** | Sessions run isolated on the server (bubblewrap, resource limits). Start on the laptop, continue on the phone. Sandboxes survive server restarts. |
 | **Background tasks** | "Do X and notify me": the task keeps running after you close the page. Cron-style schedules, push and Telegram when it is done. |
+| **Reminders** | "Check the logs in 2 hours", "every morning send me a summary": the `later` tool comes back to the same chat (or a fresh one in the same project) and runs in the cloud, even with your computer off. |
 | **Preview** | The site the agent built opens on your phone by link: static files, or the sandbox dev server on `$PORT`. |
 | **GitHub** | A token in the account lets the agent clone into a workspace, branch, commit, push and open pull requests. |
-| **Telegram** | Your own bot per account. Chat with your agent from it (text or voice), answer its questions with buttons, and let its `notify` tool send you messages and files. |
+| **Telegram** | Use the standard bot [@meagentru_bot](https://t.me/meagentru_bot) or link your own. Send `/start` to sign in or register right from the bot, then chat with your agent (text, voice, photo albums), answer its questions with buttons, queue messages while it works, and get messages and files from its `notify` tool. All commands are in the bot's `/` menu. |
 | **Push notifications** | Web Push when a task finishes and nobody is watching. |
 | **Voice** | Dictation in the terminal (hold space) and in the web UI, transcribed by Groq Whisper with your own key. |
 | **Accounts** | Username and password, optional 2FA (Google Authenticator, Aegis, 1Password), password change, device list with revoke. |
@@ -193,6 +208,7 @@ Type `/` and start typing, suggestions are fuzzy.
 | `/undo` | revert the files of the last turn |
 | `/perm` · `/yolo` | permissions (read-only, ask, full) and the allow-list · toggle full access |
 | `/cost` | spending: turn, session, today, limits |
+| `/usage` · `/invite` | your Me AI plan and limits · your invite link |
 | `/model` · `/provider` · `/effort` | switch model · add or edit API providers · reasoning effort |
 | `/prompt` | edit your system prompt (synced) |
 | `/skills` · `/plugins` · `/secret` · `/mcp` | skills · plugins · env secrets for skills · MCP servers |
