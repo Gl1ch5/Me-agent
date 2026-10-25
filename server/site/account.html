@@ -159,8 +159,8 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
   <div data-pane="plans">
     <div class="card"><div class="row"><div><h2 style="margin:0">Me AI</h2><p class="dim" style="margin-top:4px">The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.</p></div>
       <span class="tag on" id="plname">free</span></div><div id="plwin" style="margin-top:14px"></div></div>
-    <div class="plans" id="plcards"></div>
-    <p class="dim" style="margin-top:12px;font-size:13px">Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. Online payment is coming soon — to upgrade now, write to support.</p>
+    <div class="plans" id="plcards"></div><div class="err" id="paye"></div>
+    <p class="dim" style="margin-top:12px;font-size:13px">Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. A paid plan lasts 30 days; paying again for the same plan adds 30 more. Pay with Lolz or Crypto Bot — no card needed.</p>
   </div>
 
   <div data-pane="models">
@@ -299,6 +299,10 @@ nav .row{flex-wrap:wrap;justify-content:flex-end;min-width:0}
     <div class="card"><h2>subscriptions</h2><p class="dim" style="margin-bottom:10px">Give a user a plan. Days 0 = forever; plan free removes it.</p>
       <div class="row" style="flex-wrap:nowrap"><input id="spu" placeholder="username"><select id="spp"><option value="plus">plus</option><option value="pro">pro</option><option value="free">free</option></select><input id="spd" type="number" value="31" style="max-width:90px"><button onclick="setPlan()">set</button></div>
       <div class="err" id="spe"></div><div style="overflow-x:auto;margin-top:12px"><table id="aai"></table></div></div>
+    <div class="card"><h2>payments</h2><p class="dim" style="margin-bottom:10px">Lolz: a merchant at lzt.market (merchant ID, secret key) and an API token with the invoice scope. Crypto Bot: @CryptoBot → Crypto Pay → Create App, paste its token and set the webhook there to <code id="cbhook"></code>. Leave a field empty to keep it.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px"><input id="lzt" type="password" onfocus="this.type='text'" placeholder="Lolz API token"><input id="lzm" placeholder="merchant ID"><input id="lzs" type="password" onfocus="this.type='text'" placeholder="merchant secret key"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px"><input id="cbt" type="password" onfocus="this.type='text'" placeholder="Crypto Pay token"><select id="cbn"><option value="main">mainnet</option><option value="test">testnet</option></select><button onclick="savePay()">save</button></div>
+      <div class="err" id="pse"></div><div style="overflow-x:auto;margin-top:12px"><table id="apay"></table></div></div>
     <div class="card"><h2>cloud sandboxes</h2><table id="aworkers"></table></div>
     <div class="card"><h2>users</h2><div style="overflow-x:auto"><table id="users"></table></div></div>
   </div>
@@ -379,9 +383,13 @@ const pl = (n, a, b, c) => { n = Math.abs(n) % 100; const d = n % 10; return n >
 const RU_D = {
   "overview": "обзор", "plan": "тариф", "cloud": "облако",
   "The agent's own model: pick me-ai in /model, no API key needed. Usage counts against your plan.": "Собственная модель агента: выберите me-ai в /model, API-ключ не нужен. Использование идёт в счёт тарифа.",
-  "Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. Online payment is coming soon — to upgrade now, write to support.": "Лимиты сбрасываются сами: 5-часовое окно начинается с первого запроса, недельное — тоже. Онлайн-оплата скоро появится — чтобы перейти на тариф сейчас, напишите в поддержку.",
+  "Limits reset on their own: the 5-hour window starts with your first request, the weekly one too. A paid plan lasts 30 days; paying again for the same plan adds 30 more. Pay with Lolz or Crypto Bot — no card needed.": "Лимиты сбрасываются сами: 5-часовое окно начинается с первого запроса, недельное — тоже. Платный тариф действует 30 дней; повторная оплата того же тарифа добавляет ещё 30. Оплата через Lolz или Crypto Bot — карта не нужна.",
   "5-hour limit": "лимит на 5 часов", "weekly limit": "лимит на неделю", "not started": "ещё не начат", "/ month": "/ мес", "5-hour and weekly limits": "лимиты на 5 часов и неделю", "free": "бесплатно", "Me AI model": "модель Me AI", 
-  "your plan": "ваш тариф", "soon": "скоро", "subscriptions": "подписки", "Give a user a plan. Days 0 = forever; plan free removes it.": "Выдать пользователю тариф. Дней 0 = навсегда; free снимает тариф.",
+  "your plan": "ваш тариф", "soon": "скоро", "payments": "платежи", "pay in the opened tab, then come back": "оплатите в открывшейся вкладке и вернитесь сюда",
+  "Lolz: a merchant at lzt.market (merchant ID, secret key) and an API token with the invoice scope. Crypto Bot: @CryptoBot → Crypto Pay → Create App, paste its token and set the webhook there to": "Lolz: мерчант на lzt.market (ID мерчанта, секретный ключ) и API-токен с правом invoice. Crypto Bot: @CryptoBot → Crypto Pay → Create App, вставьте его токен и укажите там вебхук",
+  ". Leave a field empty to keep it.": ". Пустое поле оставляет прежнее значение.", "Lolz API token": "API-токен Lolz", "merchant ID": "ID мерчанта", "merchant secret key": "секретный ключ мерчанта",
+  "Crypto Pay token": "токен Crypto Pay", "Lolz token set": "токен Lolz задан", "Crypto Pay token set": "токен Crypto Pay задан", "secret set": "ключ задан", "no payments yet": "платежей пока нет", "when": "когда", "method": "способ", "pending": "ожидает", "paid": "оплачен",
+  "this payment method is not available": "этот способ оплаты недоступен", "no method ready": "ни один способ не настроен", "subscriptions": "подписки", "Give a user a plan. Days 0 = forever; plan free removes it.": "Выдать пользователю тариф. Дней 0 = навсегда; free снимает тариф.",
   "requests 24h": "запросов за 24 ч", "plan set": "тариф выдан", "models & keys": "модели и ключи", "skills": "навыки", "plugins": "плагины", "marketplace": "маркетплейс", "sessions": "сессии", "workspaces": "рабочие области", "security": "безопасность", "admin": "админ",
   "work from anywhere": "работайте откуда угодно",
   "sign in with GitHub": "войти через GitHub", "or paste a token:": "или вставьте токен:", "GitHub sign-in": "вход через GitHub", "GitHub connected": "GitHub подключён", "client ID": "client ID", "client secret": "client secret", "secret set": "секрет задан",
@@ -540,6 +548,7 @@ const RU_R = [
   [/^or the shared bot (@\S+?): $/, "или общий бот $1: "], [/^or the shared bot (@\S+?): connected ·\s*$/, "или общий бот $1: подключено · "],
   [/ — try \/models in the terminal$/, " — попробуйте /models в терминале"],
   [/· workspace /g, "· рабочая область "], [/(↑\S* ↓\S*) tokens/g, "$1 токенов"], [/· terminal:/g, "· терминал:"],
+  [/^\+30 days · (.+)$/, "+30 дней · $1"], [/^paid · (.+)$/, "оплачено · $1"], [/^saved · (.+)$/, "сохранено · $1"],
   [/\bcpu\b/g, "ЦП"]
 ];
 function trCore(c) {
@@ -1176,7 +1185,7 @@ async function saveGhApp() {
 const left = t => { const s = Math.max(0, t - Date.now() / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
   return (d ? d + "d " : "") + h + "h " + m + "m"; };
 async function loadPlan() {
-  const st = await api("/api/plan");
+  const [st, pi] = await Promise.all([api("/api/plan"), api("/api/pay").catch(() => ({methods: []}))]);
   $("plname").textContent = st.title + (st.until ? " · " + new Date(st.until * 1000).toLocaleDateString(LANG) : "");
   $("plwin").innerHTML = st.windows.map(w => `<div class="win"><div class="row"><span>${w.kind === "5h" ? "5-hour limit" : "weekly limit"}</span>
     <span class="dim">${w.pct}% · ${w.resets ? (LANG === "ru" ? "сброс через " : "resets in ") + left(w.resets) : "not started"}</span></div>
@@ -1185,12 +1194,38 @@ async function loadPlan() {
     <div class="price">${p.price ? p.price + " ₽<span class=dim> / month</span>" : "free"}</div>
     <ul class="dim"><li>Me AI model</li>${p.id === "free" ? "<li>5-hour and weekly limits</li>" : `<li>×${Math.round(p["5h"] / st.plans[0]["5h"])} ${LANG === "ru" ? "на 5 часов" : "per 5 hours"}</li>
     <li>×${Math.round(p.week / st.plans[0].week)} ${LANG === "ru" ? "на неделю" : "per week"}</li>`}</ul>
-    ${p.id === st.plan ? '<span class="tag on">your plan</span>' : p.price ? '<button class="ghost sm" disabled>soon</button>' : ""}</div>`).join("");
+    ${payBtns(p, st, pi.methods)}</div>`).join("");
+  const back = sessionStorage.getItem("me_pay");
+  if (back) checkPay(back);
 }
+const PAYN = {lolz: "Lolz", cryptobot: "Crypto Bot"};
+function payBtns(p, st, ms) {
+  const cur = p.id === st.plan, price = st.plans.find(x => x.id === st.plan).price;
+  if (!p.price || p.price < price) return cur ? '<span class="tag on">your plan</span>' : "";
+  const b = ms.map(m => `<button class="${cur ? "ghost " : ""}sm" onclick="pay('${p.id}','${m}')">${cur ? "+30 days · " : ""}${PAYN[m]}</button>`).join(" ");
+  return (cur ? '<span class="tag on">your plan</span> ' : "") + (b || (cur ? "" : '<button class="ghost sm" disabled>soon</button>'));
+}
+async function pay(plan, method) {
+  $("paye").textContent = "";
+  const w = window.open("", "_blank");
+  try { const r = await api("/api/pay", {plan, method}); sessionStorage.setItem("me_pay", r.id); if (w) w.location = r.url; else location.href = r.url; toast("pay in the opened tab, then come back"); }
+  catch (e) { if (w) w.close(); $("paye").textContent = e.message; }
+}
+async function checkPay(id) {
+  try { const r = await api("/api/pay/" + encodeURIComponent(id));
+    if (r.status === "paid") { sessionStorage.removeItem("me_pay"); toast("paid · " + r.title); loadPlan(); } }
+  catch (e) { sessionStorage.removeItem("me_pay"); }
+}
+window.addEventListener("focus", () => { const id = sessionStorage.getItem("me_pay"); if (id && !document.querySelector('[data-pane="plans"]').classList.contains("hidden")) checkPay(id); });
 async function setPlan() {
   $("spe").textContent = "";
   try { await api("/api/admin/plan", {username: $("spu").value.trim(), plan: $("spp").value, days: +$("spd").value || 0}); toast("plan set"); loadAdmin(); }
   catch (e) { $("spe").textContent = e.message; }
+}
+async function savePay() {
+  const b = {cryptobot_net: $("cbn").value}; for (const [id, k] of [["lzt", "lolz_token"], ["lzm", "lolz_merchant"], ["lzs", "lolz_secret"], ["cbt", "cryptobot_token"]]) if ($(id).value.trim()) b[k] = $(id).value.trim();
+  try { const r = await api("/api/admin/pay", b); $("pse").className = "err okmsg"; $("pse").textContent = "saved · " + (r.methods.map(m => PAYN[m]).join(", ") || "no method ready"); for (const id of ["lzt", "lzs", "cbt"]) $(id).value = ""; loadAdmin(); }
+  catch (e) { $("pse").className = "err"; $("pse").textContent = e.message; }
 }
 async function loadAdmin() {
   const [st, ss] = await Promise.all([api("/api/admin/stats"), api("/api/admin/settings")]);
@@ -1206,6 +1241,12 @@ async function loadAdmin() {
     "<tr><th>user</th><th>plan</th><th>requests 24h</th><th>in</th><th>out</th></tr>" + ai.day.map(r =>
     `<tr><td>${esc(r.username)}</td><td class="dim">${esc((ai.subs.find(x => x.username === r.username) || {}).plan || "free")}</td><td>${r.n}</td><td class="dim">${human(r.i)}</td><td class="dim">${human(r.o)}</td></tr>`).join("") +
     ai.subs.filter(x => !ai.day.some(r => r.username === x.username)).map(x => `<tr><td>${esc(x.username)}</td><td class="dim">${esc(x.plan)}${x.until ? " · " + new Date(x.until * 1000).toLocaleDateString(LANG) : ""}</td><td>0</td><td></td><td></td></tr>`).join("");
+  const pa = await api("/api/admin/pay");
+  $("cbhook").textContent = pa.cryptobot_webhook; $("lzm").value = pa.lolz_merchant || ""; $("cbn").value = pa.cryptobot_net;
+  $("lzt").placeholder = pa.set.lolz_token ? "Lolz token set" : "Lolz API token"; $("lzs").placeholder = pa.set.lolz_secret ? "secret set" : "merchant secret key"; $("cbt").placeholder = pa.set.cryptobot_token ? "Crypto Pay token set" : "Crypto Pay token";
+  $("apay").innerHTML = pa.payments.length ? "<tr><th>when</th><th>user</th><th>plan</th><th>method</th><th>₽</th><th>status</th></tr>" + pa.payments.map(r =>
+    `<tr><td class="dim">${ago(r.created)}</td><td>${esc(r.username)}</td><td>${esc(r.plan)}</td><td class="dim">${PAYN[r.method] || esc(r.method)}</td><td>${r.amount}</td><td>${r.status === "paid" ? '<span class="tag on">paid</span>' : '<span class="dim">pending</span>'}</td></tr>`).join("")
+    : '<tr><td class="dim">no payments yet</td></tr>';
   const us = await api("/api/admin/users");
   $("users").innerHTML = "<tr><th>user</th><th>seen</th><th>joined</th><th>docs</th><th>size</th><th>devices</th><th>2fa</th></tr>" + us.map(u =>
     `<tr><td>${esc(u.username)}${u.admin ? ' <span class="tag a">admin</span>' : ""}</td><td class="dim">${ago(u.seen)}</td><td class="dim">${new Date(u.created * 1000).toLocaleDateString(LANG)}</td>

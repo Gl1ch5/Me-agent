@@ -25,7 +25,7 @@ CREATE INDEX IF NOT EXISTS ai_usage_user ON ai_usage(user_id, ts);
 H5, WEEK = 5 * 3600, 7 * 86400
 M = 1_000_000
 PLANS = {  # budgets in weighted tokens; price in ₽ per month
-    "free": {"title": "Free", "price": 0, "5h": 3 * M, "week": 15 * M},
+    "free": {"title": "Free", "price": 0, "5h": 1 * M, "week": 5 * M},
     "plus": {"title": "Plus", "price": 490, "5h": 15 * M, "week": 90 * M},
     "pro": {"title": "Pro", "price": 1490, "5h": 60 * M, "week": 400 * M},
 }
