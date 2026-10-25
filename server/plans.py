@@ -116,6 +116,21 @@ def status(uid):
             "plans": [{"id": k, **v} for k, v in PLANS.items()]}
 
 
+def usage_text(uid, ru=False):
+    """/usage in Telegram: the plan, both windows as bars, time to reset, the plans."""
+    st, now = status(uid), time.time()
+    out = ["Me AI · " + st["title"] + (time.strftime(" (до %d.%m)" if ru else " (until %d.%m)", time.localtime(st["until"])) if st["until"] else "")]
+    for w in st["windows"]:
+        name = {"5h": ("5 часов", "5 hours"), "week": ("неделя", "week")}[w["kind"]][not ru]
+        line = f"{name}: {'█' * int(w['pct'] // 10)}{'░' * (10 - int(w['pct'] // 10))} {w['pct']:g}%"
+        if w["resets"]:
+            left = max(0, int(w["resets"] - now))
+            line += (" · сброс через " if ru else " · resets in ") + (f"{left // 86400}d " if left >= 86400 else "") + f"{left % 86400 // 3600}h {left % 3600 // 60}m"
+        out.append(line)
+    out.append(" · ".join(f"{p['title']} {p['price']} ₽" + ("/мес" if ru else "/mo") * bool(p["price"]) for p in st["plans"]) + " — me-agent.ru/account#plans")
+    return "\n".join(out)
+
+
 def blocked(uid):
     """None, or the window that is used up: (kind, resets at)."""
     plan, _ = plan_of(uid)

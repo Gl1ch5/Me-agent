@@ -107,7 +107,7 @@ class WebSession:
     def state(self):
         ses = self.agent.session
         return {"mode": "local", "user": self.s.auth.get("user", ""), "cwd": self.agent.cwd, "after": self.seq, "ctx": self.agent.ctx_used or ses.get("ctx", 0),
-                "config": {"model": self.agent.model_name(), "models": self.s.models(), "prompt": self.s.config.get("prompt", ""),
+                "config": {"model": (self.agent.model() or {}).get("name", ""), "models": self.s.models(), "prompt": self.s.config.get("prompt", ""),
                            "autocompact": self.s.config["settings"].get("autocompact", 80),
                            "search": {a: len(search_keys(self.s.config, a)) for a in SEARCH_APIS},
                            "search_asked": self.s.config["settings"].get("search_asked", [])},
@@ -231,6 +231,10 @@ class WebSession:
             msg = apply_setting(self.s.config, body["key"], body.get("value"), a.model_name())
             self.s.save()
             return dict(self.state(), msg=msg or "")
+        if path == "/plan":  # /usage: the account's Me AI limits
+            if not self.cloud.online:
+                raise ValueError("log in first — /login")
+            return self.cloud.req("GET", "/api/plan")
         if path == "/themes":
             return {"current": self.s.config.get("theme") or "me-dark", "themes": [theme(self.s, n) for n in themes(self.s)]}
         if path == "/theme":

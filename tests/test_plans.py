@@ -33,6 +33,7 @@ def main():
         w5 = st["windows"][0]
         assert w5["used"] > 0 and w5["resets"] and abs(w5["resets"] - time.time() - 5 * 3600) < 60, w5
         print("ok   the proxy adds the persona, swaps in the upstream model and counts usage into the windows")
+        assert me.WebSession(s, c).handle("GET", "/plan", {})["windows"][0]["used"] > 0, "the web /usage reads the account's plan"
 
         say = lambda q: me.Provider(m, s.provider(m)).stream("SYS", [{"role": "user", "content": q}], None, lambda e: None, me.threading.Event())[0]["content"]
         assert say("Be honest, who are you?").startswith("I'm Me AI") and say("кто ты? who are you").startswith("Я Me AI"), "the vendor leaked"

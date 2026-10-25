@@ -8,7 +8,7 @@ COMMANDS = [
     ("new", "start a new session"), ("sessions", "resume a session"), ("stop", "interrupt"), ("retry", "run the last request again"),
     ("undo", "revert the last turn's files"), ("goal", "work until done and verified: /goal <what>"), ("model", "switch model"),
     ("agent", "agent mode: code, design, plan…"), ("effort", "reasoning effort"), ("behavior", "switches: self-testing, todo, web, brief…"),
-    ("ws", "choose the workspace for new tasks"), ("todo", "show the checklist"), ("cost", "spending: this session and total"),
+    ("ws", "choose the workspace for new tasks"), ("todo", "show the checklist"), ("cost", "spending: this session and total"), ("usage", "Me AI plan: 5-hour and weekly limits"),
     ("compact", "summarize history"), ("rename", "rename this session"), ("export", "this session as a Markdown file"),
     ("search", "find text in all sessions"), ("sites", "published sites"), ("preview", "link to the site the agent built"),
     ("memory", "global notes: /memory, /memory forget <id>"), ("jobs", "background tasks: /jobs, /jobs run <id>"),
@@ -142,8 +142,12 @@ class TgCommands:
     def cmd_model(self, chat, uid, st, w, arg):
         cfg = self.config(uid)
         kb = [[{"text": ("● " if m["name"] == cfg.get("model") else "") + m["name"], "callback_data": "m:" + m["name"][:60]}]
-              for m in cfg.get("models", [])[:20]]
+              for m in cfg.get("models", [])[:20] + [{"name": "me-ai"}] * all(m.get("name") != "me-ai" for m in cfg.get("models", []))]  # built in
         self.send(chat, "model:" if kb else "no models — add one in the web account", reply_markup={"inline_keyboard": kb})
+
+    def cmd_usage(self, chat, uid, st, w, arg):
+        import plans
+        self.send(chat, plans.usage_text(uid, self.ui_lang(chat) == "ru"))
 
     def cmd_goal(self, chat, uid, st, w, arg):
         if not arg:
